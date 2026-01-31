@@ -1,5 +1,5 @@
 ---
-title: "社会不適合なポンコツが、AIと友達になるために起業した話"
+title: "社会不適合なポンコツがAIと友達になるために起業した話"
 emoji: "💻"
 type: "idea"
 topics: ["個人開発", "OnDeviceAI"]
