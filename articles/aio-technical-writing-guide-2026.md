@@ -40,7 +40,7 @@ published: true
 
 ## 1.3 この記事の構成
 
-**第2章**では、2024-2025年の実証研究（Pew Research、Princeton、StructEval等）をもとに、SEOからAIOへの進化、人間-AIコラボレーション、構造化データ、Context Engineering、AIコードアシスタントの現状を解説します。
+**第2章**では、2024-2025年の実証研究（Pew Research、Princeton、StructEval等）をもとに、AI検索環境の変化、AIエージェントの進化と技術文書への要求、構造化データとLLMの技術的基盤を解説します。
 
 **第3章**では、人間/AI分離モデルの設計原理と、FAQ設計、診断フロー、YAML構造化という3つの実装手法を具体的に説明します。
 
@@ -54,153 +54,67 @@ published: true
 
 ---
 
-# 2. Background and Related Work
+# 2. Background: AIOの時代背景と技術基盤
 
-## 2.1 AIOの現状: 2024-2025年の実証研究から
+## 2.1 AI検索環境の変化: Zero-Click時代の到来
 
-### 2.1.1 AI Overviewsのトラフィック影響
+### 2.1.1 Google AI Overviewsによるトラフィック影響
 
-2024年から2025年にかけて、Google AI Overviews（旧SGE）は検索体験を根本的に変化させた。68,000件の実際の検索クエリを追跡した研究では、AI要約が表示される場合のクリック率（CTR）が**46.7%減少**することが明らかになった[1]。具体的には、AI要約なしで15%だったCTRが、AI要約表示時には8%に低下した。
+2024年から2025年にかけて、Google AI Overviews（旧SGE）は検索体験を根本的に変化させた。68,000件の実際の検索クエリを追跡した研究では、AI要約が表示される場合のクリック率（CTR）が**46.7%減少**することが明らかになった[1]。
 
-ゼロクリック検索（検索結果ページを離れずに完結する検索）の割合は、2024年5月の56%から2025年5月には**69%に増加**した[2]。また、あるキーワードで1位にランクしたサイトの平均CTRは、2024年3月の0.73から2025年3月には0.26へと**64%減少**している。
+ゼロクリック検索（検索結果ページを離れずに完結する検索）の割合は、2024年5月の56%から2025年5月には**69%に増加**した[2]。2025年の最新データでは、AI Overviews表示時のゼロクリック率が**83%**に達し、オーガニッククリックは米国で**-38%**、グローバルで**-33%**減少した[3]。
 
-2025年の最新データは、この傾向がさらに加速していることを示している[3]。AI Overviewsが表示されるクエリの割合は、2025年1月の6.49%から3月には**13.14%に倍増**した。AI Overviews表示時のゼロクリック率は**83%**に達し、オーガニッククリックは米国で**-38%**、グローバルで**-33%**減少した。さらに、AI Overviews表示時のCTRは**-61%減少**（1.76% → 0.61%）し、1位の記事でさえ**34.5%のクリック減少**を経験している。
+### 2.1.2 GEO（Generative Engine Optimization）の実証効果
 
-### 2.1.2 GEO（Generative Engine Optimization）の効果
-
-GEO（Generative Engine Optimization）と呼ばれる手法がACM SIGKDD 2024で発表された[4]。適切なGEO実装により、生成型プラットフォームにおける引用率が**40%向上**することが実証された。
-
-最も効果的な手法は以下の通り:
+ACM SIGKDD 2024で発表されたGEO（Generative Engine Optimization）[4]は、生成型プラットフォームにおける引用率を**40%向上**させる手法である。最も効果的な手法:
 
 - **検証可能な統計情報（Verifiable Statistics）**: +40%
 - **権威ある引用源（Authoritative Citations）**: +40%
 - **本文内引用（In-text Citations）**: +30-40%
-- **テキスト流暢性（Text Fluency）**: +15-30%
 
-実際の運用例では、これらの手法を適用した記事の引用率が**4ヶ月で340%、6ヶ月で400%増加**したケースが報告されている。この結果は、従来のSEOとは異なるアプローチが必要であることを示唆している。検索順位を上げるだけでなく、AIが「引用したくなる」構造化データと明確な情報提供が重要である。
+実際の運用例では、記事の引用率が**4ヶ月で340%、6ヶ月で400%増加**したケースが報告されている。この結果は、AIが「引用したくなる」構造化データと明確な情報提供が重要であることを示している。
 
 ### 2.1.3 SEOからAIOへのパラダイムシフト
-
-2025年時点で、約50%のGoogle検索にAI要約が表示されており、2028年には75%以上に達すると予測されている。このシフトは、技術文書の最適化戦略に以下の変化を要求する:
 
 **表1: SEO vs AIO のパラダイムシフト**
 
 | 観点 | SEO (1998-2024) | AIO (2025-) | エビデンス |
 |------|----------------|-------------|-----------|
 | **対象読者** | 人間 | 人間 + AIエージェント | AI要約表示率 50% → 75% (2028予測) |
-| **最適化目的** | 検索順位向上 | AI引用率・応答品質向上 | Princeton: GEO実装で引用率+40% |
-| **評価指標** | PV、CTR、滞在時間 | 引用率、設定適用成功率 | ゼロクリック検索 56% → 69% (2024-2025) |
+| **最適化目的** | 検索順位向上 | AI引用率・応答品質向上 | GEO実装で引用率+40% |
+| **評価指標** | PV、CTR、滞在時間 | 引用率、設定適用成功率 | ゼロクリック検索 69% (2025) |
 | **最適化手法** | キーワード、バックリンク | 構造化データ、FAQ、診断フロー | - |
-| **トラフィック影響** | - | CTR -46.7% (AI要約表示時) | Pew Research (68,000クエリ追跡) |
 
-## 2.2 Human-AI Collaboration in Technical Writing
+## 2.2 AIエージェントの進化と技術文書への要求
 
-### 2.2.1 生産性と役割分担の変化
+### 2.2.1 Agentic AIの台頭（2025年）
 
-2024-2025年の実践報告によれば、AIツールを活用することで技術ライターの生産性が**約2倍**に向上している。しかし、重要な発見は「AIが人間を置き換える」のではなく、「AIと人間が補完的な役割を果たす」という点である。
+2025年の技術文書カンファレンスでは、**Agentic AI**という概念が議論され始めた[5]。これは、単なるコンテンツ生成を超え、最小限の人間介入で定義された目標を自律的に追求するシステムである。
 
-技術文書作成における役割分担は、以下のように整理されている:
+業界予測では、**2026年末までにLLMクエリの70%が自律AIエージェントによって処理される**とされている。この予測が正しければ、技術文書の主要な読者はAIエージェントとなり、AIO最適化の重要性はさらに高まる。
 
-- **AIの役割**: 初稿生成、定型的な構造化、繰り返しパターンの適用
-- **人間の役割**: 創造性、文脈理解、コンプライアンス、最終品質保証
+### 2.2.2 技術文書に求められる新しい要件
 
-「AIハルシネーション（事実でない内容の生成）は、人間の監視なしには検出不可能である」という警告が示されている[6]。これは、人間向けとAI向けのセクションを分離するという設計思想を支持する知見です。
-
-LLMのスキャフォールディング（支援）レベルと効果に**U字型の関係**があることが明らかになった[5]。131名の参加者による実験では、低レベルのスキャフォールディング（次文の提案）は効果がなかったが、高レベルのスキャフォールディング（次段落の提案）は、執筆品質と生産性を大幅に向上させた。特に、**非定期ライターと技術リテラシーの低いユーザー**に顕著な効果があった。
-
-### 2.2.2 Agentic AIの台頭（2025年）
-
-2025年の技術文書カンファレンスでは、**Agentic AI**という概念が議論され始めた[7]。これは、単なるコンテンツ生成を超え、最小限の人間介入で定義された目標を自律的に追求するシステムである。
-
-この進化は、技術文書に新たな要求を課す。AIエージェントが自律的に行動できるよう、文書は以下を提供する必要がある:
+AIエージェントが自律的に行動できるよう、技術文書は以下を提供する必要がある:
 
 1. **実行可能な手順**: 曖昧さのないコマンド、設定値
 2. **測定可能な成功基準**: 「速い」ではなく「10秒以下」
 3. **明確なフォールバック**: 各ステップの失敗時の代替パス
 
-## 2.3 Structured Data and LLMs
+## 2.3 構造化データとLLM: 技術的基盤
 
 ### 2.3.1 構造化出力の標準化（2024年）
 
-2024年、OpenAIとAnthropicは、LLMの構造化出力機能をAPI-nativeな形で提供し始めた[12]。OpenAIの`response_format: {type: "json_schema"}`は、gpt-4o-2024-08-06以降でサポートされ、LLMが厳密なJSONスキーマに従った出力を生成できるようになった。
+2024年、OpenAIとAnthropicは、LLMの構造化出力機能をAPI-nativeな形で提供し始めた[6]。OpenAIの`response_format: {type: "json_schema"}`は、gpt-4o-2024-08-06以降でサポートされ、LLMが厳密なJSONスキーマに従った出力を生成できるようになった。
 
 この標準化により、技術文書におけるYAML/JSON形式のAI向けセクションの重要性が増している。
 
-### 2.3.2 StructEval: 構造化出力の評価基準
+### 2.3.2 YAML/JSON形式の優位性
 
-2025年に発表されたStructEval[8]は、LLMの構造化出力能力を評価する包括的ベンチマークである。18フォーマット（JSON、YAML、CSV、HTML、React、SVGなど）と44タスクをカバーし、フォーマット遵守と構造的正確性の新しい評価指標を提案している。
+2025年に発表されたStructEval[7]は、LLMの構造化出力能力を評価する包括的ベンチマークである。18フォーマット（JSON、YAML、CSV、HTML、React、SVGなど）と44タスクをカバーし、**YAMLとJSONが他のフォーマットと比較してLLMの解析精度が高い**ことを実証している。
 
-この研究は、YAMLとJSONが他のフォーマットと比較してLLMの解析精度が高いことを実証している。
+さらに、JSONSchemaBench[8]は、実世界の10,000件のJSONスキーマを用いた厳密なベンチマークで、LLMを**「信頼できるAPI」**として機能させるためのJSON Schemaの重要性を実証した。
 
-2025年1月に発表された**JSONSchemaBench**[9]は、実世界の10,000件のJSONスキーマを用いた、より厳密なベンチマークである。Guidance、Outlines、Llamacpp、XGrammar、OpenAI、Geminiの6つの最先端フレームワークを評価し、効率性、カバレッジ、品質の3つの次元で評価した。この研究により、LLMを**「信頼できるAPI」**として機能させるためのJSON Schemaの重要性が実証された。
-
-### 2.3.3 AI Agentsの普及予測
-
-業界予測では、**2026年末までにLLMクエリの70%が自律AIエージェントによって処理される**とされている。この予測が正しければ、技術文書の主要な読者はAIエージェントとなり、人間/AI分離モデルの重要性はさらに高まる。
-
-### 2.3.4 RAGの進化: SELF-RAG
-
-2023年から2024年にかけて、RAG（Retrieval-Augmented Generation）関連の論文数が急増し、NeurIPS、ICLR、ACLが主要な発表場所となった。企業導入も進み、**63.6%がGPTベース**、**80.5%がFAISS/Elasticsearch**を採用している。
-
-2024年に発表された**SELF-RAG**[10]は、RAGの進化における重要なマイルストーンである。従来のRAGが外部評価に依存していたのに対し、SELF-RAGは**critique-generateループ**を導入し、LLMが自身の出力を自己評価・修正する仕組みを実現した。具体的には、reflection tokens（反省トークン）を使用して、検索した文書の関連性、生成した出力の事実性、回答の有用性を自己評価し、最適な出力を選択する。この手法により、7Bおよび13Bパラメータのモデルでも、最先端のLLMを上回る性能を達成した。
-
-### 2.3.5 Struct-X: 構造化データによる推論強化
-
-2024年に発表された**Struct-X**[11]は、構造化データをLLMの推論に統合する新しいフレームワークである。**"read-model-fill-reflect-reason"**という5段階のワークフローを採用し、以下を実現している:
-
-1. **Read**: グラフ埋め込みを使用して構造化データをトポロジカル空間にエンコード
-2. **Model & Fill**: 知識検索モジュールで欠損情報を補完
-3. **Reflect**: 自己教師あり学習で無関係なトークンをフィルタリング
-4. **Reason**: 選択されたトークンでトポロジカルネットワークを構築し、LLM推論を実行
-
-ナレッジグラフQAや長文読解タスクのベンチマークで、Struct-XはLLMの推論能力を大幅に向上させることが実証された。
-
-## 2.4 Context Engineering: プロンプトの次段階
-
-### 2.4.1 Context Engineeringの定義
-
-Context Engineeringは、単純なプロンプト設計を超えた、LLMのコンテキスト全体を最適化する体系的な手法である[13][15]。これは「LLM推論時の最適なトークンセット（情報）を設計・維持する戦略のセット」と定義される。
-
-### 2.4.2 Context Rotと情報密度
-
-Needle-in-a-haystackスタイルのベンチマーク研究により、**Context Rot**という現象が発見された。コンテキストウィンドウのトークン数が増加すると、モデルの情報想起精度が低下する。
-
-この発見は、技術文書において「情報を詰め込む」のではなく、「関連情報を構造化して提供する」アプローチの重要性を示唆しています。この記事で提案するYAML形式は、この原則に基づいています。
-
-### 2.4.3 最適化戦略の3本柱（2024-2025年）
-
-2024-2025年の研究により、LLM効率向上の3つの核心戦略が確立されました:
-
-1. **構造化出力**: 厳密なスキーマによる応答生成
-2. **動的時間注入**: コンテキストに時間情報を含める
-3. **RAGキャッシュ最適化**: 頻繁にアクセスされる情報のキャッシング
-
-人間/AI分離モデルは、これら3つの戦略を技術文書に適用したものと位置づけられます。
-
-### 2.4.4 Agentic Context Engineering (ACE)
-
-2025年10月に発表された**ACE（Agentic Context Engineering）**[14]は、Context Engineeringの次段階を示している。ACEは、コンテキストを**進化するプレイブック（evolving playbooks）**として扱い、Generator、Reflector、Curatorの3つの役割を持つエージェントアーキテクチャで、段階的にコンテキストを改善する。
-
-従来のプロンプト最適化が簡潔性バイアス（brevity bias）やコンテキスト崩壊（context collapse）に悩まされていたのに対し、ACEは**増分デルタ更新**により、詳細な知識を保持しながら新しい洞察を蓄積する。実験結果では、**エージェントタスクで+10.6%、金融タスクで+8.6%**の性能向上を達成し、適応レイテンシとロールアウトコストを大幅に削減した。AppWorldリーダーボードでは、より小さなオープンソースモデルを使用しながら、トップランクのプロダクションレベルエージェントと同等の性能を示した。
-
-## 2.5 AI Code Assistants and Documentation Design
-
-### 2.5.1 アーキテクチャの分岐（2025年10月）
-
-2025年10月時点で、AIコーディングアシスタントは2つの哲学に分岐した:
-
-1. **IDE統合型（GitHub Copilot）**: エディタに密接に統合され、行単位でコードを補完
-2. **エージェント型（Claude Code）**: 複数ステップの変更を計画・実行し、人間がチェックポイントで確認
-
-この分岐は、技術文書の設計にも影響を与える。IDE統合型は「インラインヘルプ」を重視し、エージェント型は「包括的な文書と診断フロー」を重視する。
-
-### 2.5.2 文書生成能力の差異
-
-Claude Code vs GitHub Copilotの比較研究（2025-2026）によれば、Claudeは「コードと並行して包括的な文書を生成する」能力に優れており、「深い理解とlong-form文書作成」に強みを持つ。
-
-この知見は、AI向けセクションにおいて「詳細な説明と構造化データの両方」を提供する必要性を示唆している。
-
----
 
 # 3. Methodology: 人間/AI分離モデルの設計
 
@@ -956,7 +870,7 @@ AI エージェントが技術文書を解析・理解する時代において�
 
 # References
 
-## A. AIOの現状とトラフィック影響（2.1節関連）
+## A. AI検索環境の変化（2.1節関連）
 
 1. Pew Research Center. (2024). *How AI-Powered Search Could Impact Web Traffic*. Retrieved from https://www.pewresearch.org/short-reads/2024/09/26/how-ai-powered-search-could-impact-web-traffic/
 
@@ -966,33 +880,17 @@ AI エージェントが技術文書を解析・理解する時代において�
 
 4. Aggarwal, P., Murahari, V., Rajpurohit, T., Kalyan, A., Narasimhan, K., & Deshpande, A. (2024). *GEO: Generative Engine Optimization*. Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining. Retrieved from https://dl.acm.org/doi/10.1145/3637528.3671900
 
-## B. Human-AI Collaboration（2.2節関連）
+## B. AIエージェントの進化（2.2節関連）
 
-5. Dhillon, P. S., Molaei, S., Li, J., Golub, M., Zheng, S., & Robert, L. P. (2024). *Shaping Human-AI Collaboration: Varied Scaffolding Levels in Co-writing with Language Models*. Proceedings of the 2024 CHI Conference on Human Factors in Computing Systems (arXiv:2402.11723). Retrieved from https://arxiv.org/abs/2402.11723
-
-6. Lindenwood Digital Commons. (2024). *Technical Writing in the Age of AI: Challenges and Opportunities*. Retrieved from https://digitalcommons.lindenwood.edu/
-
-7. Society for Technical Communication. (2025). *Agentic AI and the Future of Technical Documentation*. Conference Proceedings. Retrieved from https://www.stc.org/
+5. Society for Technical Communication. (2025). *Agentic AI and the Future of Technical Documentation*. Conference Proceedings. Retrieved from https://www.stc.org/
 
 ## C. 構造化データとLLM（2.3節関連）
 
-8. Yang, J., Jiang, D., He, L., et al. (2025). *StructEval: Benchmarking LLMs' Capabilities to Generate Structural Outputs* (arXiv:2505.20139). Retrieved from https://arxiv.org/abs/2505.20139
+6. OpenAI. (2024). *Structured Outputs in the API*. Retrieved from https://platform.openai.com/docs/guides/structured-outputs
 
-9. Geng, S., Cooper, H., Moskal, M., et al. (2025). *JSONSchemaBench: A Rigorous Benchmark of Structured Outputs for Language Models* (arXiv:2501.10868). Retrieved from https://arxiv.org/abs/2501.10868
+7. Yang, J., Jiang, D., He, L., et al. (2025). *StructEval: Benchmarking LLMs' Capabilities to Generate Structural Outputs* (arXiv:2505.20139). Retrieved from https://arxiv.org/abs/2505.20139
 
-10. Asai, A., et al. (2023). *Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection* (arXiv:2310.11511). Retrieved from https://arxiv.org/abs/2310.11511
-
-11. Tan, X., Wang, H., Qiu, X., Cheng, Y., Xu, Y., Chu, W., & Qi, Y. (2024). *Struct-X: Enhancing Large Language Models Reasoning with Structured Data* (arXiv:2407.12522). Retrieved from https://arxiv.org/abs/2407.12522
-
-12. OpenAI. (2024). *Structured Outputs in the API*. Retrieved from https://platform.openai.com/docs/guides/structured-outputs
-
-## D. Context Engineering（2.4節関連）
-
-13. Mei, L., Yao, J., Ge, Y., et al. (2025). *A Survey of Context Engineering for Large Language Models* (arXiv:2507.13334). Retrieved from https://arxiv.org/abs/2507.13334
-
-14. Zhang, Q., et al. (2025). *Agentic Context Engineering: Evolving Contexts for Self-Improving Language Models* (arXiv:2510.04618). Retrieved from https://arxiv.org/abs/2510.04618
-
-15. Anthropic Engineering. (2024-2025). *Context Engineering Best Practices*. Retrieved from https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/context-engineering
+8. Geng, S., Cooper, H., Moskal, M., et al. (2025). *JSONSchemaBench: A Rigorous Benchmark of Structured Outputs for Language Models* (arXiv:2501.10868). Retrieved from https://arxiv.org/abs/2501.10868
 
 ---
 
