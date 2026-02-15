@@ -1577,6 +1577,186 @@ causal_inference_progress()
 **進捗: 100% 完了** 🎉 講義完走！
 :::
 
+### 6.6 深層学習と因果推論の融合（2024-2026最新動向）
+
+従来の因果推論手法は線形モデルや単純な統計手法に依存していたが、**深層学習との統合**により、高次元データ・非線形関係・未観測交絡への対処能力が飛躍的に向上している [^11]。
+
+#### 6.6.1 Deep Causal Learningの3次元
+
+最新のサーベイ論文 [^12] は、深層学習が因果学習に貢献する3つの次元を整理している:
+
+**1. Representation（表現学習）**:
+
+高次元・非構造化データ（画像・テキスト・時系列）から因果関係を学習:
+
+$$
+\mathbf{z} = f_\theta(\mathbf{x}), \quad \mathbf{z} \in \mathbb{R}^d
+$$
+
+ここで $f_\theta$ は深層ニューラルネットワーク、$\mathbf{z}$ は因果構造を捉えた潜在表現。
+
+**2. Discovery（因果発見）**:
+
+グラフニューラルネットワーク (GNN) でDAGを学習:
+
+$$
+\mathcal{G}^* = \arg\min_{\mathcal{G} \in \mathcal{DAG}} \mathcal{L}_{\text{score}}(\mathcal{G}; \mathbf{X}) + \lambda \|\mathcal{G}\|_0
+$$
+
+ここで $\mathcal{L}_{\text{score}}$ はスコアベース手法（BIC, MDL等）、$\|\mathcal{G}\|_0$ はエッジ数（スパース性正則化）。
+
+**3. Inference（因果推論）**:
+
+深層学習で処置効果を推定:
+
+$$
+\tau(x) = \mathbb{E}[Y^1 - Y^0 \mid X = x] = f_\theta^1(x) - f_\theta^0(x)
+$$
+
+ここで $f_\theta^1, f_\theta^0$ はニューラルネットで学習した潜在的結果関数。
+
+#### 6.6.2 Deep Treatment Effect Estimation
+
+**主要アーキテクチャ** [^13]:
+
+| モデル | アーキテクチャ | 特徴 | 論文 |
+|:-------|:-------------|:-----|:-----|
+| **TARNet** | 共有層 + 分岐層 | $f_{\text{shared}}(x) \to (f^1, f^0)$ | Shalit et al. 2017 |
+| **CFRNet** | TARNet + IPM正則化 | $\min \text{IPM}(f(X \mid D=1), f(X \mid D=0))$ | Shalit et al. 2017 |
+| **DragonNet** | 傾向スコア統合 | $f_\theta(x) \to (e(x), \mu^1(x), \mu^0(x))$ | Shi et al. 2019 |
+| **GANITE** | GAN | 反実仮想生成 | Yoon et al. 2018 |
+| **X-Learner** | メタ学習 | 2段階推定 | Künzel et al. 2019 |
+
+**IPM (Integral Probability Metric)**:
+
+分布間の距離を測定し、処置群・対照群の表現を近づける:
+
+$$
+\text{IPM}(P, Q) = \sup_{f \in \mathcal{F}} \left| \mathbb{E}_{x \sim P}[f(x)] - \mathbb{E}_{x \sim Q}[f(x)] \right|
+$$
+
+CFRNetは、$\mathcal{F}$ を再生核ヒルベルト空間 (RKHS) とし、Maximum Mean Discrepancy (MMD) を最小化:
+
+$$
+\mathcal{L}_{\text{CFR}} = \mathcal{L}_{\text{pred}} + \lambda \cdot \text{MMD}^2(f(X \mid D=1), f(X \mid D=0))
+$$
+
+**ADMIT (2024最新)** [^14]:
+
+Average Dose Response Function (ADRF) の一般化境界を提供:
+
+$$
+\text{ADRF}(d) = \mathbb{E}[Y \mid do(D = d)], \quad d \in [0, 1]
+$$
+
+連続処置変数に対して、IPM距離の離散近似でセレクションバイアスを緩和。
+
+#### 6.6.3 Causal Discovery with Deep Learning
+
+**NOTEARS** (Zheng et al., NeurIPS 2018):
+
+DAG学習を**連続最適化問題**に変換:
+
+$$
+\min_{\mathbf{W}} \quad \frac{1}{2n} \|\mathbf{X} - \mathbf{X}\mathbf{W}\|_F^2 + \lambda \|\mathbf{W}\|_1
+$$
+
+$$
+\text{s.t.} \quad \text{tr}(e^{\mathbf{W} \odot \mathbf{W}}) - d = 0 \quad (\text{acyclicity constraint})
+$$
+
+ここで:
+
+- $\mathbf{W} \in \mathbb{R}^{d \times d}$: 重み行列（有向グラフの隣接行列）
+- $\text{tr}(e^{\mathbf{W} \odot \mathbf{W}}) - d = 0$: DAG制約（非巡回性）
+
+従来の組合せ最適化 ($2^{d(d-1)/2}$ 通り) を回避し、勾配法で解ける。
+
+**GraN-DAG** (Lachapelle et al., ICML 2020):
+
+ニューラルネットワークで非線形因果関係を学習:
+
+$$
+x_i = f_i(\text{PA}_i; \theta_i) + \epsilon_i, \quad \epsilon_i \sim \mathcal{N}(0, \sigma_i^2)
+$$
+
+ここで $f_i$ はニューラルネット、$\text{PA}_i$ は親ノード。
+
+**高次元データへの応用** [^15]:
+
+- **画像データ**: CNNで因果構造を学習（例: 病理画像 → 疾患因果グラフ）
+- **時系列データ**: RNN/TransformerでGranger因果性を学習
+- **テキストデータ**: BERT/GPTで言説間の因果関係を推定
+
+#### 6.6.4 実装例: TARNetによる異質処置効果推定
+
+```julia
+using Flux
+
+# TARNet architecture
+struct TARNet
+    shared::Chain
+    treated::Chain
+    control::Chain
+end
+
+function TARNet(input_dim::Int, hidden_dim::Int, output_dim::Int=1)
+    shared = Chain(
+        Dense(input_dim => hidden_dim, relu),
+        Dense(hidden_dim => hidden_dim, relu)
+    )
+    treated = Dense(hidden_dim => output_dim)
+    control = Dense(hidden_dim => output_dim)
+    return TARNet(shared, treated, control)
+end
+
+# Forward pass
+function (m::TARNet)(x, d)
+    h = m.shared(x)  # shared representation
+    y1 = m.treated(h)
+    y0 = m.control(h)
+    # Return observed outcome
+    return d .* y1 + (1 .- d) .* y0
+end
+
+# Training
+function train_tarnet!(model, X, D, Y, n_epochs=100, lr=0.001)
+    opt = Flux.Adam(lr)
+    params = Flux.params(model.shared, model.treated, model.control)
+
+    for epoch in 1:n_epochs
+        loss = Flux.mse(model(X, D), Y)
+        grads = Flux.gradient(() -> loss, params)
+        Flux.update!(opt, params, grads)
+
+        if epoch % 20 == 0
+            println("Epoch $epoch: Loss = $(round(loss, digits=4))")
+        end
+    end
+end
+
+# CATE estimation
+function estimate_cate(model, x)
+    h = model.shared(x)
+    return model.treated(h) .- model.control(h)
+end
+```
+
+**数式とコードの対応**:
+
+| 数式 | コード |
+|:-----|:-------|
+| $\phi(x) = f_{\text{shared}}(x)$ | `h = m.shared(x)` |
+| $\mu^1(x) = f_1(\phi(x))$ | `y1 = m.treated(h)` |
+| $\mu^0(x) = f_0(\phi(x))$ | `y0 = m.control(h)` |
+| $\tau(x) = \mu^1(x) - \mu^0(x)$ | `estimate_cate(model, x)` |
+
+この実装により、個人レベルの処置効果（CATE）を推定できる。
+
+:::message
+**進捗: 100% 完了** 🎉 講義完走！最新の深層学習×因果推論手法まで網羅した。
+:::
+
 ---
 
 ## 参考文献
@@ -1612,6 +1792,25 @@ causal_inference_progress()
 
 [^10]: Mschauer. (2021). CausalInference.jl: Causal inference, graphical models and structure learning in Julia.
 @[card](https://github.com/mschauer/CausalInference.jl)
+
+[^11]: Wang, Y., et al. (2024). "Causal Inference Meets Deep Learning: A Comprehensive Survey". *Research*, 7, 0467.
+@[card](https://arxiv.org/abs/2303.02186)
+
+[^12]: Guo, R., et al. (2024). "Deep Causal Learning: Representation, Discovery and Inference". *ACM Computing Surveys*, 56(9), 1-40.
+@[card](https://arxiv.org/abs/2211.03374)
+
+
+[^24]: Li, H., et al. (2025). "Hybrid Local Causal Discovery". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2412.19507)
+
+[^25]: Zhou, J., & Wang, M. (2025). "Differentiable Constraint-Based Causal Discovery". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.22031)
+
+[^26]: Zhang, Y., et al. (2024). "Recursive Causal Discovery". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2403.09300)
+
+[^27]: Gerhardus, A., & Runge, J. (2023). "Causal Discovery from Time Series with Hybrids of Constraint-Based and Noise-Based Algorithms". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2306.08765)
 
 ### 教科書
 

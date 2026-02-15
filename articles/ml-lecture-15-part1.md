@@ -1453,3 +1453,220 @@ $$
 :::
 
 ---
+
+## 🔬 最新研究動向（2024-2025）
+
+Sparse AttentionとLinear Attentionの研究は2024-2025年に爆発的進展を遂げた。
+
+### FlashAttention の進化
+
+**FlashAttention: Fast and Memory-Efficient Exact Attention** (arXiv:2205.14135, 2022)
+- **核心**: IO-aware algorithm — HBM↔SRAM間の読み書き回数を削減
+- **手法**: Tiling + recomputation in backward pass
+- **性能**: GPT-2で7.6倍高速化、メモリ使用量線形
+- **影響**: 事実上の業界標準（PyTorch/JAX統合）
+@[card](https://arxiv.org/abs/2205.14135)
+
+### Block Sparse FlashAttention
+
+**Block Sparse FlashAttention (BSFA)** (arXiv:2512.07011, December 2025)
+- **手法**: ブロックレベルスパース性 + キャリブレーション閾値でtop-k選択
+- **仕組**: ブロックごとの最大スコアを閾値と比較、約50%のブロックをスキップ
+- **性能**: 長文コンテキスト推論で2.1倍高速化、精度ロス<1%
+- **実装**: Tritonカーネル公開
+@[card](https://arxiv.org/html/2512.07011)
+
+### SeerAttention: 学習可能なスパースパターン
+
+**SeerAttention: Learning Intrinsic Sparse Attention** (arXiv:2410.13276, October 2024)
+- **核心**: LLM自身からブロックレベル注意スパース性を直接学習
+- **手法**: 学習可能なゲートで重要ブロックを選択的に活性化
+- **結果**: GPU上で顕著な高速化、長文コンテキストpre-fillingで精度向上
+- **理論**: 注意パターンの本質的構造をモデルが発見
+@[card](https://arxiv.org/abs/2410.13276)
+
+### Native Sparse Attention: ハードウェアレベル最適化
+
+**Native Sparse Attention (NSA)** (arXiv:2502.11089, February 2025)
+- **革新**: ハードウェアアライン + ネイティブスパース演算
+- **性能**: 64k文脈長で前方9.0倍、後方6.0倍高速化（文脈長増加で加速度的向上）
+- **実装**: CUDAカーネル直接実装、メモリアクセスパターン最適化
+- **インパクト**: DeepSeek-V3で実戦投入
+@[card](https://arxiv.org/pdf/2502.11089)
+
+### FlashInfer: カスタマイズ可能なAttentionエンジン
+
+**FLASHINFER: Efficient and Customizable Attention Engine** (arXiv:2501.01005, January 2025)
+- **特徴**: プラグイン可能なAttentionカーネル、動的スパースパターン対応
+- **API**: 統一インターフェースで多様なAttention variant
+- **性能**: FlashAttention-2と同等速度、柔軟性10倍
+@[card](https://www.arxiv.org/pdf/2501.01005)
+
+### 効率的Attentionメカニズムのサーベイ
+
+**Efficient Attention Mechanisms for LLMs: A Survey** (arXiv:2507.19595, 2025)
+- **網羅**: 100以上のAttention変種を分類（Sparse, Linear, Low-rank, Hybrid）
+- **ベンチマーク**: 統一評価（速度, メモリ, 精度, 長文対応）
+- **結論**: タスク依存の最適選択、単一最強手法なし
+@[card](https://arxiv.org/html/2507.19595v1)
+
+### 最新成果の技術比較表
+
+| 手法 | 計算量 | メモリ | 精度 | 実装難易度 | 実戦投入 |
+|:-----|:------|:------|:-----|:---------|:--------|
+| FlashAttention-2 | O(N²) | O(N) | 100% | 低 | 全主要LLM |
+| BSFA | O(0.5N²) | O(0.5N²) | 99% | 中 | 研究段階 |
+| SeerAttention | O(αN²) α<1 | O(αN²) | 99.5% | 中 | 研究段階 |
+| Native Sparse | O(βN²) β<<1 | O(βN²) | 98% | 高 | DeepSeek-V3 |
+| FlashInfer | O(N²) | O(N) | 100% | 低 | 実用化進行中 |
+
+**αは学習されたスパース率、βはハードコードされたスパース率**
+
+### 理論と実装の最新ギャップ
+
+| 項目 | 理論的成果（2024-2025） | 実装での課題 |
+|:-----|:--------------------|:----------|
+| 適応的スパース性 | データ依存スパースパターン学習 | 訓練コスト増大 |
+| ハードウェア最適化 | 9倍高速化（NSA） | GPU世代依存 |
+| 動的パターン選択 | タスクごとに最適Attention | ルーティングオーバーヘッド |
+| 長文コンテキスト | 数百万トークン対応理論 | 通信律速（分散設定） |
+| 精度-速度トレード | 理論的下界証明 | 実タスクでの検証不足 |
+
+### 実装者のための選択ガイド
+
+**シナリオ別推奨:**
+
+| ユースケース | 推奨手法 | 理由 |
+|:-----------|:--------|:-----|
+| 汎用LLM推論（<8k tokens） | FlashAttention-2 | 精度100%、業界標準 |
+| 長文コンテキスト推論（64k+） | Native Sparse Attention | 文脈長でスケール |
+| 訓練時メモリ制約 | FlashAttention-2 + Gradient Checkpointing | メモリO(N) |
+| カスタムAttentionパターン | FlashInfer | プラグイン可能 |
+| 研究プロトタイピング | SeerAttention | 学習可能スパース性 |
+| 超長文（1M+ tokens） | Ring Attention | 分散並列対応 |
+| パラメータ効率重視 | MoE + Sparse Attention | 計算とメモリ分離 |
+
+**実装の優先順位（2025年時点）:**
+
+1. **まずFlashAttention-2を導入** — 無条件で2-3倍高速化
+2. **長文なら+Native Sparse** — 64k以上で真価発揮
+3. **メモリ厳しいなら+Gradient Checkpointing** — 訓練時のみ
+4. **カスタムが必要なら FlashInfer** — 柔軟性最高
+5. **超長文なら Ring Attention** — 分散インフラ前提
+
+**ライブラリ選定:**
+
+```python
+# PyTorch: FlashAttention-2 統合（torch >= 2.0）
+import torch.nn.functional as F
+out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # 自動でFlash選択
+
+# Triton: カスタムカーネル
+import triton
+# Block Sparse FlashAttention のTriton実装が公開中
+
+# JAX: Pallas でFlashAttention
+from jax.experimental import pallas
+# FlashAttention-2 equivalent on TPU
+
+# Rust: burn/candle
+use candle_nn::ops::flash_attn;
+let out = flash_attn(&q, &k, &v, scale, is_causal)?;
+```
+
+### MoEの実装詳細 — 負荷分散の数学
+
+**Load Balancing Lossの完全導出:**
+
+MoEで各Expertの使用頻度を$f_i = \frac{1}{N} \sum_{n=1}^{N} \mathbb{1}[i \in \text{TopK}(G(x_n))]$とする。
+
+理想的には全Expertが均等に使われる: $f_i = \frac{k}{E}$ for all $i$。
+
+**Load Balancing Loss (Switch Transformer 2021):**
+
+$$
+\mathcal{L}_{\text{balance}} = E \cdot \sum_{i=1}^{E} f_i \cdot P_i
+$$
+
+ここで$P_i = \frac{1}{N} \sum_{n=1}^{N} G(x_n)_i$（Expert $i$へのルーティング確率の平均）。
+
+**直感**: $f_i$（実際の使用頻度）と$P_i$（ソフトな割り当て確率）の積を最小化 → 両者が乖離するとペナルティ。
+
+**導出**: 完全に均等なら$f_i = P_i = \frac{k}{E}$で、Loss = $E \cdot E \cdot (\frac{k}{E})^2 = \frac{k^2}{E}$（定数）。
+
+不均衡なら、例えば1つのExpertが全て担当: $f_1 = 1, P_1 = 1, f_{i>1} = 0, P_{i>1} = 0$ → Loss = $E \cdot 1 \cdot 1 = E \gg \frac{k^2}{E}$。
+
+**実装 (PyTorch):**
+
+```python
+def load_balancing_loss(gate_logits, expert_indices, num_experts):
+    """
+    Args:
+        gate_logits: (batch_size, seq_len, num_experts) — ルーティングロジット
+        expert_indices: (batch_size, seq_len, top_k) — 選ばれたExpertのインデックス
+        num_experts: int
+    Returns:
+        loss: float — Load balancing loss
+    """
+    # f_i: 実際の使用頻度
+    expert_mask = torch.zeros_like(gate_logits)
+    expert_mask.scatter_(-1, expert_indices, 1.0)
+    f = expert_mask.mean(dim=[0, 1])  # (num_experts,)
+
+    # P_i: ソフトな割り当て確率
+    gate_probs = F.softmax(gate_logits, dim=-1)
+    P = gate_probs.mean(dim=[0, 1])  # (num_experts,)
+
+    # Loss = E * sum(f_i * P_i)
+    loss = num_experts * torch.sum(f * P)
+    return loss
+
+# Training
+for batch in dataloader:
+    logits, gate_logits, expert_indices = model(batch)
+    task_loss = F.cross_entropy(logits, labels)
+    balance_loss = load_balancing_loss(gate_logits, expert_indices, num_experts)
+    total_loss = task_loss + alpha * balance_loss  # alpha = 0.01
+    total_loss.backward()
+```
+
+**Capacity Factor の実装:**
+
+```python
+def top_k_gating_with_capacity(gate_logits, k=2, capacity_factor=1.25):
+    """Top-k routing with capacity constraint (Switch Transformer)"""
+    batch_size, seq_len, num_experts = gate_logits.shape
+    capacity = int((batch_size * seq_len / num_experts) * capacity_factor)
+
+    # Top-k selection
+    gate_probs = F.softmax(gate_logits, dim=-1)
+    top_k_probs, top_k_indices = torch.topk(gate_probs, k, dim=-1)
+
+    # Capacity enforcement
+    expert_counts = torch.zeros(num_experts, device=gate_logits.device)
+    expert_mask = torch.zeros_like(gate_logits)
+
+    for i in range(batch_size * seq_len):
+        for j in range(k):
+            expert_id = top_k_indices.view(-1, k)[i, j]
+            if expert_counts[expert_id] < capacity:
+                expert_mask.view(-1, num_experts)[i, expert_id] = 1.0
+                expert_counts[expert_id] += 1
+            # else: overflow, token dropped
+
+    return expert_mask, top_k_probs, top_k_indices
+```
+
+**DeepSeek-MoE の Fine-Grained Routing:**
+
+各Expertを$M$個のsub-expertに分割:
+
+$$
+\text{Expert}_i(x) = \sum_{m=1}^{M} w_{i,m} \cdot \text{SubExpert}_{i,m}(x)
+$$
+
+ここで$w_{i,m}$は学習可能な重み。Top-kをsub-expertレベルで選択。
+
+**利点**: より細かい粒度で計算資源を配分 → 柔軟性向上。
+
+---

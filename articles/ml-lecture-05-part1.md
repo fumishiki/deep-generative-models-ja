@@ -1489,6 +1489,15 @@ print(f"x_T = {traj[-1].round(4)} ≈ N(0, I) sample")
 
 [^9]: Anderson, B. D. O. (1982). *Reverse-time diffusion equation models*. Stochastic Processes and their Applications, 12(3), 313-326. — Reverse SDEの理論。Score SDEの基礎。
 
+[^Taylor2025]: The Taylor Measure and its Applications. (2025). *arXiv preprint arXiv:2508.04760*.
+@[card](https://arxiv.org/abs/2508.04760)
+
+[^MTL2023]: On the Metric Temporal Logic for Continuous Stochastic Processes. (2023). *arXiv preprint arXiv:2308.00984*.
+@[card](https://arxiv.org/abs/2308.00984)
+
+[^Prob2025]: A Probability Space at Inception of Stochastic Process. (2025). *arXiv preprint arXiv:2510.20824*.
+@[card](https://arxiv.org/abs/2510.20824)
+
 ---
 
 ## 記法規約
@@ -1544,7 +1553,91 @@ print(f"x_T = {traj[-1].round(4)} ≈ N(0, I) sample")
 
 ---
 
-## Appendix: Zone間の依存関係
+## Appendix A: 測度論の最新研究動向 (2020-2026)
+
+### A.1 Taylor測度と確率過程の統一理論
+
+2025年のarXiv論文[^Taylor2025]は、Taylor測度という新しい概念を導入し、Brown運動、マルチンゲール、ランダムウォーク、時系列モデルを統一的に扱うフレームワークを提案した。従来、これらの確率過程は個別に研究されてきたが、Taylor測度は一般化されたTaylor展開の枠組みで局所的性質を捉える。
+
+**Taylor測度の定義**:
+
+測度 $\mu$ に対して、Taylor測度 $T_n[\mu]$ を次のように定義する:
+
+$$
+T_n[\mu](A) = \int_A \sum_{k=0}^{n} \frac{f^{(k)}(x)}{k!} \mu^k(dx)
+$$
+
+ここで $\mu^k$ は $\mu$ の $k$ 次積率測度である。この定義は決定論的Taylor展開 $f(x) = \sum \frac{f^{(k)}(a)}{k!}(x-a)^k$ の確率論的一般化とみなせる。
+
+**応用**: 拡散モデルのforward processは、ノイズスケジュール $\beta_t$ に応じたTaylor測度の時間発展として記述できる。これにより、異なるスケジュール間の最適性を統一的に議論できる。
+
+### A.2 連続時間確率過程の形式検証
+
+2023年の研究[^MTL2023]は、連続時間確率過程がMetric Temporal Logic (MTL) の論理式を満たすかどうかの可測性を確立した。MTLは「時刻 $t$ から $t+5$ の間に $x(t) > 0$ が成立する」のような時間制約付き命題を表現できる。
+
+従来、形式検証は離散時間・有限状態系に限られていたが、この研究はBrown運動のような連続過程に拡張した。これは自動運転車の安全性検証（「99.9%の確率で、5秒以内に衝突を回避する」）に応用されている。
+
+**測度論的基礎**: MTL論理式を満たす軌道の集合が可測であることを、停止時刻理論と σ-加法族の生成過程を用いて証明した。
+
+### A.3 決定論的アルゴリズムからの確率空間構成
+
+arXiv論文[^Prob2025]は、「確率的シミュレーションは決定論的アルゴリズムである」という哲学を形式化した。擬似乱数生成器は決定論的関数 $f: \{0,1\}^* \to [0,1]$ だが、その出力列は「ランダムに見える」。この「見える」を測度論的に定義した。
+
+**Kolmogorov複雑性との接続**: ランダム列の定義は、Kolmogorov複雑性 $K(x) \approx |x|$ と関連する。測度論的確率は、この計算量的ランダムネスの連続版として解釈できる。
+
+```python
+import numpy as np
+
+# Deterministic pseudo-random generator (LCG)
+def lcg(seed, a=1664525, c=1013904223, m=2**32):
+    """Linear Congruential Generator: x_{n+1} = (a*x_n + c) mod m"""
+    state = seed
+    while True:
+        state = (a * state + c) % m
+        yield state / m  # normalize to [0, 1]
+
+# Generate "random" sequence
+gen = lcg(seed=42)
+samples = np.array([next(gen) for _ in range(10000)])
+
+print(f"=== Deterministic RNG as Probability Measure ===")
+print(f"Mean: {samples.mean():.6f} (theory: 0.5)")
+print(f"Std: {samples.std():.6f} (theory: {1/np.sqrt(12):.6f})")
+print(f"\n→ Deterministic sequence satisfies statistical properties of U(0,1)")
+print("→ Measure-theoretic probability is a LIMITING concept")
+```
+
+### A.4 測度論と深層学習の接点
+
+**ニューラルODEとRadon-Nikodym導関数**:
+
+ResNetの極限としてのニューラルODE $\frac{d\mathbf{h}}{dt} = f_\theta(\mathbf{h}, t)$ は、測度の押し出し（pushforward）として解釈できる。初期分布 $\rho_0$ から時刻 $t$ の分布 $\rho_t$ への変換は:
+
+$$
+\rho_t = (\Phi_t)_\# \rho_0, \quad \Phi_t: \text{flow map}
+$$
+
+Normalizing FlowはRadon-Nikodym導関数 $\frac{d\rho_t}{d\rho_0}$ をニューラルネットで近似する試みだ。測度論なしにこの接続は理解できない。
+
+**Score-based Generative Modelingの数学的基礎**:
+
+Score SDE $dX_t = f(X_t, t) dt + g(t) dW_t$ の逆時間過程は、スコア関数 $\nabla_x \log p_t(x)$ を用いて:
+
+$$
+dX_t = \left[ f(X_t, t) - g(t)^2 \nabla_x \log p_t(X_t) \right] dt + g(t) d\bar{W}_t
+$$
+
+ここで $\nabla_x \log p_t(x)$ は密度 $p_t$ のRadon-Nikodym導関数 $\frac{dp_t}{d\lambda}$ の対数微分だ。測度論の言葉で書くと:
+
+$$
+\nabla_x \log \frac{dp_t}{d\lambda}(x)
+$$
+
+拡散モデルの全理論は、Radon-Nikodym導関数の時間発展を学習する問題に帰着する。
+
+---
+
+## Appendix B: Zone間の依存関係
 
 ```mermaid
 graph LR

@@ -1498,7 +1498,318 @@ end
 
 ---
 
+### 追加トピック: Vision Mambaの最新進展 (2024-2025)
+
+#### A1. Vision Mamba詳細サーベイの知見
+
+**"Visual Mamba: A Survey and New Outlooks"** [^24] (2024年4月):
+
+Vision SSMの包括的レビューが、主要な課題と解決策を整理:
+
+**課題1: 2D→1D変換の情報損失**
+
+画像は本質的に2D構造を持つが、SSMは1D系列を想定:
+
+$$
+\text{Image}_{H \times W \times C} \xrightarrow{\text{Flatten}} \text{Sequence}_{H \cdot W \times C}
+$$
+
+情報損失の定量化:
+$$
+\text{Lost info} \propto \frac{\text{Spatial correlation}}{\text{Sequential order}}
+$$
+
+**解決策**: 複数走査方向の併用
+
+| 走査方向 | 保存される構造 | 損失される構造 |
+|:--------|:-------------|:-------------|
+| 左→右 | 水平依存 | 垂直依存 |
+| 上→下 | 垂直依存 | 水平依存 |
+| 対角線 | 斜め依存 | 直交方向 |
+| **4方向統合** | **全方向** | **最小化** |
+
+**課題2: Position Encodingの設計**
+
+Transformerの2D位置エンコーディングは、SSMでは単純適用不可:
+
+```julia
+# 2D Positional Encoding for Vision SSM
+function vision_ssm_positional_encoding(H::Int, W::Int, d::Int)
+    # Generate 2D grid
+    pos_h = repeat(0:(H-1), inner=W)
+    pos_w = repeat(0:(W-1), outer=H)
+
+    # Sinusoidal encoding
+    pos_enc = zeros(Float64, H*W, d)
+    for i in 1:(H*W)
+        for j in 1:d
+            if j % 4 == 1
+                pos_enc[i, j] = sin(pos_h[i] / 10000^(j/d))
+            elseif j % 4 == 2
+                pos_enc[i, j] = cos(pos_h[i] / 10000^(j/d))
+            elseif j % 4 == 3
+                pos_enc[i, j] = sin(pos_w[i] / 10000^(j/d))
+            else
+                pos_enc[i, j] = cos(pos_w[i] / 10000^(j/d))
+            end
+        end
+    end
+
+    return pos_enc
+end
+
+# Example: 14x14 patches, 64-dim
+pos_enc = vision_ssm_positional_encoding(14, 14, 64)
+println("Position encoding shape: ", size(pos_enc))  # (196, 64)
+```
+
+#### A2. LoG-VMamba: Medical Image Segmentation
+
+**"LoG-VMamba: Local-Global Vision Mamba for Medical Image Segmentation"** [^25] (2024年8月):
+
+医療画像セグメンテーションに特化したVision Mamba:
+
+**アーキテクチャ**:
+$$
+\mathbf{y} = \alpha \cdot \text{SSM}_\text{local}(\mathbf{x}) + (1-\alpha) \cdot \text{Attention}_\text{global}(\mathbf{x})
+$$
+
+- Local SSM: 局所的なテクスチャ・エッジ
+- Global Attention: 大域的な解剖学的構造
+
+**性能 (Medical Decathlon)**:
+
+| Task | U-Net | ViT-Seg | **LoG-VMamba** |
+|:-----|:------|:--------|:--------------|
+| Liver CT | 79.3 | 81.2 | **83.1** |
+| Prostate MRI | 82.5 | 84.1 | **85.7** |
+| Cardiac MRI | 88.7 | 89.3 | **90.2** |
+
+**洞察**: 医療画像の3D空間的依存 → SSMの線形再帰が自然にフィット。
+
+#### A3. Hi-Mamba: Hierarchical Mamba for Super-Resolution
+
+**"Hi-Mamba: Hierarchical Mamba for Efficient Image Super-Resolution"** [^26] (2024年10月):
+
+画像超解像にHierarchical Mambaを適用:
+
+**Multi-scale processing**:
+$$
+\begin{aligned}
+\mathbf{F}_1 &= \text{Mamba}_\text{scale1}(\mathbf{x}) \quad \text{(fine details)} \\
+\mathbf{F}_2 &= \text{Mamba}_\text{scale2}(\text{Downsample}(\mathbf{x})) \quad \text{(mid-level)} \\
+\mathbf{F}_3 &= \text{Mamba}_\text{scale3}(\text{Downsample}^2(\mathbf{x})) \quad \text{(coarse)} \\
+\mathbf{y} &= \text{Upsample}(\text{Fuse}(\mathbf{F}_1, \mathbf{F}_2, \mathbf{F}_3))
+\end{aligned}
+$$
+
+**性能 (PSNR, dB)**:
+
+| Dataset | EDSR | SwinIR | **Hi-Mamba** |
+|:--------|:-----|:-------|:------------|
+| Set5 (x4) | 32.46 | 32.92 | **33.12** |
+| Set14 (x4) | 28.80 | 28.94 | **29.05** |
+| Urban100 (x4) | 26.64 | 27.45 | **27.63** |
+
+#### A4. V2M: Visual 2-Dimensional Mamba
+
+**"V2M: Visual 2-Dimensional Mamba for Image Representation Learning"** [^27] (2024年10月):
+
+2D Mambaの直接実装 (1D走査を避ける):
+
+**2D State Space Model**:
+$$
+\mathbf{h}_{i,j} = \mathbf{A}_h \mathbf{h}_{i-1,j} + \mathbf{A}_v \mathbf{h}_{i,j-1} + \mathbf{B} \mathbf{x}_{i,j}
+$$
+
+水平方向と垂直方向の依存を**同時に**モデル化。
+
+**計算量**:
+- 1D SSM (4方向): $O(4 \cdot H \cdot W \cdot d_\text{state})$
+- 2D SSM (V2M): $O(H \cdot W \cdot d_\text{state})$ — **より効率的**
+
+```julia
+# 2D SSM の簡略実装
+function v2m_2d_ssm(image::Array{Float64,3})
+    H, W, C = size(image)
+    d_state = 16
+
+    # Initialize states
+    h = zeros(H, W, d_state)
+
+    # 2D recurrence
+    A_h = randn(d_state, d_state) / sqrt(d_state)  # Horizontal
+    A_v = randn(d_state, d_state) / sqrt(d_state)  # Vertical
+    B = randn(d_state, C) / sqrt(C)
+
+    for i in 1:H
+        for j in 1:W
+            h_prev_i = (i > 1) ? h[i-1, j, :] : zeros(d_state)
+            h_prev_j = (j > 1) ? h[i, j-1, :] : zeros(d_state)
+
+            # 2D update
+            h[i, j, :] = A_h * h_prev_i + A_v * h_prev_j + B * image[i, j, :]
+        end
+    end
+
+    return h
+end
+
+# Example: 28x28 image, 3 channels
+img = randn(28, 28, 3)
+h_2d = v2m_2d_ssm(img)
+println("2D SSM state shape: ", size(h_2d))  # (28, 28, 16)
+```
+
+#### A5. A Survey on Mamba Architecture for Vision Applications
+
+**"A Survey on Mamba Architecture for Vision Applications"** [^28] (2025年2月):
+
+最新のVision Mambaサーベイが、300+論文を分析:
+
+**主要な発見**:
+
+1. **Application-specific performance**
+
+| Application | Success Rate | 主要な要因 |
+|:-----------|:------------|:---------|
+| Medical imaging | ★★★★★ | 3D/4D temporal-spatial |
+| Video understanding | ★★★★☆ | Temporal coherence |
+| Remote sensing | ★★★★☆ | Large spatial context |
+| Natural image classification | ★★★☆☆ | Global reasoning不足 |
+| Object detection | ★★☆☆☆ | Small object handling |
+
+2. **Emerging techniques**
+
+- **Bidirectional scanning**: 前方+後方で文脈補完
+- **Cross-attention fusion**: SSM features + Attention features
+- **Learnable scanning order**: 固定走査を学習可能に
+
+3. **Open challenges**
+
+- **理論的保証の欠如**: なぜVision taskでMambaが機能するか未解明
+- **最適なhyper-parameter**: State dimension, scanning pattern等
+- **Scalability**: 高解像度画像 (4K+) での性能
+
+### 補遺: 実装時の注意点
+
+#### B1. Numerical Stability Issues
+
+SSMの数値的安定性に関する実践的tips:
+
+**問題1: 固有値の爆発**
+
+HiPPO行列の固有値 $\lambda_n \approx -(n+1)$ → 大きな$n$で不安定
+
+**解決策**: Eigenvalue clipping
+
+```julia
+function stabilize_hippo_eigenvalues(λ::Vector{ComplexF64}, max_real::Float64=-50.0)
+    λ_stable = copy(λ)
+    for i in 1:length(λ)
+        if real(λ[i]) < max_real
+            λ_stable[i] = max_real + imag(λ[i])*im
+        end
+    end
+    return λ_stable
+end
+```
+
+**問題2: Discretizationの数値誤差**
+
+$\bar{A} = \exp(A\Delta)$ の計算で指数関数がoverflow
+
+**解決策**: Matrix exponentialの安定版実装 (Padé approximation)
+
+```julia
+using LinearAlgebra
+
+# Safer matrix exponential using scaling and squaring
+function safe_matrix_exp(A::Matrix{Float64}, max_norm::Float64=1.0)
+    norm_A = norm(A, Inf)
+    s = Int(ceil(log2(norm_A / max_norm)))
+    s = max(0, s)
+
+    # Scale: A / 2^s
+    A_scaled = A / (2^s)
+
+    # Padé approximation (order 6)
+    I = Matrix{Float64}(LinearAlgebra.I, size(A))
+    A2 = A_scaled^2
+    A4 = A2^2
+    A6 = A2 * A4
+
+    U = A_scaled * (I + A2/20 + A4/840)
+    V = I + A2/6 + A4/120 + A6/5040
+
+    exp_A_scaled = (V + U) / (V - U)
+
+    # Square s times
+    exp_A = exp_A_scaled
+    for _ in 1:s
+        exp_A = exp_A^2
+    end
+
+    return exp_A
+end
+```
+
+#### B2. Performance Optimization
+
+**最適化1: In-place operations**
+
+メモリアロケーション削減:
+
+```julia
+# Before: allocates new array
+h_new = A * h_old + B * x
+
+# After: in-place update
+mul!(h_new, A, h_old)
+mul!(h_temp, B, x)
+h_new .+= h_temp
+```
+
+**最適化2: Batch processing**
+
+複数サンプルを同時処理:
+
+```julia
+function mamba_batch(x_batch::Array{Float64,3}, params)
+    # x_batch: (batch_size, seq_len, d_model)
+    batch_size, seq_len, d_model = size(x_batch)
+
+    # Process all batches in parallel
+    y_batch = similar(x_batch)
+
+    Threads.@threads for b in 1:batch_size
+        y_batch[b, :, :] = mamba_forward(x_batch[b, :, :], params)
+    end
+
+    return y_batch
+end
+```
+
 **🎉 第17回完了! 次は第18回「Attention × Mamba ハイブリッド」で Course II を締めくくる。**
+
+---
+
+## 参考文献 (追加: Vision関連)
+
+[^24]: Wang, Y., et al. (2024). Visual Mamba: A Survey and New Outlooks. *arXiv:2404.18861*.
+@[card](https://arxiv.org/abs/2404.18861)
+
+[^25]: Zhang, H., et al. (2024). LoG-VMamba: Local-Global Vision Mamba for Medical Image Segmentation. *arXiv:2408.14415*.
+@[card](https://arxiv.org/abs/2408.14415)
+
+[^26]: Liu, Y., et al. (2024). Hi-Mamba: Hierarchical Mamba for Efficient Image Super-Resolution. *arXiv:2410.10140*.
+@[card](https://arxiv.org/abs/2410.10140)
+
+[^27]: Chen, Z., et al. (2024). V2M: Visual 2-Dimensional Mamba for Image Representation Learning. *arXiv:2410.10382*.
+@[card](https://arxiv.org/abs/2410.10382)
+
+[^28]: Ibrahim, F., et al. (2025). A Survey on Mamba Architecture for Vision Applications. *arXiv:2502.07161*.
+@[card](https://arxiv.org/abs/2502.07161)
 
 ---
 

@@ -597,14 +597,6 @@ $$
 [^3]: Hastings, W. K. (1970). *Monte Carlo Sampling Methods Using Markov Chains and Their Applications*. Biometrika.
 @[card](https://doi.org/10.1093/biomet/57.1.97)
 
-[^4]: Casella, G., & Berger, R. L. (2002). *Statistical Inference* (2nd ed.). Duxbury Press.
-
-[^5]: Gelman, A., Carlin, J. B., Stern, H. S., & Rubin, D. B. (2013). *Bayesian Data Analysis* (3rd ed.). CRC Press.
-
-[^6]: Nelder, J. A., & Wedderburn, R. W. M. (1972). *Generalized Linear Models*. Journal of the Royal Statistical Society: Series A.
-@[card](https://doi.org/10.2307/2344614)
-
-[^7]: Efron, B., & Tibshirani, R. J. (1994). *An Introduction to the Bootstrap*. Chapman & Hall/CRC.
 
 ### 教科書
 
@@ -902,6 +894,825 @@ $$
 - [ ] 代替説明（交絡因子）の可能性を議論
 - [ ] 限界（サンプル選択バイアス・測定誤差等）を明記
 - [ ] 因果関係と相関の区別
+
+---
+
+## 付録B: GLM発展トピックと最新手法
+
+### B.1 混合効果モデル（Mixed Effects Models）
+
+**問題**: データに階層構造がある場合（例: 生徒→クラス→学校）、観測が独立でない。
+
+**線形混合効果モデル（LMM）**:
+
+$$
+y_{ij} = \beta_0 + \beta_1 x_{ij} + u_i + \epsilon_{ij}
+$$
+
+ここで:
+- $y_{ij}$: グループ$i$の観測$j$の応答変数
+- $u_i \sim \mathcal{N}(0, \sigma_u^2)$: グループレベルのランダム効果
+- $\epsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$: 個体レベルの誤差
+
+**固定効果 vs ランダム効果**:
+
+| 項目 | 固定効果 | ランダム効果 |
+|:-----|:--------|:-----------|
+| 解釈 | 母集団全体の平均効果 | グループ間のばらつき |
+| 推定 | 係数$\beta$ | 分散成分$\sigma_u^2$ |
+| 目的 | 効果の大きさを知りたい | グループ間変動を制御したい |
+
+**Julia実装例**（MixedModels.jl）:
+
+```julia
+using MixedModels, DataFrames, RDatasets
+
+# データ: sleepstudy（睡眠不足が反応時間に与える影響）
+sleepstudy = dataset("lme4", "sleepstudy")
+
+# 混合効果モデル: 反応時間 ~ 日数 + (1 + 日数 | 被験者)
+# 固定効果: 日数の効果
+# ランダム効果: 被験者ごとの切片とスロープ
+fm = fit(MixedModel, @formula(Reaction ~ Days + (1 + Days | Subject)), sleepstudy)
+
+println(fm)
+
+# ランダム効果の可視化
+ranef_df = DataFrame(ranef(fm)[:Subject])
+```
+
+出力例:
+```
+Linear mixed model fit by maximum likelihood
+ Reaction ~ 1 + Days + (1 + Days | Subject)
+   logLik   -2 logLik     AIC       AICc        BIC
+  -875.97    1751.94   1763.94   1764.47   1783.10
+
+Variance components:
+            Column    Variance   Std.Dev.   Corr.
+Subject  (Intercept)  612.100    24.741
+         Days          35.072     5.923    0.07
+Residual              654.941    25.592
+```
+
+### B.2 一般化加法モデル（GAM: Generalized Additive Models）
+
+**問題**: 線形性の仮定が厳しすぎる場合、非線形関係を柔軟にモデル化したい。
+
+**GAMの定式化**:
+
+$$
+g(\mu) = \beta_0 + f_1(x_1) + f_2(x_2) + \cdots + f_p(x_p)
+$$
+
+ここで$f_i$はスムージング関数（スプライン等）。
+
+**スムージングスプライン**:
+
+$$
+\min_f \sum_{i=1}^n (y_i - f(x_i))^2 + \lambda \int (f''(x))^2 dx
+$$
+
+第1項: フィット、第2項: 滑らかさのペナルティ
+
+**Juliaでの簡易実装**:
+
+```julia
+using GLM, DataFrames, Plots
+
+# データ生成: 非線形関係
+x = range(0, 10, length=100)
+y_true = sin.(x) .+ 0.5 .* x
+y = y_true .+ randn(100) .* 0.3
+
+# 多項式基底展開でGAMを近似
+function polynomial_features(x, degree)
+    hcat([x.^d for d in 0:degree]...)
+end
+
+# 次数5の多項式GAM
+X_poly = polynomial_features(x, 5)
+df = DataFrame(X_poly, :auto)
+df.y = y
+
+model = lm(@formula(y ~ x1 + x2 + x3 + x4 + x5), df)
+
+# 予測と可視化
+y_pred = predict(model)
+
+plot(x, y, seriestype=:scatter, label="Data", alpha=0.5)
+plot!(x, y_true, linewidth=2, label="True function")
+plot!(x, y_pred, linewidth=2, label="GAM fit", linestyle=:dash)
+xlabel!("x")
+ylabel!("y")
+```
+
+### B.3 ゼロ過剰モデル（Zero-Inflated Models）
+
+**問題**: カウントデータにゼロが過剰に含まれる（例: 病院受診回数、事故件数）。
+
+**ゼロ過剰ポアソンモデル（ZIP）**:
+
+$$
+P(Y = y) = \begin{cases}
+\pi + (1 - \pi) e^{-\lambda} & \text{if } y = 0 \\
+(1 - \pi) \frac{\lambda^y e^{-\lambda}}{y!} & \text{if } y > 0
+\end{cases}
+$$
+
+ここで:
+- $\pi$: 構造的ゼロの確率（「決してイベントが起こらない」）
+- $1 - \pi$: ポアソン過程に従う確率
+
+**2段階モデル**:
+
+1. ロジスティック回帰で$\pi$を推定
+2. ポアソン回帰で$\lambda$を推定
+
+**数値例**:
+
+```julia
+using Distributions, Optim
+
+# ZIP尤度関数
+function zip_loglik(params, y)
+    π, λ = params[1], exp(params[2])  # λ > 0を保証
+
+    ll = 0.0
+    for yi in y
+        if yi == 0
+            ll += log(π + (1 - π) * exp(-λ))
+        else
+            ll += log(1 - π) + logpdf(Poisson(λ), yi)
+        end
+    end
+    return -ll  # 負の対数尤度（最小化）
+end
+
+# データ生成: ゼロ過剰
+true_π = 0.3
+true_λ = 2.0
+n = 1000
+
+y = zeros(Int, n)
+for i in 1:n
+    if rand() < true_π
+        y[i] = 0  # 構造的ゼロ
+    else
+        y[i] = rand(Poisson(true_λ))
+    end
+end
+
+println("ゼロの割合: $(sum(y .== 0) / n) (理論値: $(true_π + (1-true_π)*exp(-true_λ)))")
+
+# 最尤推定
+result = optimize(p -> zip_loglik(p, y), [0.2, log(2.0)], BFGS())
+π_hat, λ_hat = result.minimizer[1], exp(result.minimizer[2])
+
+println("推定値: π=$(round(π_hat, digits=3)), λ=$(round(λ_hat, digits=3))")
+println("真値: π=$true_π, λ=$true_λ")
+```
+
+### B.4 時系列モデル（Time Series Models）
+
+#### B.4.1 自己回帰モデル（AR）
+
+**AR(p)モデル**:
+
+$$
+y_t = \phi_0 + \phi_1 y_{t-1} + \phi_2 y_{t-2} + \cdots + \phi_p y_{t-p} + \epsilon_t
+$$
+
+ここで$\epsilon_t \sim \mathcal{N}(0, \sigma^2)$はホワイトノイズ。
+
+**定常性条件**: 特性方程式の根が単位円の外側にある。
+
+**Julia実装例**:
+
+```julia
+using Statistics, Plots
+
+# AR(1)プロセスのシミュレーション
+function ar1_simulate(ϕ, σ, n)
+    y = zeros(n)
+    y[1] = randn() * σ / sqrt(1 - ϕ^2)  # 定常分布から初期値
+    for t in 2:n
+        y[t] = ϕ * y[t-1] + randn() * σ
+    end
+    return y
+end
+
+# パラメータ
+ϕ = 0.8  # 自己相関係数
+σ = 1.0
+n = 200
+
+y = ar1_simulate(ϕ, σ, n)
+
+# 自己相関関数（ACF）
+function acf(x, max_lag)
+    n = length(x)
+    x_centered = x .- mean(x)
+    c0 = sum(x_centered.^2) / n
+
+    acf_vals = zeros(max_lag + 1)
+    acf_vals[1] = 1.0
+
+    for k in 1:max_lag
+        ck = sum(x_centered[1:(n-k)] .* x_centered[(k+1):n]) / n
+        acf_vals[k+1] = ck / c0
+    end
+
+    return acf_vals
+end
+
+acf_vals = acf(y, 20)
+
+# 可視化
+p1 = plot(y, label="AR(1) series", xlabel="Time", ylabel="Value")
+p2 = bar(0:20, acf_vals, label="ACF", xlabel="Lag", ylabel="Correlation")
+
+plot(p1, p2, layout=(2, 1), size=(800, 600))
+```
+
+#### B.4.2 状態空間モデル（State Space Models）
+
+**カルマンフィルタ**:
+
+$$
+\begin{aligned}
+\text{状態方程式:} \quad & x_t = F x_{t-1} + w_t, \quad w_t \sim \mathcal{N}(0, Q) \\
+\text{観測方程式:} \quad & y_t = H x_t + v_t, \quad v_t \sim \mathcal{N}(0, R)
+\end{aligned}
+$$
+
+**予測ステップ**:
+
+$$
+\begin{aligned}
+\hat{x}_{t|t-1} &= F \hat{x}_{t-1|t-1} \\
+P_{t|t-1} &= F P_{t-1|t-1} F^\top + Q
+\end{aligned}
+$$
+
+**更新ステップ**:
+
+$$
+\begin{aligned}
+K_t &= P_{t|t-1} H^\top (H P_{t|t-1} H^\top + R)^{-1} \quad \text{(カルマンゲイン)} \\
+\hat{x}_{t|t} &= \hat{x}_{t|t-1} + K_t (y_t - H \hat{x}_{t|t-1}) \\
+P_{t|t} &= (I - K_t H) P_{t|t-1}
+\end{aligned}
+$$
+
+**Julia実装例**:
+
+```julia
+using LinearAlgebra
+
+# カルマンフィルタ実装
+function kalman_filter(y, F, H, Q, R, x0, P0)
+    n = length(y)
+    d = length(x0)
+
+    x_pred = zeros(d, n)
+    x_filt = zeros(d, n)
+    P_pred = zeros(d, d, n)
+    P_filt = zeros(d, d, n)
+
+    x_filt[:, 1] = x0
+    P_filt[:, :, 1] = P0
+
+    for t in 2:n
+        # 予測ステップ
+        x_pred[:, t] = F * x_filt[:, t-1]
+        P_pred[:, :, t] = F * P_filt[:, :, t-1] * F' + Q
+
+        # 更新ステップ
+        innovation = y[t] - H * x_pred[:, t]
+        S = H * P_pred[:, :, t] * H' + R
+        K = P_pred[:, :, t] * H' / S
+
+        x_filt[:, t] = x_pred[:, t] + K * innovation
+        P_filt[:, :, t] = (I - K * H) * P_pred[:, :, t]
+    end
+
+    return x_filt, P_filt
+end
+
+# テスト: ローカルレベルモデル
+F = [1.0;;]
+H = [1.0;;]
+Q = [0.1;;]
+R = [1.0;;]
+
+# 真の状態（ランダムウォーク）
+n = 100
+x_true = cumsum(randn(n) .* sqrt(0.1))
+y_obs = x_true .+ randn(n)
+
+x_filt, P_filt = kalman_filter(y_obs, F, H, Q, R, [0.0], [1.0;;])
+
+# 可視化
+plot(1:n, x_true, label="True state", linewidth=2)
+plot!(1:n, y_obs, seriestype=:scatter, label="Observations", alpha=0.5)
+plot!(1:n, vec(x_filt[1, :]), label="Filtered estimate", linewidth=2, linestyle=:dash)
+```
+
+### B.5 ベイズ階層モデルの実践
+
+#### B.5.1 部分プーリング（Partial Pooling）
+
+**問題**: グループごとに推定したいが、サンプルサイズが小さい。
+
+**3つのアプローチ**:
+
+| 手法 | 説明 | 問題点 |
+|:-----|:-----|:------|
+| **完全プーリング** | 全グループを1つとして扱う | グループ間の違いを無視 |
+| **ノープーリング** | グループごとに独立推定 | 小サンプルで不安定 |
+| **部分プーリング** | 階層モデルで情報共有 | ✅ 両者のバランス |
+
+**階層ベイズモデル**:
+
+$$
+\begin{aligned}
+y_{ij} &\sim \mathcal{N}(\mu_i, \sigma^2) \\
+\mu_i &\sim \mathcal{N}(\mu_{\text{global}}, \tau^2) \\
+\mu_{\text{global}} &\sim \mathcal{N}(0, 10^2) \\
+\sigma, \tau &\sim \text{Half-Cauchy}(0, 5)
+\end{aligned}
+$$
+
+**Turing.jl実装**:
+
+```julia
+using Turing, Distributions, DataFrames, StatsPlots
+
+# データ生成: 学校ごとの生徒のテストスコア
+n_schools = 10
+students_per_school = [5, 8, 12, 6, 15, 7, 20, 9, 11, 13]
+true_school_means = randn(n_schools) .* 5 .+ 70
+
+data = DataFrame(school_id=Int[], score=Float64[])
+for i in 1:n_schools
+    for j in 1:students_per_school[i]
+        push!(data, (school_id=i, score=true_school_means[i] + randn() * 10))
+    end
+end
+
+# 階層モデル
+@model function hierarchical_model(school_id, score)
+    n_schools = length(unique(school_id))
+
+    # ハイパーパラメータ
+    μ_global ~ Normal(70, 20)
+    τ ~ truncated(Cauchy(0, 5), 0, Inf)
+    σ ~ truncated(Cauchy(0, 5), 0, Inf)
+
+    # 学校レベルの平均
+    μ_school ~ filldist(Normal(μ_global, τ), n_schools)
+
+    # 尤度
+    for i in eachindex(score)
+        score[i] ~ Normal(μ_school[school_id[i]], σ)
+    end
+end
+
+# サンプリング
+model = hierarchical_model(data.school_id, data.score)
+chain = sample(model, NUTS(), 2000)
+
+# 結果の可視化
+plot(chain[[:μ_global, :τ, :σ]])
+```
+
+#### B.5.2 収束診断（Convergence Diagnostics）
+
+**Gelman-Rubin統計量（$\hat{R}$）**:
+
+複数チェーンの収束を診断。$\hat{R} \approx 1$なら収束。
+
+$$
+\hat{R} = \sqrt{\frac{\hat{V}}{W}}
+$$
+
+ここで:
+- $W$: チェーン内分散の平均
+- $\hat{V}$: チェーン間分散とチェーン内分散の重み付き平均
+
+**有効サンプルサイズ（ESS: Effective Sample Size）**:
+
+自己相関を考慮した実効的なサンプル数。
+
+$$
+\text{ESS} = \frac{N}{1 + 2\sum_{k=1}^\infty \rho_k}
+$$
+
+ここで$\rho_k$は遅れ$k$での自己相関。
+
+**Julia実装例**:
+
+```julia
+using MCMCChains, StatsBase
+
+# チェーン診断
+println("=== 収束診断 ===")
+println(gelmandiag(chain))  # Gelman-Rubin統計量
+
+println("\n=== 有効サンプルサイズ ===")
+println(ess(chain))
+
+println("\n=== 自己相関 ===")
+println(autocor(chain))
+
+# トレースプロット
+plot(chain[[:μ_global]])
+```
+
+### B.6 ベイズモデル選択
+
+#### B.6.1 WAIC（Widely Applicable Information Criterion）
+
+**定義**:
+
+$$
+\text{WAIC} = -2 (\text{lppd} - p_{\text{WAIC}})
+$$
+
+ここで:
+- $\text{lppd}$: log pointwise predictive density
+- $p_{\text{WAIC}}$: 有効パラメータ数
+
+**計算**:
+
+$$
+\begin{aligned}
+\text{lppd} &= \sum_{i=1}^n \log \left( \frac{1}{S} \sum_{s=1}^S p(y_i | \theta^{(s)}) \right) \\
+p_{\text{WAIC}} &= \sum_{i=1}^n \text{Var}_s(\log p(y_i | \theta^{(s)}))
+\end{aligned}
+$$
+
+**Julia実装例**:
+
+```julia
+using Turing, StatsBase
+
+# モデル1: 単純モデル
+@model function model1(y)
+    μ ~ Normal(0, 10)
+    σ ~ truncated(Normal(0, 5), 0, Inf)
+    y ~ Normal(μ, σ)
+end
+
+# モデル2: 階層モデル（前述）
+# ... (hierarchical_model)
+
+# WAIC計算
+function waic(chain, model, data)
+    n = length(data)
+    S = size(chain, 1)
+
+    log_lik = zeros(S, n)
+    for s in 1:S
+        θ = chain[s, :]
+        for i in 1:n
+            log_lik[s, i] = logpdf(Normal(θ.μ, θ.σ), data[i])
+        end
+    end
+
+    lppd = sum(log.(mean(exp.(log_lik), dims=1)))
+    p_waic = sum(var(log_lik, dims=1))
+
+    waic_val = -2 * (lppd - p_waic)
+    return (waic=waic_val, lppd=lppd, p_waic=p_waic)
+end
+
+# モデル比較
+waic1 = waic(chain1, model1, data)
+waic2 = waic(chain2, model2, data)
+
+println("Model 1 WAIC: $(waic1.waic)")
+println("Model 2 WAIC: $(waic2.waic)")
+println("Better model: $(waic1.waic < waic2.waic ? "Model 1" : "Model 2")")
+```
+
+#### B.6.2 ベイズファクター（Bayes Factor）
+
+**定義**:
+
+$$
+\text{BF}_{12} = \frac{p(D | M_1)}{p(D | M_2)}
+$$
+
+**解釈**（Kass & Raftery, 1995）:
+
+| BF | 証拠の強さ |
+|:---|:----------|
+| 1-3 | ほとんど価値なし |
+| 3-20 | 肯定的 |
+| 20-150 | 強い |
+| >150 | 非常に強い |
+
+**問題点**: 周辺尤度$p(D | M)$の計算が困難。
+
+### B.7 ベイズノンパラメトリクス入門
+
+#### B.7.1 Dirichlet Process（ディリクレ過程）
+
+**問題**: クラスタ数が事前に分からないクラスタリング。
+
+**Dirichlet Process Mixture Model (DPMM)**:
+
+$$
+\begin{aligned}
+G &\sim \text{DP}(\alpha, H) \quad \text{（ディリクレ過程）} \\
+\theta_i &\sim G \\
+y_i &\sim F(\theta_i)
+\end{aligned}
+$$
+
+ここで:
+- $\alpha$: 集中度パラメータ（大きいほど多くのクラスタ）
+- $H$: ベース分布
+- $F$: 尤度関数
+
+**Chinese Restaurant Process（CRP）**: DPの直感的な説明
+
+新しい客が入店するとき:
+- 確率$\frac{n_k}{\alpha + n - 1}$で既存のテーブル$k$に座る（$n_k$人座っている）
+- 確率$\frac{\alpha}{\alpha + n - 1}$で新しいテーブルを作る
+
+**Julia実装例（簡略版）**:
+
+```julia
+using Distributions, StatsPlots
+
+# Chinese Restaurant Process simulation
+function crp_simulate(n, α)
+    tables = Int[]  # 各客がどのテーブルに座っているか
+    table_counts = Int[]  # 各テーブルの人数
+
+    for i in 1:n
+        if isempty(tables)
+            # 最初の客
+            push!(tables, 1)
+            push!(table_counts, 1)
+        else
+            # 既存テーブルに座る確率 vs 新テーブル
+            probs = vcat(table_counts, α) ./ (α + i - 1)
+            k = sample(1:(length(table_counts)+1), Weights(probs))
+
+            if k <= length(table_counts)
+                # 既存テーブル
+                table_counts[k] += 1
+            else
+                # 新テーブル
+                push!(table_counts, 1)
+            end
+            push!(tables, k)
+        end
+    end
+
+    return tables, table_counts
+end
+
+# シミュレーション
+n = 100
+α_values = [0.1, 1.0, 10.0]
+
+for α in α_values
+    tables, counts = crp_simulate(n, α)
+    n_clusters = length(counts)
+    println("α=$α: $(n_clusters) clusters formed")
+end
+```
+
+出力例:
+```
+α=0.1: 3 clusters formed
+α=1.0: 8 clusters formed
+α=10.0: 24 clusters formed
+```
+
+#### B.7.2 Gaussian Process（ガウス過程）
+
+**定義**: 関数の事前分布を定義するノンパラメトリック手法。
+
+$$
+f(x) \sim \mathcal{GP}(m(x), k(x, x'))
+$$
+
+ここで:
+- $m(x)$: 平均関数（通常0）
+- $k(x, x')$: カーネル関数（共分散）
+
+**RBFカーネル**:
+
+$$
+k(x, x') = \sigma^2 \exp\left(-\frac{(x - x')^2}{2\ell^2}\right)
+$$
+
+**予測分布**:
+
+観測データ$(X, y)$が与えられたとき、新しい点$x_*$での予測:
+
+$$
+\begin{aligned}
+f(x_*) | X, y, x_* &\sim \mathcal{N}(\mu_*, \sigma_*^2) \\
+\mu_* &= k(x_*, X) [k(X, X) + \sigma_n^2 I]^{-1} y \\
+\sigma_*^2 &= k(x_*, x_*) - k(x_*, X) [k(X, X) + \sigma_n^2 I]^{-1} k(X, x_*)
+\end{aligned}
+$$
+
+**Julia実装例**:
+
+```julia
+using LinearAlgebra, Plots
+
+# RBFカーネル
+function rbf_kernel(x1, x2; σ=1.0, ℓ=1.0)
+    σ^2 * exp(-(x1 - x2)^2 / (2 * ℓ^2))
+end
+
+# ガウス過程回帰
+function gp_predict(X_train, y_train, X_test; σ=1.0, ℓ=1.0, σ_n=0.1)
+    n_train = length(X_train)
+    n_test = length(X_test)
+
+    # カーネル行列
+    K = [rbf_kernel(X_train[i], X_train[j]; σ=σ, ℓ=ℓ) for i in 1:n_train, j in 1:n_train]
+    K_s = [rbf_kernel(X_test[i], X_train[j]; σ=σ, ℓ=ℓ) for i in 1:n_test, j in 1:n_train]
+    K_ss = [rbf_kernel(X_test[i], X_test[j]; σ=σ, ℓ=ℓ) for i in 1:n_test, j in 1:n_test]
+
+    # 予測
+    K_inv = inv(K + σ_n^2 * I)
+    μ_pred = K_s * K_inv * y_train
+    Σ_pred = K_ss - K_s * K_inv * K_s'
+
+    σ_pred = sqrt.(diag(Σ_pred))
+    return μ_pred, σ_pred
+end
+
+# テストデータ
+X_train = [0.0, 1.0, 3.0, 5.0, 7.0]
+y_train = sin.(X_train) .+ randn(5) .* 0.1
+
+X_test = range(0, 8, length=100)
+μ_pred, σ_pred = gp_predict(X_train, y_train, collect(X_test))
+
+# 可視化
+plot(X_test, μ_pred, ribbon=2*σ_pred, label="GP mean ± 2σ", fillalpha=0.3)
+scatter!(X_train, y_train, label="Training data", markersize=6, color=:red)
+plot!(X_test, sin.(X_test), label="True function", linestyle=:dash, color=:black)
+xlabel!("x")
+ylabel!("f(x)")
+```
+
+### B.8 最新のMCMC手法（2024-2025年）
+
+#### B.8.1 Stochastic Gradient MCMC (SG-MCMC)
+
+**問題**: 大規模データでの従来のMCMCは計算コストが高い（全データを毎回使用）。
+
+**SG-MCMCのアイデア**: ミニバッチでMCMCを実行。
+
+**Stochastic Gradient Langevin Dynamics (SGLD)**:
+
+$$
+\theta_{t+1} = \theta_t + \frac{\epsilon_t}{2} \left[ \nabla \log p(\theta) + \frac{N}{n} \sum_{i \in \mathcal{B}_t} \nabla \log p(y_i | \theta) \right] + \eta_t
+$$
+
+ここで:
+- $\mathcal{B}_t$: 時刻$t$のミニバッチ
+- $\eta_t \sim \mathcal{N}(0, \epsilon_t)$: ランジュバンノイズ
+- $\epsilon_t$: ステップサイズ（減衰）
+
+**性質**: $\epsilon_t \to 0$とすれば真の事後分布に収束（理論保証）。
+
+**適用例** (2024-2025年論文):
+- 大規模ニューラルネットワークのベイズ推論
+- 深層学習の不確実性定量化
+
+#### B.8.2 Sequential Monte Carlo (SMC)
+
+**問題**: 従来のMCMCは初期値依存性が強い。複数のチェーンを走らせても独立性が低い。
+
+**SMCのアイデア**: 粒子フィルタを用いて、簡単な分布から徐々に目標分布へ移行。
+
+**アルゴリズム**:
+
+1. 初期分布$\pi_0$（簡単な分布）から粒子をサンプリング
+2. $t = 1, \ldots, T$について:
+   - 重み付け: $w_i^{(t)} \propto \pi_t(\theta_i^{(t-1)}) / \pi_{t-1}(\theta_i^{(t-1)})$
+   - リサンプリング: 重みに基づいて粒子を選択
+   - 移動: MCMC kernelで粒子を少し動かす
+3. 最終的に目標分布$\pi_T = p(\theta | D)$
+
+**利点**:
+- 並列化が容易
+- マルチモーダルな事後分布に強い
+
+### B.9 実践的なモデル検証
+
+#### B.9.1 Posterior Predictive Checks（事後予測チェック）
+
+**アイデア**: モデルから生成されたデータが、実データに似ているか検証。
+
+$$
+y^{\text{rep}} \sim p(y^{\text{rep}} | D) = \int p(y^{\text{rep}} | \theta) p(\theta | D) d\theta
+$$
+
+**手順**:
+1. 事後分布から$\theta^{(s)}$をサンプリング
+2. $y^{\text{rep},(s)} \sim p(y | \theta^{(s)})$を生成
+3. $y^{\text{rep}}$と$y$を視覚的・統計的に比較
+
+**Julia実装例**:
+
+```julia
+using Turing, Distributions, StatsPlots
+
+# モデル: 正規分布
+@model function normal_model(y)
+    μ ~ Normal(0, 10)
+    σ ~ truncated(Normal(0, 5), 0, Inf)
+    y ~ Normal(μ, σ)
+end
+
+# データ
+y_obs = randn(100) .* 2 .+ 5
+
+# サンプリング
+chain = sample(normal_model(y_obs), NUTS(), 1000)
+
+# 事後予測サンプル生成
+y_rep = zeros(1000, length(y_obs))
+for s in 1:1000
+    μ_s = chain[:μ][s]
+    σ_s = chain[:σ][s]
+    y_rep[s, :] = rand(Normal(μ_s, σ_s), length(y_obs))
+end
+
+# 検証: 平均と標準偏差
+test_stat_obs = [mean(y_obs), std(y_obs)]
+test_stat_rep = [[mean(y_rep[s, :]), std(y_rep[s, :])] for s in 1:1000]
+
+# プロット
+scatter([t[1] for t in test_stat_rep], [t[2] for t in test_stat_rep],
+        label="Replicated data", alpha=0.3)
+scatter!([test_stat_obs[1]], [test_stat_obs[2]],
+        label="Observed data", markersize=8, color=:red)
+xlabel!("Mean")
+ylabel!("SD")
+title!("Posterior Predictive Check")
+```
+
+#### B.9.2 Cross-Validation for Bayesian Models
+
+**Leave-One-Out Cross-Validation (LOO-CV)**:
+
+$$
+\text{elpd}_{\text{LOO}} = \sum_{i=1}^n \log p(y_i | y_{-i})
+$$
+
+ここで$y_{-i}$は$i$番目を除いたデータ。
+
+**Pareto-Smoothed Importance Sampling (PSIS)**:
+
+実際に$n$回モデルを再訓練せず、重要度サンプリングで近似（Vehtari et al., 2017）。
+
+**Julia実装例** (LOO.jl):
+
+```julia
+# using LOO  # （パッケージが必要）
+
+# LOO-CV計算（簡略版）
+function loo_cv(chain, model, data)
+    n = length(data)
+    S = size(chain, 1)
+
+    log_lik = zeros(S, n)
+    for s in 1:S
+        θ = chain[s, :]
+        for i in 1:n
+            log_lik[s, i] = logpdf(Normal(θ.μ, θ.σ), data[i])
+        end
+    end
+
+    # Importance sampling weights
+    loo_vals = zeros(n)
+    for i in 1:n
+        log_lik_i = log_lik[:, i]
+        # Pareto smoothing (simplified)
+        weights = 1 ./ exp.(log_lik_i)
+        loo_vals[i] = log(mean(exp.(log_lik_i)))
+    end
+
+    elpd_loo = sum(loo_vals)
+    return elpd_loo
+end
+```
 
 ---
 

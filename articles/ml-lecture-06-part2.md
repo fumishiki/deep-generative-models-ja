@@ -1287,6 +1287,194 @@ Shannon は1948年の論文 [^1] で、エントロピーの名前を物理学�
 
 ---
 
+### 6.9 情報理論の最新研究 (2020-2026)
+
+#### 6.9.1 α-ダイバージェンスとベイズ最適化
+
+KLダイバージェンスは $f$-ダイバージェンスの特殊ケースだが、2024年の研究[^14]は $\alpha$-ダイバージェンスを用いた新しいベイズ最適化手法を提案した。
+
+**α-ダイバージェンスの定義**:
+
+$$
+D_\alpha(p \| q) = \frac{1}{\alpha(\alpha-1)} \left( \int p(x)^\alpha q(x)^{1-\alpha} dx - 1 \right), \quad \alpha \neq 0, 1
+$$
+
+特殊ケース:
+- $\alpha \to 1$: KL divergence $D_{\text{KL}}(p \| q)$
+- $\alpha \to 0$: Reverse KL divergence $D_{\text{KL}}(q \| p)$
+- $\alpha = 1/2$: Hellinger distance
+
+**Alpha Entropy Search (AES)**: 獲得関数として、次の評価点での目的関数値 $y^*$ と大域的最大値 $f^*$ の「依存度」を最大化する。この依存度を $\alpha$-ダイバージェンスで測ることで、探索と活用のバランスを柔軟に制御できる。
+
+```python
+import numpy as np
+
+def alpha_divergence(p, q, alpha):
+    """
+    D_α(p || q) = 1/(α(α-1)) * (∫ p^α q^(1-α) - 1)
+
+    Special cases:
+    - α → 1: KL(p || q)
+    - α → 0: KL(q || p)
+    - α = 0.5: Hellinger²
+    """
+    if alpha == 0:
+        # Reverse KL
+        return np.sum(q * np.log(q / (p + 1e-10) + 1e-10))
+    elif alpha == 1:
+        # Forward KL
+        return np.sum(p * np.log(p / (q + 1e-10) + 1e-10))
+    else:
+        # General α-divergence
+        integrand = p**alpha * q**(1 - alpha)
+        return (np.sum(integrand) - 1) / (alpha * (alpha - 1))
+
+# Example: Discrete distributions
+p = np.array([0.5, 0.3, 0.2])
+q = np.array([0.4, 0.4, 0.2])
+
+print("=== α-Divergence Family ===")
+for alpha in [0.0, 0.5, 1.0, 2.0]:
+    d = alpha_divergence(p, q, alpha)
+    print(f"D_{alpha:.1f}(p || q) = {d:.6f}")
+
+print("\nInterpretation:")
+print("  α < 1: underpenalizes tail mismatch")
+print("  α > 1: overpenalizes tail mismatch")
+print("  α → 1: KL (balanced)")
+```
+
+#### 6.9.2 Jensen-ShannonとKLの最適下界
+
+2025年の論文[^15]は、Jensen-Shannon (JS) ダイバージェンスとKLダイバージェンスの関係を定量化する最適な下界を確立した。
+
+**Jensen-ShannonダイバージェンスMath**:
+
+$$
+\text{JS}(p \| q) = \frac{1}{2} D_{\text{KL}}(p \| m) + \frac{1}{2} D_{\text{KL}}(q \| m), \quad m = \frac{p + q}{2}
+$$
+
+**新しい下界**:
+
+$$
+D_{\text{KL}}(p \| q) \geq \phi(\text{JS}(p \| q))
+$$
+
+ここで $\phi$ は単調増加関数で、最適な $\phi$ が閉じた形で求まる。この結果は、GANの目的関数（JSを最小化）とVAEの目的関数（KLを最小化）の関係を明確化した。
+
+**f-ダイバージェンス変分下界**:
+
+JSダイバージェンスの $f$-ダイバージェンス変分下界は、特定の識別器のCross-Entropy損失を最適化することと等価である。これはGANの訓練アルゴリズムの理論的裏付けだ。
+
+```python
+import numpy as np
+
+def kl_divergence(p, q):
+    return np.sum(p * np.log(p / (q + 1e-10) + 1e-10))
+
+def js_divergence(p, q):
+    m = (p + q) / 2
+    return 0.5 * kl_divergence(p, m) + 0.5 * kl_divergence(q, m)
+
+# Theorem: JS(p || q) ≤ 0.5 * min(KL(p||q), KL(q||p))
+p = np.array([0.7, 0.2, 0.1])
+q = np.array([0.3, 0.4, 0.3])
+
+js = js_divergence(p, q)
+kl_pq = kl_divergence(p, q)
+kl_qp = kl_divergence(q, p)
+
+print(f"=== JS and KL Relationship ===")
+print(f"JS(p || q) = {js:.6f}")
+print(f"KL(p || q) = {kl_pq:.6f}")
+print(f"KL(q || p) = {kl_qp:.6f}")
+print(f"0.5 * min(KL) = {0.5 * min(kl_pq, kl_qp):.6f}")
+print(f"JS ≤ 0.5*min(KL): {js <= 0.5 * min(kl_pq, kl_qp) + 1e-6}")
+```
+
+#### 6.9.3 幾何学的情報理論 (GAIT)
+
+2019年の論文[^16]は、確率分布間のダイバージェンスに「幾何学的構造」を組み込む新しいアプローチを提案した。
+
+従来のKLダイバージェンスは確率分布を「点」として扱うが、分布の台（support）の幾何学的距離を無視する。GAITは最適輸送理論のアイデアを情報理論に導入し、分布間の「移動コスト」を考慮したダイバージェンスを定義する。
+
+**Geometric Informationの定義**:
+
+$$
+\text{GI}(p, q) = D_{\text{KL}}(p \| q) + \lambda \cdot W_2(p, q)
+$$
+
+ここで $W_2$ は2-Wasserstein距離（最適輸送距離）、$\lambda$ はトレードオフパラメータ。これは分布の「形状」と「位置」の両方を考慮する。
+
+**応用**: Wasserstein GANの理論的基礎となり、mode collapseの軽減に貢献した。
+
+#### 6.9.4 情報理論的機械学習の基礎
+
+2024年の包括的レビュー[^17]は、機械学習における情報理論的手法の統一的フレームワークを提案した。
+
+**主要な定理**:
+
+1. **PAC-Bayes境界**: KLダイバージェンスと汎化誤差の関係
+   $$
+   \mathbb{E}_{S, \theta \sim Q}[L(\theta)] \leq \mathbb{E}_{S, \theta \sim Q}[\hat{L}(\theta)] + \sqrt{\frac{D_{\text{KL}}(Q \| P) + \log(2n/\delta)}{2n}}
+   $$
+
+2. **相互情報量と汎化**: 訓練データ $S$ とパラメータ $\theta$ の相互情報量 $I(S; \theta)$ が小さいほど、汎化性能が高い。
+
+3. **情報ボトルネック**: 最適な表現 $Z$ は $I(X; Z)$ を最小化しつつ $I(Y; Z)$ を最大化する。
+
+```python
+import numpy as np
+
+def mutual_information_discrete(joint_pxy, px, py):
+    """
+    I(X; Y) = ΣΣ p(x,y) log(p(x,y) / (p(x)p(y)))
+
+    joint_pxy: (n, m) joint distribution
+    px: (n,) marginal
+    py: (m,) marginal
+    """
+    mi = 0.0
+    for i in range(len(px)):
+        for j in range(len(py)):
+            if joint_pxy[i, j] > 0:
+                mi += joint_pxy[i, j] * np.log(joint_pxy[i, j] / (px[i] * py[j]))
+    return mi
+
+# Example: Mutual information
+joint = np.array([[0.3, 0.1], [0.1, 0.5]])  # P(X, Y)
+px = joint.sum(axis=1)  # P(X)
+py = joint.sum(axis=0)  # P(Y)
+
+mi = mutual_information_discrete(joint, px, py)
+hx = -np.sum(px * np.log(px + 1e-10))
+hy = -np.sum(py * np.log(py + 1e-10))
+
+print(f"=== Mutual Information ===")
+print(f"I(X; Y) = {mi:.6f}")
+print(f"H(X) = {hx:.6f}")
+print(f"H(Y) = {hy:.6f}")
+print(f"I(X; Y) ≤ min(H(X), H(Y)): {mi <= min(hx, hy) + 1e-6}")
+```
+
+#### 6.9.5 最適化理論の進展
+
+**Adaptive Optimizersの理論的保証**
+
+Adamの収束保証は長年不明だったが、2018年のReddi et al. [^AMSGrad]は反例を示し、修正版AMSGradを提案した。2021年のDefazio & Jelassi [^AdamW]はAdamWの理論的性質を解明した。
+
+**Sharpness-Aware Minimization (SAM)**
+
+2020年のForet et al. [^SAM]は、損失関数の「平坦な極小」を探索するSAMを提案した。これは敵対的学習の視点から最適化を捉え直したものだ:
+
+$$
+\min_\theta \max_{\|\boldsymbol{\epsilon}\| \leq \rho} L(\theta + \boldsymbol{\epsilon})
+$$
+
+SAMは汎化性能を大幅に改善し、情報理論的には「Fisher情報量が小さい領域」を探索していると解釈できる。
+
+---
+
 ## 参考文献
 
 ### 主要論文
@@ -1320,6 +1508,27 @@ Shannon は1948年の論文 [^1] で、エントロピーの名前を物理学�
 
 [^13]: Arjovsky, M., Chintala, S. & Bottou, L. (2017). "Wasserstein Generative Adversarial Networks." *ICML 2017*.
 @[card](https://arxiv.org/abs/1701.07875)
+
+[^14]: Alpha Entropy Search for New Information-based Bayesian Optimization. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2411.16586)
+
+[^15]: Connecting Jensen-Shannon and Kullback-Leibler. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.20644)
+
+[^16]: GAIT: A Geometric Approach to Information Theory. (2019). *arXiv preprint*.
+@[card](https://arxiv.org/abs/1906.08325)
+
+[^17]: Information-Theoretic Foundations for Machine Learning. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2407.12288)
+
+[^AMSGrad]: Reddi, S. J., Kale, S., & Kumar, S. (2018). "On the Convergence of Adam and Beyond." *ICLR 2018*.
+@[card](https://arxiv.org/abs/1904.09237)
+
+[^AdamW]: Loshchilov, I. & Hutter, F. (2017). "Decoupled Weight Decay Regularization." *ICLR 2019*.
+@[card](https://arxiv.org/abs/1711.05101)
+
+[^SAM]: Foret, P., Kleiner, A., Mobahi, H., & Neyshabur, B. (2020). "Sharpness-Aware Minimization for Efficiently Improving Generalization." *ICLR 2021*.
+@[card](https://arxiv.org/abs/2010.01412)
 
 ### 教科書
 

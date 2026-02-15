@@ -1772,6 +1772,38 @@ result = tool_execute("search", Dict("query" => "Rust FFI"))
 println(result)
 ```
 
+**数式とコードの完全対応**:
+
+| 概念 | 数式 | Rustコード |
+|:-----|:-----|:----------|
+| Tool定義 | $f: \mathcal{A} \to \mathcal{O}$ | `trait Tool { fn execute(&self, args: Value) -> Result<Value>; }` |
+| Registry | $\mathcal{R} = \{(n_i, f_i)\}_{i=1}^N$ | `HashMap<String, Box<dyn Tool>>` |
+| 実行 | $o = \mathcal{R}(n, a)$ | `registry.execute(name, args)?` |
+| FFI境界 | $\text{Julia} \xrightarrow{\text{ccall}} \text{Rust}$ | `ccall((:tool_registry_execute, LIBAGENT), ...)` |
+
+この設計により、Rustの高速実行とJuliaの柔軟性を両立できる。
+
+**Tool Registryの拡張性**:
+
+新しいツールの追加は、`Tool` traitを実装するだけ:
+
+```rust
+struct WebSearchTool;
+
+impl Tool for WebSearchTool {
+    fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let query = args["query"].as_str().ok_or("Missing query")?;
+        // Perform web search
+        Ok(json!({"results": [...]}))
+    }
+}
+
+// Register
+registry.register("web_search", Box::new(WebSearchTool));
+```
+
+これで、エージェントは`web_search`ツールを呼び出せるようになる。
+
 :::message
 **progress: 85%** — Zone 3完了。エージェント理論と実装の全体像を完全に理解した。
 :::

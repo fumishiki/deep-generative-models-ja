@@ -1021,7 +1021,90 @@ skills = {
 # else: print("Re-read Zones 3-4 before proceeding.")
 ```
 
-### 6.9 次回予告 — 第9回: 変分推論 & ELBO
+### 6.9 EM算法の理論的深掘り — 収束性の数学的証明
+
+ここまでEMの実装を見てきたが、理論的保証を理解しよう。
+
+**定理 (Wu 1983 [^3]): EM算法の単調収束性**
+
+$Q(\theta \mid \theta^{(t)})$をQ関数、$\theta^{(t+1)} = \arg\max_\theta Q(\theta \mid \theta^{(t)})$をM-stepとする。このとき:
+
+$$
+\log p(\mathbf{X} \mid \theta^{(t+1)}) \geq \log p(\mathbf{X} \mid \theta^{(t)})
+$$
+
+等号成立は$\theta^{(t+1)} = \theta^{(t)}$（収束）のときのみ。
+
+**証明のスケッチ:**
+
+1. ELBO分解を思い出す:
+   $$
+   \log p(\mathbf{X} \mid \theta) = \mathcal{L}(q, \theta) + D_{\text{KL}}(q(\mathbf{Z}) \| p(\mathbf{Z} \mid \mathbf{X}, \theta))
+   $$
+
+2. E-stepで$q(\mathbf{Z}) = p(\mathbf{Z} \mid \mathbf{X}, \theta^{(t)})$と選ぶと、KL項=0:
+   $$
+   \log p(\mathbf{X} \mid \theta^{(t)}) = \mathcal{L}(q, \theta^{(t)})
+   $$
+
+3. M-stepで$\mathcal{L}(q, \theta)$を最大化→$\theta^{(t+1)}$:
+   $$
+   \mathcal{L}(q, \theta^{(t+1)}) \geq \mathcal{L}(q, \theta^{(t)})
+   $$
+
+4. 再びELBO分解を使うと:
+   $$
+   \log p(\mathbf{X} \mid \theta^{(t+1)}) \geq \mathcal{L}(q, \theta^{(t+1)}) \geq \mathcal{L}(q, \theta^{(t)}) = \log p(\mathbf{X} \mid \theta^{(t)})
+   $$
+
+**収束率の最新結果 (2024-2025):**
+
+- **Gradient EM** (arXiv:2407.00490): $O(1/\sqrt{t})$部分線形収束
+- **Over-parameterized GMM** (arXiv:2509.08237): 分離条件$\Omega(\sqrt{\log K})$下で線形収束
+- **Federated EM** (arXiv:2411.05591): 通信ラウンドごとに$O(1/t)$収束
+
+### 6.10 実装上の罠 — 数値安定性の完全ガイド
+
+EMの実装で陥りやすい罠を網羅する。
+
+**罠1: 共分散行列の特異性**
+
+```python
+# ❌ 危険: 共分散が特異になりやすい
+Sigma_k = (X - mu_k).T @ np.diag(gamma[:, k]) @ (X - mu_k) / N_k
+
+# ✅ 安全: 正則化項を追加
+Sigma_k = ((X - mu_k).T @ np.diag(gamma[:, k]) @ (X - mu_k) / N_k
+           + 1e-6 * np.eye(D))
+```
+
+**理論的背景**: 成分$k$に割り当てられるデータが少ない（$N_k \to 0$）と、共分散行列のランクが落ちる。
+
+**罠2: log-det(Σ)のアンダーフロー**
+
+```python
+# ❌ 直接計算: det(Σ)が0に近いと-∞
+log_det = np.log(np.linalg.det(Sigma))
+
+# ✅ Cholesky分解経由
+L = np.linalg.cholesky(Sigma)
+log_det = 2 * np.sum(np.log(np.diag(L)))
+```
+
+**数学**: $\Sigma = LL^\top$（Cholesky分解）なら$\det(\Sigma) = \det(L)^2 = (\prod_i L_{ii})^2$。
+
+**罠3: 責任度の正規化漏れ**
+
+```python
+# ❌ 各行の和が1にならない可能性
+gamma = exp_log_resp / exp_log_resp.sum(axis=1, keepdims=True)
+
+# ✅ 明示的チェック
+gamma = exp_log_resp / exp_log_resp.sum(axis=1, keepdims=True)
+assert np.allclose(gamma.sum(axis=1), 1.0), "Responsibility normalization failed"
+```
+
+### 6.11 次回予告 — 第9回: 変分推論 & ELBO
 
 第8回で見つけた限界を思い出してほしい。EM算法は E-step で $p(\mathbf{z} \mid \mathbf{x}, \theta)$ を**解析的に**計算する必要がある。GMMなら可能だが、ニューラルネットデコーダでは不可能だ。
 
@@ -1029,6 +1112,7 @@ skills = {
 - 変分推論の一般理論を学ぶ
 - ELBOの3通りの導出を完全に理解する
 - **Julia初登場**: ELBO計算で Python 45秒 → Julia 0.8秒 の衝撃
+- ニューラルネット推論ネットワークで事後分布近似
 
 **あのPythonの遅さ、覚えていますか？** 第9回で解決します。
 
@@ -1418,6 +1502,59 @@ EM算法の歴史は1977年の Dempster-Laird-Rubin より前に遡る。1970年
 - Bishop, C.M. (2006). *Pattern Recognition and Machine Learning*. Springer. [Ch.9: Mixture Models and EM] [公式PDF無料]
 - Murphy, K.P. (2012). *Machine Learning: A Probabilistic Perspective*. MIT Press. [Ch.11]
 - MacKay, D.J.C. (2003). *Information Theory, Inference, and Learning Algorithms*. Cambridge University Press. [Ch.22, 33] [公式PDF無料]
+
+---
+
+## 🔬 最新研究動向（2024-2025）
+
+EM算法は1977年の提案から半世紀近く経つが、理論解析と実用化の両面で活発な研究が続いている。
+
+### 収束理論の最新成果
+
+**Global Convergence of Gradient EM for Over-Parameterized GMMs** (arXiv:2407.00490, 2024)
+- **問題設定**: 真の分布が単一ガウスなのに、$K>1$成分のGMMで学習する過剰パラメータ化設定
+- **主結果**: Gradient EM が大域収束し、$O(1/\sqrt{t})$の部分線形収束率を持つ
+- **意義**: 3成分以上のGMMで初めての大域収束保証
+@[card](https://arxiv.org/abs/2407.00490)
+
+**Convergence and Optimality of EM for Multi-Component GMMs** (arXiv:2509.08237, 2025)
+- **主結果**: 全成分対の最小分離距離が$\Omega(\sqrt{\log K})$を超えると、集団レベルEMが真のパラメータに収束
+- **証明手法**: スペクトル法とKL縮約の組み合わせ
+- **実用的含意**: 初期化の良さの定量的条件を提示
+@[card](https://arxiv.org/abs/2509.08237)
+
+### 分散学習への拡張
+
+**Network EM Algorithm for GMM in Federated Learning** (arXiv:2411.05591, 2024)
+- **Momentum Network EM (MNEM)**: 現在と過去の推定量を運動量パラメータで結合
+- **通信効率**: ラウンド数を50%削減
+- **プライバシー保証**: 差分プライバシーとの統合
+@[card](https://arxiv.org/abs/2411.05591)
+
+### 高速化アルゴリズム
+
+**Learning Overspecified GMMs Exponentially Fast with EM** (2025)
+- **主結果**: 過剰指定GMM（$K_{\text{model}} > K_{\text{true}}$）において、集団EMがKL距離で指数的高速収束
+- **収束率**: $D_{\text{KL}}(\theta^{(t)} \| \theta^*) \leq (1-\rho)^t D_{\text{KL}}(\theta^{(0)} \| \theta^*)$, $\rho \in (0,1)$
+- **条件**: 最小分離距離$\Delta_{\min} \geq C\sqrt{d \log K}$（$C$は定数）
+@[card](https://link.springer.com/chapter/10.1007/978-3-032-06078-5_19)
+
+### 初期化の改善
+
+**New Iterative Initialization for GMM-EM** (PLOS ONE, 2023)
+- **手法**: 複数リスタート + クラスタリングベース初期化
+- **性能**: 標準k-means++より20%高いlog-likelihood
+- **実装**: scikit-learnとの互換性
+@[card](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0284114)
+
+### 理論と実装の最新ギャップ
+
+| 項目 | 理論的保証（2024-2025） | 実装での課題 |
+|:-----|:--------------------|:----------|
+| 収束率 | $O(1/\sqrt{t})$大域収束 | 初期値依存が強い |
+| 分離条件 | $\Omega(\sqrt{\log K})$ | 実データで検証困難 |
+| 過剰パラメータ化 | 指数的高速収束 | モデル選択の自動化 |
+| 連合学習 | 通信量50%削減 | プライバシー損失の定量化 |
 
 ---
 

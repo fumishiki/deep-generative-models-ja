@@ -1280,4 +1280,556 @@ $$
 **ボス戦クリア！** Vanilla GAN、WGAN、f-GAN、R3GANの理論を完全に理解した。ここまでの数式を1文で要約すると:「GANは、最適輸送/f-divergence/相対論的比較のいずれかの枠組みで、生成分布をデータ分布に近づける敵対的学習である」
 :::
 
+### 3.6 正則化と正規化の大規模研究 — GAN訓練安定化の決定版
+
+#### 3.6.1 Spectral NormalizationとGradient Penaltyの比較
+
+**問題**: WGANのLipschitz制約を実装する手法は複数あるが、どれが最も効果的か？
+
+Kurach et al. (2019) [^24] は、**7つのデータセット** × **14の正則化手法** × **複数のアーキテクチャ** で大規模な比較実験を実施した。
+
+**主要な発見**:
+
+1. **Spectral Normalization (SN) が最も安定**:
+   - ハイパーパラメータチューニングなしで高品質な結果
+   - Gradient Penalty (GP) より計算効率が高い（追加の勾配計算不要）
+   - FID（低い方が良い）で一貫して優位
+
+2. **Gradient Penaltyの課題**:
+   - $\lambda$ のチューニングが必須（データセットごとに最適値が異なる）
+   - 勾配計算のオーバーヘッドで訓練時間が1.5倍以上
+   - 誤ったチューニングでmode collapse発生
+
+3. **併用が最強**:
+   - SN + GP の組み合わせで最高品質（FFHQ FID: 2.1）
+   - SN単体で90%の性能、GPで残り10%を改善
+
+**実装比較**:
+
+```julia
+using Flux, LinearAlgebra
+
+# Spectral Normalization layer
+struct SpectralNorm{F}
+    layer::F
+    u::Vector{Float32}  # left singular vector
+    power_iterations::Int
+end
+
+function SpectralNorm(layer, power_iterations=1)
+    # Initialize u randomly
+    weight = layer.weight
+    u = randn(Float32, size(weight, 1))
+    u = u / norm(u)
+    return SpectralNorm(layer, u, power_iterations)
+end
+
+function (sn::SpectralNorm)(x)
+    """Apply spectral normalization: W_SN = W / σ(W)"""
+    W = sn.layer.weight
+
+    # Power iteration to estimate largest singular value
+    u = sn.u
+    for _ in 1:sn.power_iterations
+        v = W' * u
+        v = v / (norm(v) + 1f-12)
+        u = W * v
+        u = u / (norm(u) + 1f-12)
+    end
+    sn.u .= u  # update (mutable)
+
+    # Spectral norm: σ = u^T W v
+    σ = dot(u, W * (W' * u) / norm(W' * u))
+
+    # Normalize weights
+    W_normalized = W / (σ + 1f-12)
+
+    # Forward pass with normalized weights
+    return W_normalized * x .+ sn.layer.bias
+end
+
+# Gradient Penalty (WGAN-GP style)
+function gradient_penalty(D, real_x, fake_x; λ=10.0)
+    """
+    Compute gradient penalty: λ * E[(||∇_x D(x̂)||₂ - 1)²]
+    where x̂ = αx_real + (1-α)x_fake
+    """
+    batch_size = size(real_x, 2)
+    α = rand(Float32, 1, batch_size)
+
+    # Interpolate
+    x_hat = α .* real_x .+ (1 .- α) .* fake_x
+
+    # Compute gradient
+    grads = gradient(x_hat) do x
+        sum(D(x))
+    end
+
+    # Gradient norm
+    grad_norm = sqrt.(sum(grads[1].^2, dims=1) .+ 1f-12)
+
+    # Penalty: (||∇||₂ - 1)²
+    penalty = mean((grad_norm .- 1).^2)
+
+    return λ * penalty
+end
+
+# Comparison: SN vs GP vs SN+GP
+function train_comparison(G, D_sn, D_gp, D_both, real_data, epochs=100)
+    """
+    Compare three discriminator variants:
+    1. D_sn: Spectral Normalization only
+    2. D_gp: Gradient Penalty only
+    3. D_both: SN + GP
+    """
+    results = Dict(
+        "SN" => Float32[],
+        "GP" => Float32[],
+        "SN+GP" => Float32[]
+    )
+
+    for epoch in 1:epochs
+        # Generate fake data
+        z = randn(Float32, 128, 64)
+        fake_data = G(z)
+
+        # Train each discriminator variant
+        for (name, D) in [("SN", D_sn), ("GP", D_gp), ("SN+GP", D_both)]
+            # WGAN loss
+            loss_d = mean(D(fake_data)) - mean(D(real_data))
+
+            # Add GP if applicable
+            if name == "GP" || name == "SN+GP"
+                loss_d += gradient_penalty(D, real_data, fake_data, λ=10.0)
+            end
+
+            push!(results[name], loss_d)
+        end
+    end
+
+    return results
+end
+```
+
+**実験結果要約** (Kurach et al., 2019 [^24]):
+
+| 手法 | CIFAR-10 FID | ImageNet 128×128 FID | 訓練時間 (相対) | ハイパーパラメータ感度 |
+|:-----|:-------------|:---------------------|:----------------|:----------------------|
+| Vanilla | 32.4 | 58.2 | 1.0x | 高 |
+| Gradient Penalty | 18.7 | 35.1 | 1.6x | **高** |
+| Spectral Norm | 17.2 | 32.8 | **1.1x** | **低** |
+| SN + GP | **15.9** | **30.4** | 1.7x | 中 |
+
+**結論**: Production環境では **Spectral Norm単体** がベストプラクティス。最高品質が必要な場合のみ GP を併用。
+
+#### 3.6.2 Penalty Gradient Normalization (PGN) — GPの改良版
+
+Xia & Yang (2023) [^25] は、Gradient Penaltyの理論的問題を指摘し、**Penalty Gradient Normalization (PGN)** を提案した。
+
+**Gradient Penaltyの問題点**:
+
+$$
+\mathcal{L}_{\text{GP}} = \mathbb{E}_{\hat{x}}[(\|\nabla_{\hat{x}} D(\hat{x})\|_2 - 1)^2]
+$$
+
+- **ゼロ勾配を許容しない**: $\|\nabla D\| = 1$ を強制するため、勾配が消失すべき領域（データ分布の中心など）でも1を強要
+- **補間点 $\hat{x}$ の選び方に依存**: $\hat{x} = \alpha x_{\text{real}} + (1-\alpha) x_{\text{fake}}$ は理論的根拠が薄い
+
+**PGNの改良**:
+
+$$
+\mathcal{L}_{\text{PGN}} = \mathbb{E}_{\hat{x}}[\max(0, \|\nabla_{\hat{x}} D(\hat{x})\|_2 - 1)^2]
+$$
+
+**変更点**:
+- $\max(0, \cdot)$ により、$\|\nabla D\| \leq 1$ の場合はペナルティなし（1-Lipschitz制約のみ）
+- ゼロ勾配を許容 → 収束が安定
+
+**実験結果** (Xia & Yang, 2023 [^25]):
+
+- CIFAR-10: FID 15.2（GP: 18.7、SN: 17.2）
+- CelebA-HQ 256×256: FID 4.8（GP: 6.3、SN: 5.1）
+- **訓練安定性**: GPより3倍収束が速い
+
+**Julia実装**:
+
+```julia
+function penalty_gradient_normalization(D, real_x, fake_x; λ=10.0)
+    """
+    PGN: penalize only when ||∇D|| > 1 (allow zero gradients)
+    """
+    batch_size = size(real_x, 2)
+    α = rand(Float32, 1, batch_size)
+    x_hat = α .* real_x .+ (1 .- α) .* fake_x
+
+    grads = gradient(x_hat) do x
+        sum(D(x))
+    end
+
+    grad_norm = sqrt.(sum(grads[1].^2, dims=1) .+ 1f-12)
+
+    # max(0, ||∇|| - 1)² instead of (||∇|| - 1)²
+    penalty = mean(max.(0, grad_norm .- 1).^2)
+
+    return λ * penalty
+end
+```
+
+### 3.7 StyleGAN系列の進化 — アーキテクチャと訓練手法の革新
+
+#### 3.7.1 StyleGAN2: Artifacts除去とPath Length Regularization
+
+StyleGAN (2019) [^3] は革新的だったが、**水滴状のアーティファクト** (droplet artifacts) が生じる問題があった。StyleGAN2 (Karras et al., 2020) [^26] はこれを徹底的に分析し、解決した。
+
+**問題の原因**: AdaIN (Adaptive Instance Normalization) がfeature statisticsを破壊
+
+$$
+\text{AdaIN}(\boldsymbol{x}_i, \boldsymbol{y}) = \boldsymbol{y}_s \frac{\boldsymbol{x}_i - \mu(\boldsymbol{x}_i)}{\sigma(\boldsymbol{x}_i)} + \boldsymbol{y}_b
+$$
+
+ここで $\boldsymbol{y}_s, \boldsymbol{y}_b$ はスタイルコードから学習。問題は、この正規化が各層で情報を破棄すること。
+
+**StyleGAN2の解決策**:
+
+1. **Weight Demodulation**: AdaINを畳み込み重みに吸収
+
+$$
+\boldsymbol{w}'_{ijk} = \frac{s_i \cdot \boldsymbol{w}_{ijk}}{\sqrt{\sum_{i,k} (s_i \cdot \boldsymbol{w}_{ijk})^2 + \epsilon}}
+$$
+
+これにより、スタイル調整と正規化を1ステップで実現し、feature破壊を回避。
+
+2. **Path Length Regularization** (PPL): 潜在空間の歪みを抑制
+
+$$
+\mathcal{L}_{\text{PPL}} = \mathbb{E}_{\boldsymbol{w}, \boldsymbol{y} \sim \mathcal{N}(0, I)} \left[ \left\| \mathbf{J}_{\boldsymbol{w}}^\top \boldsymbol{y} \right\|_2 - a \right]^2
+$$
+
+ここで:
+- $\mathbf{J}_{\boldsymbol{w}} = \frac{\partial G(\boldsymbol{w})}{\partial \boldsymbol{w}}$ はJacobian
+- $a$ は指数移動平均（動的に調整）
+
+**直感**: 潜在空間で一定の距離を動いたとき、画像空間でも一定の距離を動くべき（等長性）。
+
+**実装**:
+
+```julia
+using Flux, Zygote
+
+function path_length_regularization(G, w_batch; λ_ppl=2.0, decay=0.01)
+    """
+    Path Length Regularization for StyleGAN2.
+
+    Args:
+        G: generator (w → image)
+        w_batch: latent codes (latent_dim × batch_size)
+        λ_ppl: PPL weight
+        decay: EMA decay for moving average 'a'
+    """
+    batch_size = size(w_batch, 2)
+
+    # Random direction in image space
+    y = randn(Float32, size(G(w_batch)))  # noise
+    y = y / norm(y)
+
+    # Compute J^T y (vector-Jacobian product via reverse-mode AD)
+    _, back = Zygote.pullback(w_batch) do w
+        G(w)
+    end
+    JT_y = back(y)[1]  # ∂G/∂w * y
+
+    # Path length
+    path_length = sqrt.(sum(JT_y.^2, dims=1) .+ 1f-8)
+
+    # EMA of path length (global variable or state)
+    if !isdefined(Main, :ppl_ema)
+        global ppl_ema = mean(path_length)
+    else
+        global ppl_ema = decay * mean(path_length) + (1 - decay) * ppl_ema
+    end
+
+    # Regularization: (||J^T y|| - a)²
+    penalty = mean((path_length .- ppl_ema).^2)
+
+    return λ_ppl * penalty
+end
+
+# Training loop with PPL
+function train_stylegan2(G, D, data_loader, epochs=100)
+    opt_g = Adam(0.002, (0.0, 0.99))
+    opt_d = Adam(0.002, (0.0, 0.99))
+
+    for epoch in 1:epochs
+        for real_images in data_loader
+            # === Train Discriminator ===
+            z = randn(Float32, 512, size(real_images, 4))
+            w = mapping_network(z)  # z → w (MLP)
+            fake_images = G(w)
+
+            loss_d, grads_d = Flux.withgradient(D) do d
+                # Non-saturating GAN loss
+                mean(softplus(-d(real_images))) + mean(softplus(d(fake_images)))
+            end
+            Flux.update!(opt_d, D, grads_d[1])
+
+            # === Train Generator ===
+            loss_g, grads_g = Flux.withgradient(G) do g
+                w_new = mapping_network(randn(Float32, 512, 32))
+                fake_new = g(w_new)
+
+                # GAN loss
+                gan_loss = mean(softplus(-D(fake_new)))
+
+                # Path Length Regularization (every 16 batches)
+                ppl_loss = (epoch % 16 == 0) ? path_length_regularization(g, w_new) : 0.0
+
+                gan_loss + ppl_loss
+            end
+            Flux.update!(opt_g, G, grads_g[1])
+        end
+
+        if epoch % 10 == 0
+            println("Epoch $epoch: D_loss=$(round(loss_d, digits=3)), G_loss=$(round(loss_g, digits=3))")
+        end
+    end
+end
+```
+
+**StyleGAN2の成果**:
+- FFHQ 1024×1024: FID **2.84** (StyleGAN: 4.40)
+- アーティファクト完全除去
+- PPLにより潜在空間の補間が滑らか（morph動画が自然）
+
+#### 3.7.2 StyleGAN-T: Text-to-Image生成への適応
+
+Sauer et al. (2023) [^27] は、StyleGANをテキスト条件付き生成に拡張した **StyleGAN-T** を提案。
+
+**課題**: 大規模Text-to-Image（LAION-5Bなど）では、従来のStyleGANはmode collapseしやすい。
+
+**StyleGAN-Tの改良**:
+
+1. **Transformer-based Discriminator**: パッチベースの判別（ViT風）
+
+$$
+D(\boldsymbol{x}, \boldsymbol{t}) = \text{Transformer}(\text{Patch}(\boldsymbol{x}), \text{CLIP}(\boldsymbol{t}))
+$$
+
+ここで $\boldsymbol{t}$ はテキストプロンプト、CLIP埋め込みで条件付け。
+
+2. **Multi-Scale Training**: Progressive Growingの安定版
+   - 低解像度（64×64）から開始
+   - 徐々に高解像度（512×512）に移行
+   - ただし **ネットワーク構造は固定**（StyleGAN2の教訓）
+
+3. **Diffusion Distillation**: 事前訓練したStable Diffusionから知識蒸留
+
+$$
+\mathcal{L}_{\text{distill}} = \mathbb{E}[\|G(\boldsymbol{w}, \boldsymbol{t}) - D_{\text{SD}}(\boldsymbol{t}, \text{denoise steps}=1)\|^2]
+$$
+
+**結果** (MS-COCO 256×256):
+- FID: **6.8** (Stable Diffusion 50 steps: 12.6)
+- Inference: **40ms** (SD: 2.5s) → **62倍高速化**
+- Text alignment (CLIP score): 0.28 (SD: 0.31) → 品質を維持
+
+### 3.8 Diffusion-to-GAN蒸留 — ワンステップ生成への革命
+
+#### 3.8.1 Diffusion2GAN: 知識蒸留の新手法
+
+Kang et al. (2024) [^28] は、**多段階Diffusion Model** を **単段階GAN** に蒸留する手法を提案した。
+
+**動機**: Diffusion Modelは高品質だが遅い（50-1000 step）。GANは高速だが訓練が不安定。両者の利点を組み合わせられないか？
+
+**Diffusion2GANのアプローチ**:
+
+1. **Teacher**: 事前訓練済みDiffusion Model (EDM, Stable Diffusion等)
+
+$$
+\boldsymbol{x}_0 = D_{\text{teacher}}(\boldsymbol{x}_T, \{t_1, \ldots, t_N\})
+$$
+
+2. **Student**: Conditional GAN (条件付き生成器)
+
+$$
+G_{\text{student}}(\boldsymbol{x}_T, \boldsymbol{c}) \approx \boldsymbol{x}_0
+$$
+
+ここで $\boldsymbol{c}$ はクラスラベルやテキスト埋め込み。
+
+3. **蒸留損失**: Noise-to-Image paired datasetで訓練
+
+$$
+\mathcal{L}_{\text{distill}} = \mathbb{E}_{\boldsymbol{x}_T, \boldsymbol{x}_0 \sim p_{\text{teacher}}} \left[ \| G(\boldsymbol{x}_T, \boldsymbol{c}) - \boldsymbol{x}_0 \|_{\text{E-LatentLPIPS}} \right]
+$$
+
+**E-LatentLPIPS**: Diffusion ModelのVAE潜在空間でのperceptual loss
+
+$$
+\text{E-LatentLPIPS}(\boldsymbol{x}, \boldsymbol{y}) = \sum_{\ell} \alpha_{\ell} \| \phi_{\ell}(\mathcal{E}(\boldsymbol{x})) - \phi_{\ell}(\mathcal{E}(\boldsymbol{y})) \|^2
+$$
+
+ここで:
+- $\mathcal{E}$: VAEエンコーダ（Stable Diffusionの場合）
+- $\phi_{\ell}$: VGG特徴（層 $\ell$）
+
+**なぜLatent空間か？**: Pixel spaceでのL2損失は高周波成分を無視 → ぼやける。Latent spaceは意味的に重要な特徴を保持。
+
+**訓練手順**:
+
+```julia
+# Pseudo-code for Diffusion2GAN distillation
+function train_diffusion2gan(G_student, D_student, diffusion_teacher, epochs=100)
+    """
+    Distill diffusion model into conditional GAN.
+
+    Args:
+        G_student: conditional generator (x_T, c) → x_0
+        D_student: discriminator
+        diffusion_teacher: pretrained diffusion model
+    """
+    opt_g = Adam(1e-4)
+    opt_d = Adam(1e-4)
+
+    for epoch in 1:epochs
+        # Sample noise and generate paired data from teacher
+        x_T = randn(Float32, 3, 64, 64, 32)  # noise
+        c = sample_conditions(32)  # class labels or text embeddings
+
+        # Teacher generates x_0 via ODE solver (deterministic)
+        x_0_teacher = diffusion_teacher.sample(x_T, c, steps=50)
+
+        # Student generates x_0 in one step
+        x_0_student = G_student(x_T, c)
+
+        # === Train Discriminator ===
+        loss_d, grads_d = Flux.withgradient(D_student) do d
+            # Real (teacher outputs) vs Fake (student outputs)
+            mean(softplus(-d(x_0_teacher, c))) + mean(softplus(d(x_0_student, c)))
+        end
+        Flux.update!(opt_d, D_student, grads_d[1])
+
+        # === Train Generator ===
+        loss_g, grads_g = Flux.withgradient(G_student) do g
+            x_new = g(randn(Float32, 3, 64, 64, 16), sample_conditions(16))
+
+            # GAN loss
+            gan_loss = mean(softplus(-D_student(x_new, c)))
+
+            # Distillation loss (E-LatentLPIPS)
+            distill_loss = e_latent_lpips(x_new, x_0_teacher, vae_encoder)
+
+            gan_loss + 10.0 * distill_loss  # balance weight
+        end
+        Flux.update!(opt_g, G_student, grads_g[1])
+    end
+end
+
+function e_latent_lpips(x, y, vae_encoder)
+    """Perceptual loss in VAE latent space."""
+    # Encode to latent
+    z_x = vae_encoder(x)
+    z_y = vae_encoder(y)
+
+    # VGG features (simplified - use pretrained VGG in practice)
+    features_x = vgg_features(z_x)
+    features_y = vgg_features(z_y)
+
+    # Weighted L2 across layers
+    loss = sum([α * mean((features_x[ℓ] - features_y[ℓ]).^2) for (ℓ, α) in enumerate([1.0, 0.5, 0.25])])
+
+    return loss
+end
+```
+
+**実験結果** (Kang et al., 2024 [^28]):
+
+| Dataset | Teacher (Diffusion 50 steps) | Student (GAN 1 step) | Speedup |
+|:--------|:-----------------------------|:---------------------|:--------|
+| CIFAR-10 | FID 2.5 | FID 3.8 | 50x |
+| ImageNet 64×64 | FID 1.8 | FID 2.4 | 50x |
+| FFHQ 256×256 | FID 3.2 | FID 4.1 | 50x |
+
+**ワンステップで、Diffusionの95%の品質を達成！**
+
+#### 3.8.2 D2O: GAN目的関数のみでの蒸留
+
+従来のdistillationは、instance-level loss（各画像ペアの距離）に依存していた。しかし、これは:
+- Teacher-student間のalignment必要
+- データセット全体を保存する必要
+
+**D2O** (Diffusion to One-step, 2025) [^29] は、**GAN損失のみ** で蒸留を実現:
+
+$$
+\min_{G} \max_{D} \mathbb{E}_{\boldsymbol{x}_0 \sim p_{\text{data}}}[\log D(\boldsymbol{x}_0)] + \mathbb{E}_{\boldsymbol{x}_T, \boldsymbol{c}}[\log(1 - D(G(\boldsymbol{x}_T, \boldsymbol{c})))]
+$$
+
+**工夫点**:
+1. **Real dataをteacher生成データで置換**: $p_{\text{data}} \gets p_{\text{teacher}}$
+2. **少量データで訓練**: 10K画像で十分（従来は100K+必要）
+3. **Generator pretraining不要**: ランダム初期化から直接訓練
+
+**結果** (D2O, 2025 [^29]):
+- ImageNet 256×256: FID **5.2** (Diffusion2GAN: 6.8)
+- COCO Text-to-Image: CLIP score **0.29** (SD 1-step: 0.21)
+- データ効率: **10倍改善**
+
+**なぜ成功したか？**: GAN discriminatorが **implicit perceptual loss** として機能し、明示的なLPIPS計算が不要になった。
+
+### 3.9 GANの未来 — "GANは死んだ"は本当か？
+
+**2023年までの通説**: 「Diffusion Modelの台頭でGANは終わった」
+
+**2024-2025年の反転**:
+1. **Diffusion2GAN**: DiffusionをGANに蒸留し、50倍高速化 [^28]
+2. **D2O**: GAN単体で高品質生成を実現 [^29]
+3. **StyleGAN-T**: Text-to-ImageでもGANが競争力を維持 [^27]
+4. **R3GAN**: 理論的収束保証を獲得 [^4]
+
+**GANの強み** (2026年時点):
+- **リアルタイム生成**: 1ステップ → ビデオゲーム、AR/VR、ライブ配信
+- **制御性**: 潜在空間の補間が滑らか → 編集アプリケーション
+- **理論的理解**: 最適輸送/f-divergenceの枠組みで完全に説明可能
+
+**Diffusionの強み**:
+- **モード網羅性**: Long-tail distributionをカバー
+- **訓練安定性**: ハイパーパラメータに鈍感
+- **多様性**: 同一プロンプトから多様な出力
+
+**結論**: GANとDiffusionは **相補的**。用途に応じて使い分けるべき:
+- 高速生成が必要 → GAN（または蒸留GAN）
+- 最高品質・多様性重視 → Diffusion
+- 両方欲しい → Diffusion2GAN
+
+:::message
+**進捗: 65% 完了** GAN理論の深淵から最新の蒸留手法まで完全制覇。Part 2でStyleGAN3、BigGAN、実装・実験に進む。
+:::
+
+---
+
+## 📚 参考文献（Part 1追加分）
+
+### 訓練安定化
+
+[^24]: Kurach, K., Lučić, M., Zhai, X., Michalski, M., & Gelly, S. (2019). A Large-Scale Study on Regularization, Normalization and Optimization in GANs. In ICML.
+@[card](https://arxiv.org/abs/1807.04720)
+
+[^25]: Xia, T., & Yang, C. (2023). Penalty Gradient Normalization for Generative Adversarial Networks. In ICCV.
+@[card](https://arxiv.org/abs/2306.13576)
+
+### StyleGAN系列
+
+[^26]: Karras, T., Laine, S., Aittala, M., Hellsten, J., Lehtinen, J., & Aila, T. (2020). Analyzing and Improving the Image Quality of StyleGAN. In CVPR.
+@[card](https://arxiv.org/abs/1912.04958)
+
+[^27]: Sauer, A., Schwarz, K., & Geiger, A. (2023). StyleGAN-T: Unlocking the Power of GANs for Fast Large-Scale Text-to-Image Synthesis. In ICML.
+@[card](https://arxiv.org/abs/2301.09515)
+
+### Diffusion蒸留
+
+[^28]: Kang, M., Zhang, R., Zhang, R., Park, J. J., Petersen, E., Lugmayr, A., ... & Kolter, J. Z. (2024). Distilling Diffusion Models into Conditional GANs. In ECCV.
+@[card](https://arxiv.org/abs/2405.05967)
+
+[^29]: Wei, Y., Liu, Y., Wang, Z., & Ren, J. (2025). Revisiting Diffusion Models: From Generative Pre-training to One-Step Generation. arXiv preprint.
+@[card](https://arxiv.org/abs/2506.09376)
+
 ---

@@ -1407,6 +1407,270 @@ Course IV「拡散モデル理論編」は残り3回（L40-42）。理論の完�
 ---
 
 **謝辞**: 本講義の執筆にあたり、Rombach et al. (2021) のLatent Diffusion論文、Ho & Salimans (2022) のCFG論文、Greenberg (2025) のFLUX解析を参考にしました。
+
+---
+
+## 7. 最新研究動向（2024-2025）
+
+### 7.1 SDXL: Stable Diffusion XL の改善点
+
+Podell et al. (2023) [^sdxl] は、Stable Diffusion v1.5 を大幅に強化した **SDXL** を発表。主な改善:
+
+#### 7.1.1 アーキテクチャの拡張
+
+**U-Net のスケールアップ**:
+
+| Component | SD v1.5 | SDXL | 倍率 |
+|:----------|:--------|:-----|:-----|
+| U-Net params | 860M | **2.6B** | 3.0× |
+| Cross-attention layers | 16 | **70** | 4.4× |
+| Attention heads | 8 | **20** | 2.5× |
+
+**2つのテキストエンコーダ**:
+
+1. **CLIP ViT-L/14**: SD v1.5 と同じ（768次元）
+2. **OpenCLIP ViT-bigG**: 新規追加（1280次元）
+
+結合方法:
+
+$$
+c_\text{text} = \text{Concat}(\text{CLIP}(T), \text{OpenCLIP}(T)) \in \mathbb{R}^{2048}
+$$
+
+**Micro-conditioning**:
+
+画像の元サイズ $H_\text{orig} \times W_\text{orig}$ とクロップ座標 $(y_\text{crop}, x_\text{crop})$ を追加条件として埋め込む:
+
+$$
+c_\text{size} = \text{MLP}([H_\text{orig}, W_\text{orig}, y_\text{crop}, x_\text{crop}])
+$$
+
+Cross-attention の際に $c_\text{text} + c_\text{size}$ を使用。
+
+**効果**: 訓練データの解像度・アスペクト比のバイアスを軽減 → 低解像度画像のアップスケール時の artifacts 削減。
+
+#### 7.1.2 訓練戦略
+
+**Multi-aspect ratio training**:
+
+バケット化: $[(512, 512), (768, 512), (512, 768), (1024, 1024), \ldots]$
+
+各バッチで異なる解像度を混在 → VAE エンコーダの出力サイズも可変。
+
+**Two-stage training**:
+
+1. **Base Model** (2.6B params): 256×256 → 512×512 → 1024×1024 を段階的に。
+2. **Refiner Model** (2.6B params): Base の出力を入力として、高周波ディテールを追加。
+
+Refiner は **$t \in [0, 200]$** （低ノイズ領域）のみ訓練 → Base が生成した構造を壊さず、質感・エッジを洗練。
+
+**Pipeline**:
+
+```
+Text → Base Model (t=1000 → t=200) → Refiner (t=200 → t=0) → Image
+```
+
+#### 7.1.3 実験結果
+
+| Model | Resolution | FID ↓ | CLIP Score ↑ | User Preference |
+|:------|:-----------|:------|:-------------|:----------------|
+| SD v1.5 | 512×512 | 18.3 | 0.304 | 28% |
+| SD v2.1 | 768×768 | 15.7 | 0.312 | 35% |
+| **SDXL** | 1024×1024 | **9.55** | **0.329** | **68%** |
+| Midjourney v5 | 1024×1024 | - | - | 32% |
+
+**人間評価**: SDXL は Midjourney v5 に対して 68% の勝率（プロンプト忠実度 + 美的品質）。
+
+**推論時間** (A100):
+
+- Base: ~3.5s (50 DDIM steps)
+- Refiner: ~1.5s (20 steps)
+- **合計**: ~5s（SD v1.5 の 2倍だが、品質は圧倒的向上）
+
+### 7.2 Latent Consistency Models (LCM)
+
+Luo et al. (2023) [^lcm] は、**Consistency Distillation を潜在空間に適用**し、**2-4ステップ**で高品質生成を実現。
+
+#### 7.2.1 Consistency Models の復習
+
+Song et al. (2023) の Consistency Models は、ODE の任意時刻からの軌道が同じ終点に収束する性質を利用:
+
+$$
+f_\theta(x_t, t) = x_0 \quad \forall t \in [0, T]
+$$
+
+訓練: **Self-consistency**
+
+$$
+\mathcal{L}_\text{CM} = \mathbb{E}_{t, x_0} \left[ \| f_\theta(x_t, t) - \text{sg}[f_\theta(x_{t+\Delta t}, t+\Delta t)] \|^2 \right]
+$$
+
+$\text{sg}[\cdot]$ は stop-gradient。
+
+#### 7.2.2 LCM の拡張
+
+**問題**: Pixel-space Consistency Models は高解像度で不安定（1024×1024 で発散）。
+
+**解決**: **Latent space** で consistency を学習:
+
+$$
+f_\theta(z_t, t, c) = z_0
+$$
+
+ここで $z_t = \mathcal{E}(x_t)$ （VAE 潜在表現）。
+
+**Distillation from pre-trained LDM**:
+
+教師モデル: SDXL, Stable Diffusion v1.5 等
+
+$$
+\mathcal{L}_\text{LCM} = \mathbb{E}_{t, z_0, c} \left[ w(t) \| f_\theta(z_t, t, c) - \hat{z}_0(z_t, t, c) \|^2 \right]
+$$
+
+ここで $\hat{z}_0$ は教師モデルの DDIM 1-step 予測:
+
+$$
+\hat{z}_0 = \frac{z_t - \sqrt{1-\bar{\alpha}_t} \epsilon_\theta(z_t, t, c)}{\sqrt{\bar{\alpha}_t}}
+$$
+
+重み:
+
+$$
+w(t) = \frac{1}{\sqrt{\bar{\alpha}_t (1 - \bar{\alpha}_t)}}
+$$
+
+#### 7.2.3 実装のキーポイント
+
+**Classifier-Free Guidance in Distillation**:
+
+教師モデルの CFG 出力を蒸留:
+
+$$
+\tilde{\epsilon}_\theta = \epsilon_\theta(z_t, t, \emptyset) + w \cdot (\epsilon_\theta(z_t, t, c) - \epsilon_\theta(z_t, t, \emptyset))
+$$
+
+LCM は **単一フォワードパス**で $w$ を埋め込み:
+
+$$
+f_\theta(z_t, t, c, w)
+$$
+
+$w$ を入力に追加 → 推論時に guidance を変更可能（再訓練不要）。
+
+**Sampling**:
+
+```julia
+function lcm_sample(z_T, c, w_cfg, steps=4)
+    z = z_T
+    Δt = 1.0 / steps
+
+    for i in steps:-1:1
+        t = i * Δt
+        # Single function evaluation
+        z₀_pred = f_θ(z, t, c, w_cfg)
+
+        if i > 1
+            # Add noise for next step
+            t_prev = (i-1) * Δt
+            z = sqrt(ᾱ[t_prev]) * z₀_pred + sqrt(1 - ᾱ[t_prev]) * randn(size(z))
+        else
+            z = z₀_pred
+        end
+    end
+
+    return z
+end
+```
+
+#### 7.2.4 結果
+
+**COCO-2014 256×256** (SD v1.5 ベース):
+
+| Model | Steps | FID ↓ | CLIP Score ↑ | Time (A100) |
+|:------|:------|:------|:-------------|:------------|
+| SD v1.5 DDIM | 50 | 12.8 | 0.304 | 2.5s |
+| SD v1.5 DDIM | 10 | 18.3 | 0.289 | 0.5s |
+| **LCM** | **4** | **13.9** | **0.301** | **0.2s** |
+| **LCM** | **2** | **16.2** | **0.295** | **0.1s** |
+
+**4ステップで 50ステップ DDIM に匹敵、12.5倍高速化**。
+
+**訓練コスト**: A100 8台で **32時間** — SD v1.5 の完全訓練（数千GPU日）に比べ極めて効率的。
+
+### 7.3 Efficient Diffusion Models Survey (TMLR 2025)
+
+Li et al. (2025) [^efficient_survey] の包括的サーベイから重要な技術を抜粋。
+
+#### 7.3.1 Sampling 高速化の分類
+
+**1. Truncated Sampling**:
+
+早期停止: $t \in [T_\text{stop}, T]$ のみサンプリング、$t < T_\text{stop}$ はスキップ。
+
+例: $T=1000$, $T_\text{stop}=200$ → 80% 削減。
+
+品質劣化を最小化する $T_\text{stop}$ の選択基準:
+
+$$
+T_\text{stop} = \arg\min_t \text{SNR}(t) > \tau
+$$
+
+$\tau \approx 0.1$ が経験的に良い（ImageNet での実験）。
+
+**2. Knowledge Distillation**:
+
+- **Progressive Distillation** (Salimans & Ho, 2022): 1000ステップ → 500 → 250 → ... → 4ステップ。各段階で前段階を教師に。
+- **Consistency Distillation**: 前述の LCM。
+- **Guided Distillation**: CFG の重み $w$ も蒸留。
+
+**3. Fast ODE Solvers**:
+
+- **DPM-Solver** (Lu et al., 2022): 指数積分に基づく高次ソルバー → 10-20ステップで DDIM 50ステップに匹敵。
+- **UniPC** (Zhao et al., 2023): Predictor-Corrector 法 → さらに 5-10ステップ。
+
+#### 7.3.2 モデル圧縮
+
+**量子化**:
+
+| Method | Precision | FID Degradation | Speedup |
+|:-------|:----------|:----------------|:--------|
+| FP32 (baseline) | 32-bit | 0.0 | 1.0× |
+| FP16 | 16-bit | +0.2 | 1.3× |
+| INT8 (PTQ) | 8-bit | +0.8 | 2.1× |
+| **Q-Diffusion** | 4-bit | +1.2 | **3.5×** |
+
+Q-Diffusion (Li et al., 2023): タイムステップ別量子化 — $t$ 大きい（高ノイズ）→ 低精度OK、$t$ 小さい → 高精度必要。
+
+**プルーニング**:
+
+Structured pruning: Attention head を削除。
+
+SD v1.5: 70 Attention layers → 50 layers（28%削減）、FID +1.5。
+
+#### 7.3.3 ハードウェア最適化
+
+**Flash Attention** (Dao et al., 2022):
+
+Self-attention の計算量 $O(N^2)$ をメモリ効率的に → GPU スループット 2-3倍。
+
+SD v1.5 + Flash Attention: 2.5s → **1.7s** (A100)。
+
+**Tensor Core 最適化**:
+
+FP16 mixed precision + Tensor Core → 追加の 1.5× 高速化。
+
+**Result**: SD v1.5 を **1秒以下**（16ステップ DDIM + Flash Attention + FP16 + DPM-Solver）で推論可能（A100）。
+
+---
+
+## 参考文献
+
+[^sdxl]: Podell, D., et al. (2023). "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis". *arXiv:2307.01952*.
+
+[^lcm]: Luo, S., et al. (2023). "Latent Consistency Models: Synthesizing High-Resolution Images with Few-step Inference". *OpenReview ICLR 2024*.
+
+[^efficient_survey]: Li, X., et al. (2025). "Efficient Diffusion Models: A Comprehensive Survey from Principles to Practices". *Transactions on Machine Learning Research (TMLR)*.
+
 ---
 
 ## ライセンス

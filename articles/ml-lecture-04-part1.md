@@ -1695,6 +1695,135 @@ print(f"(perfect model: PPL=1, random guess: PPL={V})")
 [^12]: Hu, E.J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W. (2021). "LoRA: Low-Rank Adaptation of Large Language Models." *ICLR 2022*.
 @[card](https://arxiv.org/abs/2106.09685)
 
+[^27]: Wang, J., & Ramdas, A. (2024). False Discovery Control in Multiple Testing: A Brief Overview of Theories and Methodologies.
+@[card](https://arxiv.org/abs/2411.10647)
+
+[^28]: Xu, Z., & Ramdas, A. (2024). Online multiple testing with e-values. *JMLR*, 25(238), 1-40.
+
+[^29]: Bates, S., Angelopoulos, A. N., Lei, L., Malik, J., & Jordan, M. I. (2023). Max-Rank: Efficient Multiple Testing for Conformal Prediction.
+@[card](https://arxiv.org/abs/2311.10900)
+
+### 補遺 — 現代の多重検定補正手法 (2023-2024)
+
+:::message
+**深層学習時代の統計的検定**: 数万のパラメータを同時テストする状況（例: 遺伝子発現解析、ニューラルネットの重み検定）では、従来のBonferroni補正では保守的すぎる。FDR (False Discovery Rate) 制御[^27]とe-values[^28]による最新手法を紹介。
+:::
+
+#### False Discovery Rate (FDR) 制御の原理
+
+**定義**: 棄却した帰無仮説のうち、真に正しい（Type I error）ものの期待割合:
+
+$$
+\text{FDR} = \mathbb{E}\left[\frac{V}{R}\right], \quad V = \text{誤検出数}, \quad R = \text{棄却数}
+$$
+
+**Benjamini-Hochberg (BH) 手順** (1995):
+
+1. $m$ 個の検定の p 値を昇順に並べ替え: $p_{(1)} \leq p_{(2)} \leq \cdots \leq p_{(m)}$
+2. 最大の $k$ を見つける: $p_{(k)} \leq \frac{k}{m} \alpha$
+3. 帰無仮説 $H_{(1)}, \ldots, H_{(k)}$ を棄却
+
+**理論保証**: 独立または正の依存性の下で、$\text{FDR} \leq \alpha$。
+
+#### 最新の発展 (2024)
+
+##### 1. e-values による FDR 制御[^28]
+
+**e-value** $E$: 帰無仮説の下で $\mathbb{E}[E] \leq 1$ を満たす非負確率変数。p-value の代替。
+
+**e-BH 手順**:
+
+$$
+k^* = \max \left\{ k : \frac{1}{k} \sum_{i=1}^k E_{(i)} \geq \frac{m}{k \alpha} \right\}
+$$
+
+ここで $E_{(1)} \geq E_{(2)} \geq \cdots \geq E_{(m)}$ は e-values の降順。
+
+**利点**:
+- 任意の依存性に対して FDR 制御
+- オンライン検定（逐次的仮説検定）に対応
+- 複数の独立な研究結果の統合が容易（e-values は積で結合可能）
+
+##### 2. Conformal Prediction における多重検定[^29]
+
+深層学習モデルの不確実性定量化で、複数の予測区間を同時構築する場合:
+
+$$
+\mathcal{C}(\mathbf{x}) = \left\{ y : s(\mathbf{x}, y) \leq q_{1-\alpha} \right\}
+$$
+
+ここで $s$ はスコア関数、$q_{1-\alpha}$ は $(1-\alpha)$ 分位点。
+
+**Max-Rank 補正**: $m$ 個の予測区間を構築する際、分位点を調整:
+
+$$
+q_{1-\alpha'} \quad \text{where} \quad \alpha' = \frac{\alpha}{m \cdot \text{rank}(s_{\text{new}})}
+$$
+
+**効果**: 通常のBonferroni補正 ($\alpha/m$) より power が高い（特に依存性が強い場合）。
+
+#### 実装例
+
+```python
+import numpy as np
+from scipy.stats import norm
+
+def benjamini_hochberg_fdr(p_values: np.ndarray, alpha: float = 0.05) -> np.ndarray:
+    """BH手順によるFDR制御"""
+    m = len(p_values)
+    # p-valueを昇順にソート
+    sorted_idx = np.argsort(p_values)
+    sorted_p = p_values[sorted_idx]
+
+    # BH閾値: k/m * alpha
+    bh_threshold = np.arange(1, m + 1) / m * alpha
+
+    # 最大のkを見つける
+    reject_idx = np.where(sorted_p <= bh_threshold)[0]
+
+    if len(reject_idx) == 0:
+        return np.zeros(m, dtype=bool)
+
+    k_max = reject_idx[-1]
+
+    # 棄却する仮説のマスク
+    reject_mask = np.zeros(m, dtype=bool)
+    reject_mask[sorted_idx[:k_max + 1]] = True
+
+    return reject_mask
+
+# 使用例: 1000個の検定
+m = 1000
+# 真の帰無仮説900個、対立仮説100個をシミュレート
+p_null = np.random.uniform(0, 1, 900)  # H0が真
+p_alt = np.random.beta(0.5, 5, 100)    # H1が真（小さいp値）
+p_values = np.concatenate([p_null, p_alt])
+
+# Bonferroni補正
+reject_bonf = p_values < 0.05 / m
+print(f"Bonferroni: {reject_bonf.sum()}個棄却")  # ~5個
+
+# BH-FDR
+reject_bh = benjamini_hochberg_fdr(p_values, alpha=0.05)
+print(f"BH-FDR: {reject_bh.sum()}個棄却")  # ~80個
+```
+
+#### オンライン検定: LORD++ アルゴリズム
+
+時系列的に仮説が到着する場合（例: A/Bテストの逐次判定）:
+
+$$
+\alpha_t = \gamma \alpha_{t-1} + (1 - \gamma) \frac{\alpha}{t}
+$$
+
+ここで $\gamma \in (0, 1)$ は減衰パラメータ。
+
+**手順**:
+1. $t$ 番目の仮説に対し、$p_t \leq \alpha_t$ なら棄却
+2. 棄却した場合、次の閾値を更新
+
+**保証**: $\text{FDR} \leq \alpha$ を時間全体で保持。
+
 ### 教科書
 
 - Bishop, C.M. (2006). *Pattern Recognition and Machine Learning*. Springer. [PDF available from Microsoft Research]

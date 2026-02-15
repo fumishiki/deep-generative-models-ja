@@ -1441,8 +1441,384 @@ $$
 これができれば数式修行ゾーン完全クリア！
 :::
 
+### 3.9 因果発見の最新手法（2023-2026）
+
+因果推論は「既知の因果構造で効果を推定」するが、**因果発見 (Causal Discovery)** は「データから因果構造そのものを学習」する。近年、制約ベース・スコアベース・ハイブリッド手法が急速に進化している。
+
+#### 3.9.1 因果発見の3つのアプローチ
+
+**1. 制約ベース (Constraint-Based)**:
+
+条件付き独立性検定でDAGを構築:
+
+$$
+X \perp\!\!\!\perp Y \mid Z \quad \Rightarrow \quad X \text{ と } Y \text{ の間に直接の因果はない}
+$$
+
+代表例: **PC Algorithm** (Peter-Clark), **FCI** (Fast Causal Inference)
+
+**アルゴリズム（PC Algorithm概要）**:
+
+1. 完全グラフから開始（全ノード間にエッジ）
+2. 各ペア $(X, Y)$ に対し、条件付き独立 $X \perp\!\!\!\perp Y \mid S$ を検定
+3. 独立なら $X - Y$ エッジを削除
+4. 向きを決定（V-structure検出）
+
+**問題点**:
+- 小サンプルで検定力が低い
+- 検定の累積エラーが伝播
+- 計算量 $O(2^p)$（$p$: 変数数）
+
+**2. スコアベース (Score-Based)**:
+
+DAGにスコアを割り当て、最適化:
+
+$$
+\mathcal{G}^* = \arg\max_{\mathcal{G} \in \text{DAG}} \text{Score}(\mathcal{G}; \mathcal{D})
+$$
+
+代表的スコア: **BIC** (Bayesian Information Criterion)
+
+$$
+\text{BIC}(\mathcal{G}) = \log P(\mathcal{D} \mid \mathcal{G}, \hat{\theta}) - \frac{k}{2} \log n
+$$
+
+ここで:
+- $\hat{\theta}$: 最尤推定パラメータ
+- $k$: パラメータ数（モデルの複雑さペナルティ）
+- $n$: サンプル数
+
+**問題点**:
+- DAG空間が超指数的に大きい（$p=10$ で約$4 \times 10^{18}$ 通り）
+- 局所最適に陥りやすい
+- 明示的な条件付き独立検定なし
+
+**3. ハイブリッド (Hybrid)**:
+
+制約ベースとスコアベースを統合 [^24] [^25]。
+
+#### 3.9.2 Hybrid Local Causal Discovery (HLCD)
+
+HLCD [^24] (2025年最新) は、**局所構造の比較**で効率的に因果発見する。
+
+**アイデア**: 各ノードの局所的マルコフブランケットを推定し、グローバルに統合。
+
+**アルゴリズム**:
+
+1. **Phase 1**: 制約ベースでcandidate skeleton取得（OR rule）
+
+   各ノード $X_i$ に対し、隣接候補 $\text{Adj}(X_i)$ を推定:
+
+   $$
+   Y \in \text{Adj}(X_i) \iff \nexists S : X_i \perp\!\!\!\perp Y \mid S
+   $$
+
+2. **Phase 2**: スコアベースで冗長エッジ削除
+
+   各エッジ $(X_i, X_j)$ に対し、スコア比較:
+
+   $$
+   \text{Score}(\mathcal{G} \setminus \{X_i - X_j\}) \quad \text{vs} \quad \text{Score}(\mathcal{G})
+   $$
+
+   スコア改善ならエッジ削除。
+
+3. **Phase 3**: 方向決定（V-structure + 拡張規則）
+
+**実験結果** (HLCD論文 [^24]):
+
+| データセット | PC Algorithm | NOTEARS | HLCD | 改善率 |
+|:-----------|:------------|:--------|:-----|:------|
+| Alarm (37 nodes) | 0.62 | 0.71 | 0.84 | +35% |
+| Child (20 nodes) | 0.58 | 0.68 | 0.79 | +36% |
+| Sachs (11 nodes) | 0.51 | 0.63 | 0.72 | +41% |
+
+HLCDは、従来手法を大幅に上回る精度を達成。
+
+#### 3.9.3 Differentiable Constraint-Based Discovery
+
+従来の制約ベース手法は、勾配法で最適化できない。Differentiable Constraint-Based Discovery [^25] (2025) は、d-分離を**微分可能関数**に変換する。
+
+**定義: d-分離の微分可能近似**
+
+$$
+\Pr(X \perp_d Y \mid Z \text{ in } \mathcal{G}) \approx \sigma\left(\sum_{\text{paths } p} \prod_{e \in p} \mathbf{A}_{e}\right)
+$$
+
+ここで:
+- $\mathbf{A}$: 隣接行列（学習可能）
+- $\sigma$: sigmoid関数（微分可能）
+
+**損失関数**:
+
+$$
+\mathcal{L} = \sum_{(X,Y,Z)} \left| \mathbb{1}[X \perp\!\!\!\perp Y \mid Z] - \Pr(X \perp_d Y \mid Z \text{ in } \mathcal{G}) \right|^2 + \lambda \|\mathbf{A}\|_1
+$$
+
+第1項: 条件付き独立性との一致、第2項: スパース性（DAGのエッジ数を抑制）
+
+**利点**:
+- 勾配降下で最適化可能
+- 制約ベースの厳密性 + スコアベースの柔軟性
+- 小サンプルでも安定
+
+**実験結果** (Zhou et al., 2025 [^25]):
+
+| サンプル数 | PC | FCI | Differentiable | 改善率 |
+|:----------|:---|:----|:--------------|:------|
+| n=100 | 0.42 | 0.48 | 0.67 | +60% |
+| n=500 | 0.61 | 0.65 | 0.79 | +30% |
+| n=2000 | 0.73 | 0.76 | 0.86 | +18% |
+
+小サンプルほど改善幅が大きい。
+
+#### 3.9.4 Recursive Causal Discovery
+
+Recursive Causal Discovery [^26] (2024) は、DAGを**階層的に構築**する。
+
+**アイデア**: 因果順序（topological order）を逐次決定:
+
+$$
+X_1 \to X_2 \to \cdots \to X_p
+$$
+
+**アルゴリズム**:
+
+```
+function RecursiveDiscovery(X, Depth=0):
+    if |X| == 1:
+        return Leaf(X)
+
+    # Step 1: Find root node (no parents in X)
+    r = argmin_{x ∈ X} Score(x | X \ {x})
+
+    # Step 2: Identify children of r
+    Children(r) = {x ∈ X \ {r} : x ⊥̸ r | X \ {r, x}}
+
+    # Step 3: Recurse on children
+    for c in Children(r):
+        Subgraph(c) = RecursiveDiscovery(Descendants(c), Depth+1)
+
+    return Graph(r, Children, Subgraphs)
+```
+
+**数式**:
+
+根ノード $r$ の選択基準（残差分散最小化）:
+
+$$
+r = \arg\min_{x \in \mathcal{X}} \mathbb{E}\left[\left(x - \mathbb{E}[x \mid \mathcal{X} \setminus \{x\}]\right)^2\right]
+$$
+
+根は他の変数から最も予測されない変数 = 親を持たない変数。
+
+**計算量**: $O(p^2 n)$ — NOTEARSの$O(p^3 n)$より高速。
+
+#### 3.9.5 時系列データの因果発見
+
+時系列データでは、**時間的順序**が因果制約を与える [^27]。
+
+**Granger因果性**:
+
+$$
+X \text{ Granger-causes } Y \iff P(Y_t \mid Y_{<t}, X_{<t}) \neq P(Y_t \mid Y_{<t})
+$$
+
+$X$ の過去情報が $Y$ の予測に寄与 ⇒ $X \to Y$ の因果。
+
+**VAR (Vector AutoRegression) モデル**:
+
+$$
+\mathbf{Y}_t = \sum_{\tau=1}^T \mathbf{A}_\tau \mathbf{Y}_{t-\tau} + \boldsymbol{\epsilon}_t
+$$
+
+$\mathbf{A}_\tau$ の要素 $A_{\tau, ij}$ が $X_i \to Y_j$ (lag $\tau$) の因果強度。
+
+**スパース学習**:
+
+$$
+\min_{\mathbf{A}} \|\mathbf{Y} - \mathbf{A} \mathbf{Y}_{\text{lag}}\|_F^2 + \lambda \|\mathbf{A}\|_1
+$$
+
+Lasso正則化でスパースなVARを学習 → 因果グラフ抽出。
+
+**最新手法** [^27]: 制約ベース（PC for time series）+ ノイズベース（LiNGAM）のハイブリッド。
+
+#### 3.9.6 因果発見の実践的課題
+
+**課題1: 同値クラス (Markov Equivalence Class)**
+
+異なるDAGが同じ条件付き独立関係を生成:
+
+$$
+X \to Y \to Z \quad \equiv \quad X \leftarrow Y \rightarrow Z
+$$
+
+どちらも $X \perp\!\!\!\perp Z \mid Y$ を満たす。
+
+**解決策**:
+- 介入データ (do-演算) で方向決定
+- 関数的制約（非線形・非ガウス）で識別（LiNGAM）
+
+**課題2: サンプル数 vs 変数数**
+
+$n < p$ (高次元) では、ほぼ全てのDAGが同じ条件付き独立を持つ（識別不可能）。
+
+**解決策**:
+- スパース性仮定（親ノード数を制限）
+- 事前知識の統合（一部のエッジを固定）
+
+**課題3: 未観測交絡**
+
+潜在変数 $U$ が存在すると、観測変数間に偽の相関:
+
+$$
+X \leftarrow U \rightarrow Y \quad \Rightarrow \quad X \not\perp\!\!\!\perp Y
+$$
+
+**解決策**:
+- FCI (Fast Causal Inference) — Partial Ancestral Graph (PAG) で表現
+- 操作変数法（IV）で識別
+
+#### 3.9.7 因果発見の評価指標
+
+| 指標 | 定義 | 意味 |
+|:-----|:-----|:-----|
+| **SHD** (Structural Hamming Distance) | 真のDAGと推定DAGの**エッジ差分** | エッジ挿入・削除・反転の合計 |
+| **SID** (Structural Intervention Distance) | 介入分布の差異 | 実用的因果効果推定の誤差 |
+| **F1 Score** | $\frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}}$ | エッジ検出の精度 |
+
+**数式（SHD）**:
+
+$$
+\text{SHD}(\mathcal{G}_{\text{true}}, \mathcal{G}_{\text{est}}) = |\mathcal{E}_{\text{true}} \triangle \mathcal{E}_{\text{est}}| + \#\text{reversed edges}
+$$
+
+SHD=0 なら完全一致。
+
+**数式（SID）**:
+
+$$
+\text{SID}(\mathcal{G}_1, \mathcal{G}_2) = \sum_{i=1}^p \left| \text{PA}_i^{\mathcal{G}_1} \triangle \text{PA}_i^{\mathcal{G}_2} \right|
+$$
+
+介入 $do(X_i)$ での親ノード差分の合計。
+
+### 3.10 因果推論の実践的応用例
+
+理論を学んだので、実世界での応用例を見ておこう。
+
+#### 3.10.1 医療: 治療効果推定
+
+**問題**: 新薬の効果を推定したいが、ランダム化試験（RCT）は高コスト・倫理的制約あり。
+
+**解決**: 観測データ（電子カルテ）+ 傾向スコアマッチング
+
+**数値例**:
+- 処置群（新薬投与）: 1,200人、平均回復日数 = 8.2日
+- 対照群（標準治療）: 3,800人、平均回復日数 = 10.5日
+- 単純差分: -2.3日（新薬が良い）
+
+だが交絡あり（重症患者ほど新薬投与）→ 傾向スコアでマッチング後:
+
+- ATE = -1.1日（95% CI: [-1.8, -0.4]）
+- 実際の効果は半分だった
+
+**教訓**: 単純比較は交絡で過大評価。因果推論で正確な効果測定が不可欠。
+
+#### 3.10.2 マーケティング: 広告効果測定
+
+**問題**: オンライン広告のコンバージョンへの因果効果は？
+
+**課題**:
+- 広告を見たユーザーは元々購買意欲が高い（逆因果）
+- 複数のチャネル（検索・SNS・ディスプレイ）が相互作用
+
+**解決**: DiD (Difference-in-Differences) + 地域ランダム化
+
+**実装**:
+- 地域Aで広告配信、地域Bで配信なし（似た人口動態）
+- 配信前後のコンバージョン率変化を比較
+
+$$
+\text{ATT} = (\bar{Y}_{A, \text{after}} - \bar{Y}_{A, \text{before}}) - (\bar{Y}_{B, \text{after}} - \bar{Y}_{B, \text{before}})
+$$
+
+**数値例**:
+- 地域A: 配信前3.2% → 配信後4.1% (+0.9%)
+- 地域B: 3.1% → 3.4% (+0.3%)
+- DiD推定: 0.9% - 0.3% = **0.6%**（純粋な広告効果）
+
+単純な前後比較（0.9%）は自然増を無視している。
+
+#### 3.10.3 経済政策: 最低賃金の雇用への影響
+
+**古典的論争**: 最低賃金引き上げ → 雇用減少？
+
+**Card & Krueger (1994)**: RDD + DiD
+
+**設定**:
+- ニュージャージー州が最低賃金引き上げ（1992年）
+- 隣接するペンシルバニア州は据え置き
+- ファーストフード店の雇用を比較
+
+**結果**: 雇用は**増加**（従来の経済理論と逆）
+
+$$
+\text{ATT}_{\text{DiD}} = +2.7 \text{ 人/店} \quad (p < 0.05)
+$$
+
+**解釈**:
+- 賃金上昇 → 労働者の生産性向上
+- 離職率低下 → 採用・訓練コスト削減
+- 総合的に雇用増
+
+**教訓**: 「理論的予測」と「実証的因果効果」は異なる。データで検証すべし。
+
+#### 3.10.4 テック企業: A/Bテスト vs 観測研究
+
+**A/Bテストの限界**:
+- 短期効果しか測れない（長期影響は？）
+- 一部のユーザーにのみ適用（外部妥当性は？）
+- ネットワーク効果で干渉（SUTVA違反）
+
+**解決**: A/Bテスト（短期） + 因果推論（長期・全体）のハイブリッド
+
+**Netflixの例** (仮想):
+- A/Bテスト: 新UIで視聴時間+5%（2週間）
+- 因果推論: 6ヶ月後のリテンション率を傾向スコアで推定 → +2%
+- 実際の長期効果は短期の半分以下
+
+**ハイブリッド戦略**:
+```
+1. A/Bテストで短期因果効果を確認（内部妥当性◎）
+2. A/Bデータを教師として、観測データで長期効果を予測
+3. 傾向スコア・DiDで全ユーザーへの効果を推定（外部妥当性◎）
+```
+
+#### 3.10.5 実践のための推奨事項
+
+| 状況 | 推奨手法 | 理由 |
+|:-----|:--------|:-----|
+| **ランダム化可能** | RCT (A/Bテスト) | ゴールドスタンダード、因果同定が確実 |
+| **ランダム化不可、交絡測定済み** | 傾向スコアマッチング / IPW | バイアス除去可能 |
+| **未測定交絡あり、IV利用可** | 操作変数法 (2SLS) | IV仮定下で識別可能 |
+| **連続的処置 (dosage)** | 一般化傾向スコア / ADRF | 連続処置の効果曲線推定 |
+| **カットオフある制度** | RDD | 局所因果効果を厳密に推定 |
+| **複数期間データ** | DiD / 合成統制法 | トレンド差分で交絡除去 |
+| **異質性の推定** | Causal Forest / Meta-Learner | 個人レベルの効果推定 |
+| **DAG不明** | 因果発見 (PC/HLCD) | データから構造学習 |
+
+**実装チェックリスト**:
+
+1. ✅ **仮定の明示**: Unconfoundedness / SUTVA / Overlap を確認
+2. ✅ **感度分析**: 未測定交絡がある場合の影響をシミュレーション
+3. ✅ **プラセボ検定**: 効果がないはずの変数で同じ分析 → 有意ならバイアス
+4. ✅ **標準誤差**: ブートストラップまたはクラスタ頑健標準誤差
+5. ✅ **可視化**: 傾向スコア分布・共変量バランス・効果の異質性
+
 :::message
-**進捗: 50% 完了** 因果推論理論を完全習得した。Rubin/Pearl/傾向スコア/IV/RDD/DiD/ML×因果を数式から導出した。次は実装ゾーンでJulia + CausalInference.jlで全手法を実装する。
+**進捗: 50% 完了** 因果推論理論 + 最新の因果発見手法（HLCD, Differentiable Constraint-Based, Recursive, 時系列）+ 実践応用例まで完全習得した。次は実装ゾーンでJulia + CausalInference.jlで全手法を実装する。
 :::
 
 ---

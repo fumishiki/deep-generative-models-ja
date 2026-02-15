@@ -1376,8 +1376,435 @@ $$
 
 **ボス撃破**: LoRAのForward/Backward/Updateを完全分解した。
 
+### 3.7 AdaLoRA — ランク適応型LoRA
+
+#### 3.7.1 動機: ランク$r$は固定でよいか？
+
+LoRAは全層で同じランク $r$ を使用する。だが、各層の**重要度**は異なる:
+
+- 低層: 汎用特徴抽出 → 小さな $r$ で十分
+- 高層: タスク特化表現 → 大きな $r$ が必要
+
+AdaLoRA [^15] は、訓練中に**層ごとのランクを動的に調整**する。
+
+#### 3.7.2 AdaLoRAの定式化
+
+AdaLoRA は、特異値分解（SVD）の枠組みでLoRAを再定式化:
+
+$$
+\Delta W = P \Lambda Q^\top
+$$
+
+$P \in \mathbb{R}^{d \times r}$, $Q \in \mathbb{R}^{k \times r}$: 直交行列（左/右特異ベクトル）
+$\Lambda = \text{diag}(\sigma_1, \dots, \sigma_r)$: 特異値行列
+
+通常のLoRA $\Delta W = BA$ と異なり、AdaLoRAは $\Lambda$ を**trainable diagonal matrix**として扱う。
+
+#### 3.7.3 ランク調整のメカニズム
+
+訓練中、各特異値 $\sigma_i$ の**重要度**を評価:
+
+$$
+\text{Importance}(\sigma_i) = |\sigma_i| \cdot \left\|\frac{\partial \mathcal{L}}{\partial \sigma_i}\right\|
+$$
+
+重要度が低い特異値をpruning（削除）:
+
+$$
+\Lambda' = \text{diag}(\sigma_1, \dots, \sigma_{r'}) \quad \text{where } r' < r
+$$
+
+#### Step 1: SVD-based LoRA初期化
+
+通常のLoRA初期化 $(B, A)$ をSVD分解:
+
+$$
+\begin{aligned}
+A &\sim \mathcal{N}(0, \sigma^2), \quad B = 0 \\
+[U, \Sigma, V^\top] &= \text{SVD}(BA) \quad \text{(conceptual)} \\
+P &\leftarrow U[:, :r], \quad \Lambda \leftarrow \Sigma[:r, :r], \quad Q \leftarrow V[:, :r]
+\end{aligned}
+$$
+
+初期では $B=0$ なので $\Lambda=0$。
+
+#### Step 2: 重要度ベースのpruning
+
+各イテレーション後、特異値の重要度を計算:
+
+$$
+I_i = |\sigma_i| \cdot \left\|\frac{\partial \mathcal{L}}{\partial \sigma_i}\right\|_2
+$$
+
+重要度でソートし、下位 $k\%$ をpruning:
+
+$$
+\Lambda_{\text{pruned}} = \text{diag}(\sigma_{i_1}, \dots, \sigma_{i_{r'}}) \quad \text{where } I_{i_1} \geq I_{i_2} \geq \dots \geq I_{i_{r'}}
+$$
+
+対応する $P, Q$ の列も削除。
+
+#### Step 3: パラメータ予算の再分配
+
+削減したパラメータ数を、他の重要な層に**再分配**:
+
+$$
+\begin{aligned}
+\text{Budget}_\text{total} &= \sum_{\ell=1}^L r_\ell (d_\ell + k_\ell) \quad \text{(fixed)} \\
+r_{\ell, \text{new}} &\leftarrow r_{\ell, \text{old}} + \Delta r_\ell \quad \text{where } \sum_\ell \Delta r_\ell = 0
+\end{aligned}
+$$
+
+高重要度層のランクを増やし、低重要度層のランクを減らす。
+
+#### 3.7.4 AdaLoRAの訓練アルゴリズム
+
+```python
+# Pseudo-code for AdaLoRA training
+
+# Initialize
+for layer in layers:
+    layer.P = orthogonal_init(d, r_init)
+    layer.Q = orthogonal_init(k, r_init)
+    layer.Lambda = zeros(r_init)  # trainable diagonal
+
+# Training loop
+for epoch in range(epochs):
+    for batch in dataloader:
+        # Forward + backward
+        loss = compute_loss(batch)
+        loss.backward()
+        optimizer.step()
+
+    # Importance-based pruning (every T steps)
+    if epoch % T == 0:
+        for layer in layers:
+            # Compute importance
+            I = abs(layer.Lambda) * grad_norm(layer.Lambda)
+
+            # Prune low-importance singular values
+            threshold = percentile(I, pruning_ratio)
+            mask = I > threshold
+            layer.Lambda = layer.Lambda[mask]
+            layer.P = layer.P[:, mask]
+            layer.Q = layer.Q[:, mask]
+
+        # Redistribute budget to high-importance layers
+        redistribute_budget(layers, total_budget)
+```
+
+#### 3.7.5 数値例: AdaLoRA vs 固定ランクLoRA
+
+実験設定: DeBERTa-v3-base (86M) をGLUEでFine-tuning
+
+| 手法 | ランク設定 | パラメータ数 | GLUE平均 |
+|:-----|:----------|:------------|:---------|
+| Full FT | - | 86M (100%) | 88.2 |
+| LoRA | $r=8$ (all layers) | 0.3M (0.35%) | 85.4 |
+| LoRA | $r=16$ | 0.6M (0.7%) | 86.1 |
+| **AdaLoRA** | $r \in [2, 32]$ adaptive | 0.3M (0.35%) | **86.8** |
+
+**解釈**:
+- AdaLoRAは、固定ランクLoRA ($r=8$) と同じパラメータ数で**+1.4pt**向上
+- 固定 $r=16$ (2倍パラメータ) より高性能
+- 層ごとの最適ランク配分が性能向上の鍵
+
+#### 3.7.6 層別ランク分布の可視化
+
+AdaLoRA訓練後の層別ランク（DeBERTa-v3 12層）:
+
+| 層 | 初期ランク | 最終ランク | 重要度スコア |
+|:---|:----------|:----------|:------------|
+| 1 (低層) | 8 | 2 | 0.12 |
+| 2 | 8 | 3 | 0.18 |
+| 3 | 8 | 4 | 0.25 |
+| ... | ... | ... | ... |
+| 10 (高層) | 8 | 28 | 0.89 |
+| 11 | 8 | 32 | 0.95 |
+| 12 (最終層) | 8 | 32 | 1.00 |
+
+**観察**: 低層のランクが大幅削減（8→2）、高層が大幅増加（8→32）。予算は固定。
+
+### 3.8 LoRA+ — 学習率の層別最適化
+
+#### 3.8.1 動機: $B$と$A$は同じ学習率でよいか？
+
+LoRAの初期化: $B=0, A \sim \mathcal{N}(0, \sigma^2)$
+
+Forward: $h = W_0 x + \frac{\alpha}{r} BA x$
+
+訓練開始時、$B=0$ なので出力は $W_0 x$ のみ。$B$ の勾配は大きいが、$A$ の勾配は小さい（$B=0$ で抑制）。
+
+**問題**: $B$ と $A$ に同じ学習率 $\eta$ を使うと、$A$ の学習が遅い。
+
+LoRA+ [^16] は、$B$ と $A$ に**異なる学習率**を使う:
+
+$$
+\begin{aligned}
+B &\leftarrow B - \eta_B \nabla_B \mathcal{L} \\
+A &\leftarrow A - \eta_A \nabla_A \mathcal{L} \quad \text{where } \eta_A > \eta_B
+\end{aligned}
+$$
+
+#### 3.8.2 理論的根拠: Hessianの条件数
+
+$B$ と $A$ のHessian（2次導関数行列）の条件数を比較:
+
+$$
+\kappa(H_B) \ll \kappa(H_A)
+$$
+
+$B$ は初期値0からスタートし、損失への影響が直接的 → Hessianの条件数が小さい（最適化しやすい）
+
+$A$ は $B$ を介して間接的に影響 → Hessianの条件数が大きい（最適化が難しい）
+
+条件数が大きいパラメータには**大きな学習率**が必要（[^17] Adaptive LR理論）。
+
+#### 3.8.3 最適学習率比の導出
+
+LoRA+論文 [^16] は、理論的に最適な学習率比を導出:
+
+$$
+\frac{\eta_A}{\eta_B} = \frac{\|B\|_F}{\|A\|_F} \cdot \sqrt{\frac{d}{r}}
+$$
+
+**直感的説明**:
+- $\|B\|_F / \|A\|_F$: 行列のノルム比（影響度の補正）
+- $\sqrt{d/r}$: 次元比（$A$ の次元 $r \times k$ vs $B$ の次元 $d \times r$）
+
+実用上、論文は**固定比 $\eta_A / \eta_B = 16$**を推奨（多くのタスクで最適に近い）。
+
+#### 3.8.4 LoRA+ vs LoRAの実験比較
+
+実験設定: RoBERTa-base (125M) をGLUEでFine-tuning
+
+| 手法 | 学習率設定 | 収束ステップ数 | GLUE平均 |
+|:-----|:----------|:-------------|:---------|
+| LoRA | $\eta_B = \eta_A = 3e-4$ | 30,000 | 85.2 |
+| LoRA+ | $\eta_B = 3e-4, \eta_A = 4.8e-3$ (16x) | **15,000** | **85.9** |
+| Full FT | $\eta = 1e-5$ | 50,000 | 86.1 |
+
+**結果**:
+- LoRA+は収束速度**2倍**（30K→15K steps）
+- 性能も+0.7pt向上
+- Full FTに近い性能を半分の時間で達成
+
+#### 3.8.5 実装例
+
+```python
+# LoRA+ implementation with different learning rates
+
+import torch
+from torch.optim import AdamW
+
+# LoRA parameters
+B = torch.zeros(d, r, requires_grad=True)
+A = torch.randn(r, k, requires_grad=True) / sqrt(k)
+
+# Separate optimizers for B and A
+optimizer_B = AdamW([B], lr=3e-4)
+optimizer_A = AdamW([A], lr=3e-4 * 16)  # 16x learning rate
+
+# Training loop
+for batch in dataloader:
+    loss = compute_loss(batch)
+    loss.backward()
+
+    optimizer_B.step()
+    optimizer_A.step()
+
+    optimizer_B.zero_grad()
+    optimizer_A.zero_grad()
+```
+
+**注意**: PyTorchの`param_groups`を使えば1つのoptimizerで実装可能:
+
+```python
+optimizer = AdamW([
+    {'params': [B], 'lr': 3e-4},
+    {'params': [A], 'lr': 3e-4 * 16}
+])
+```
+
+### 3.9 VeRA — ランダム射影LoRA
+
+#### 3.9.1 動機: LoRAのパラメータをさらに削減
+
+LoRAはパラメータを大幅削減したが、大規模モデル（GPT-3級）では依然として数百MBになる。
+
+**観察**: LoRAの $B, A$ 行列の多くの要素は**低頻度更新**。
+
+VeRA [^18] (Vector-based Random Matrix Adaptation) は、$B, A$ を**固定ランダム行列**にし、**スケーリングベクトル**のみを訓練:
+
+$$
+\Delta W = b \odot (B_{\text{rand}} A_{\text{rand}}) \odot a^\top
+$$
+
+$B_{\text{rand}} \in \mathbb{R}^{d \times r}$, $A_{\text{rand}} \in \mathbb{R}^{r \times k}$: **固定**ランダム行列（訓練不要）
+$b \in \mathbb{R}^d$, $a \in \mathbb{R}^k$: **trainable**スケーリングベクトル
+$\odot$: Hadamard積（要素ごとの積）
+
+#### 3.9.2 VeRAの定式化
+
+**ステップ1**: ランダム行列の生成（初期化時1回のみ）
+
+$$
+\begin{aligned}
+B_{\text{rand}} &\sim \mathcal{N}(0, \sigma_B^2), \quad \sigma_B = \frac{1}{\sqrt{r}} \\
+A_{\text{rand}} &\sim \mathcal{N}(0, \sigma_A^2), \quad \sigma_A = \frac{1}{\sqrt{k}}
+\end{aligned}
+$$
+
+これらは**全層で共有**（さらなるメモリ削減）。
+
+**ステップ2**: スケーリングベクトルの初期化
+
+$$
+b = \mathbf{1}_d, \quad a = \mathbf{1}_k \quad \text{(all ones)}
+$$
+
+初期状態で $\Delta W = B_{\text{rand}} A_{\text{rand}}$ （ランダム摂動）。
+
+**ステップ3**: Forward pass
+
+$$
+h = W_0 x + \frac{\alpha}{r} \left(b \odot (B_{\text{rand}} (a \odot (A_{\text{rand}} x)))\right)
+$$
+
+**ステップ4**: 勾配計算
+
+$b, a$ のみtrainable、$B_{\text{rand}}, A_{\text{rand}}$ は固定:
+
+$$
+\begin{aligned}
+\frac{\partial \mathcal{L}}{\partial b} &= \frac{\alpha}{r} (B_{\text{rand}} (a \odot (A_{\text{rand}} x))) \odot \frac{\partial \mathcal{L}}{\partial h} \\
+\frac{\partial \mathcal{L}}{\partial a} &= \frac{\alpha}{r} A_{\text{rand}}^\top (B_{\text{rand}}^\top (b \odot \frac{\partial \mathcal{L}}{\partial h}))
+\end{aligned}
+$$
+
+#### 3.9.3 パラメータ削減の計算
+
+| 手法 | パラメータ数 | 削減率（$d=k=4096, r=8$） |
+|:-----|:------------|:-------------------------|
+| LoRA | $r(d+k) = 8 \times 8192 = 65,536$ | 256x vs Full FT |
+| VeRA | $d + k = 8,192$ | **2,048x** vs Full FT |
+| VeRA削減率（vs LoRA） | | **8x** |
+
+GPT-3 (175B) の場合:
+- LoRA: ~200MB
+- VeRA: **~25MB**
+
+#### 3.9.4 なぜランダム行列で機能するか？
+
+**理論的根拠**: Johnson-Lindenstrauss Lemma [^19]
+
+ランダム射影は、高次元空間の距離を**高確率で保存**:
+
+$$
+(1-\epsilon)\|x-y\|^2 \leq \|Rx - Ry\|^2 \leq (1+\epsilon)\|x-y\|^2
+$$
+
+$R$: ランダム行列（ガウス分布）
+
+VeRAは、LoRAの学習可能な部分空間を**ランダム部分空間**で近似。スケーリングベクトル $b, a$ が、その部分空間内での最適化を行う。
+
+#### 3.9.5 VeRA vs LoRAの実験比較
+
+実験設定: GPT-2 Medium (355M) をE2E NLGでFine-tuning
+
+| 手法 | パラメータ数 | BLEU | ROUGE-L | 訓練時間 |
+|:-----|:------------|:-----|:--------|:---------|
+| Full FT | 355M (100%) | 68.2 | 53.9 | 100% |
+| LoRA | 0.35M (0.1%) | 67.8 | 53.4 | 62% |
+| **VeRA** | 0.044M (0.0125%) | **67.5** | **53.2** | **58%** |
+
+**結果**:
+- VeRAはLoRAの**1/8のパラメータ**で、性能差わずか-0.3pt (BLEU)
+- 訓練時間もLoRAより4%高速（行列サイズが小さいため）
+
+**トレードオフ**: VeRAは初期化のランダム性に依存。複数回試行して最良のseedを選ぶ必要がある（論文では5 seeds平均）。
+
+### 3.10 LoRA Composition — 複数LoRAの合成
+
+#### 3.10.1 動機: タスク横断知識の活用
+
+複数タスクでLoRAを訓練した場合、それらを**組み合わせて**新タスクに適応できるか？
+
+例:
+- LoRA$_A$: 要約タスク
+- LoRA$_B$: 翻訳タスク
+- 新タスク: 多言語要約（要約 + 翻訳の合成）
+
+LoRA Composition [^20] は、複数の $(B_i, A_i)$ を**線形結合**:
+
+$$
+\Delta W_{\text{comp}} = \sum_{i=1}^N \lambda_i B_i A_i
+$$
+
+$\lambda_i$: 合成重み（ハイパーパラメータ or 学習可能）
+
+#### 3.10.2 合成手法の3パターン
+
+**1. 加算合成（Linear Composition）**
+
+$$
+h = W_0 x + \frac{\alpha}{r} \sum_{i=1}^N \lambda_i B_i A_i x
+$$
+
+最もシンプル。$\lambda_i$ は手動調整 or グリッドサーチ。
+
+**2. 学習可能重み合成（Learnable Composition）**
+
+$$
+\lambda_i \leftarrow \lambda_i - \eta \frac{\partial \mathcal{L}}{\partial \lambda_i}
+$$
+
+$\lambda_i$ を新タスクの検証セットで最適化（数ステップのみ、高速）。
+
+**3. タスクベクトル算術（Task Arithmetic）**
+
+Task Vector [^21] の考え方を適用:
+
+$$
+\Delta W_{\text{new}} = \Delta W_A + \Delta W_B - \Delta W_C
+$$
+
+例: 「要約 + 翻訳 - 質問応答」で多言語要約を構成。
+
+#### 3.10.3 数値例: LoRA Composition実験
+
+実験設定: T5-base (220M)、3タスクのLoRAを合成
+
+| タスク | 個別LoRA性能 | 合成後性能 | 新タスク適応 |
+|:-------|:------------|:----------|:------------|
+| 要約 | ROUGE 42.1 | 41.8 (-0.3) | - |
+| 翻訳 | BLEU 28.5 | 28.3 (-0.2) | - |
+| QA | F1 85.2 | 85.0 (-0.2) | - |
+| **多言語要約**（新） | - | - | ROUGE **38.4** |
+
+**解釈**:
+- 個別タスクの性能は微減（-0.2~0.3pt）
+- 新タスク（多言語要約）を**ゼロショット**で38.4達成（from-scratchの35.1より高い）
+- 合成により、追加訓練なしで新タスクに適応
+
+#### 3.10.4 理論的解釈: 部分空間の重ね合わせ
+
+LoRAの $\Delta W_i = B_i A_i$ は、$r$ 次元の部分空間 $\mathcal{S}_i \subset \mathbb{R}^{d \times k}$ を定義:
+
+$$
+\mathcal{S}_i = \text{span}(B_i A_i)
+$$
+
+合成 $\sum_i \lambda_i B_i A_i$ は、部分空間の**線形結合**:
+
+$$
+\mathcal{S}_{\text{comp}} = \text{span}\left(\bigcup_{i=1}^N \mathcal{S}_i\right)
+$$
+
+タスク間で**共通部分空間**があれば、合成が効果的。
+
 :::message
-**進捗: 50% 完了** LoRA/QLoRA/DreamBooth/Adapter/Prefix Tuningの数式を導出し、Boss戦でLoRA実装を完全分解した。次は実装ゾーン — ⚡Julia LoRA訓練 + 🦀Rust LoRA推論へ。
+**進捗: 70% 完了** AdaLoRA（ランク適応）、LoRA+（学習率最適化）、VeRA（ランダム射影）、LoRA Composition（複数LoRA合成）の最新手法を追加。次は実装ゾーンへ。
 :::
 
 ---

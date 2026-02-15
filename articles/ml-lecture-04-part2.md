@@ -1161,6 +1161,386 @@ print("→ This is why VAE latent spaces need careful design (第10回)")
 
 ---
 
+### 6.9 最新研究 (2020-2026)
+
+#### 6.9.1 Fisher情報量の理論的進展
+
+Fisher情報量は統計的推測の基礎であり、最近の研究はその応用範囲を拡大している。
+
+**期待Fisher情報 vs 観測Fisher情報**
+
+Fisher情報量には2つの表現がある:
+
+$$
+I(\theta) = \mathbb{E}\left[\left(\frac{\partial \log p(X; \theta)}{\partial \theta}\right)^2\right] = -\mathbb{E}\left[\frac{\partial^2 \log p(X; \theta)}{\partial \theta^2}\right]
+$$
+
+前者は「期待」、後者は「観測」と呼ばれる。2013年のarXiv論文[^13]は、**期待Fisher情報を使った信頼区間が観測Fisher情報を使った場合より平均二乗誤差の意味で精度が高い**ことを証明した。2021年の続編[^14]では、この結果を区間推定の相対性能評価に拡張している。
+
+**潜在変数モデルへの拡張**
+
+2024年の研究[^15]は、潜在変数モデルに対するFisher情報量の明示的定義を可能にする新しい最尤推定フレームワークを提案した。従来、潜在変数 $\mathbf{z}$ を積分消去した周辺尤度 $p(\mathbf{x}; \theta) = \int p(\mathbf{x}, \mathbf{z}; \theta) d\mathbf{z}$ ではFisher情報量の計算が困難だった。この研究は、変分近似と組み合わせることで効率的な推定を実現している。
+
+**テンソルモデルのFisher情報**
+
+2025年の最新論文[^16]は、ポアソンCanonical Polyadic (CP) テンソル分解のFisher情報量を導出した。3次元以上のテンソルデータ（例: 時間×空間×周波数）の統計的性質を定量化することで、Cramér-Rao下界に基づく推定量の評価が可能になる。
+
+```python
+import numpy as np
+
+# Fisher Information for Bernoulli distribution
+def fisher_bernoulli(theta):
+    """I(θ) = 1 / (θ(1-θ)) for Bernoulli(θ)"""
+    return 1.0 / (theta * (1 - theta))
+
+# Fisher Information for Gaussian distribution
+def fisher_gaussian(sigma):
+    """I(σ²) = 1 / (2σ⁴) for N(μ, σ²) with known μ"""
+    return 1.0 / (2 * sigma**4)
+
+# Cramér-Rao lower bound
+def cramer_rao_bound(n, fisher_info):
+    """Var(θ̂) ≥ 1 / (n * I(θ))"""
+    return 1.0 / (n * fisher_info)
+
+# Example: Bernoulli parameter estimation
+theta_true = 0.3
+n_samples = 100
+
+# Fisher information
+I_theta = fisher_bernoulli(theta_true)
+cr_bound = cramer_rao_bound(n_samples, I_theta)
+
+print(f"=== Cramér-Rao Bound for Bernoulli(θ={theta_true}) ===")
+print(f"Fisher Information: I(θ) = {I_theta:.4f}")
+print(f"CR Bound (n={n_samples}): Var(θ̂) ≥ {cr_bound:.6f}")
+print(f"Std(θ̂) ≥ {np.sqrt(cr_bound):.4f}")
+
+# Empirical verification
+np.random.seed(42)
+n_experiments = 10000
+estimates = []
+for _ in range(n_experiments):
+    data = np.random.binomial(1, theta_true, n_samples)
+    theta_hat = data.mean()  # MLE
+    estimates.append(theta_hat)
+
+empirical_var = np.var(estimates)
+print(f"\nEmpirical variance: {empirical_var:.6f}")
+print(f"Efficiency: {cr_bound / empirical_var:.4f}")
+print("→ MLE is asymptotically efficient (approaches 1.0 as n→∞)")
+```
+
+#### 6.9.2 測度論的確率論の実用化
+
+測度論は確率論の厳密な基礎を与えるが、「抽象的すぎて実用的でない」という誤解がある。最近の研究は、測度論的フレームワークの実用的応用を示している。
+
+**Taylor測度と確率過程**
+
+2025年のarXiv論文[^17]は、Taylor測度という概念を導入し、Brown運動、マルチンゲール、ランダムウォーク、時系列モデルを統一的に扱う枠組みを提案した。これはTaylor展開の一般化であり、確率過程の局所的性質を捉える。
+
+**連続時間確率過程のMetric Temporal Logic**
+
+2023年の研究[^18]は、連続時間確率過程がMetric Temporal Logic (MTL) の論理式を満たすかどうかの可測性を確立した。これは形式検証とモンテカルロ法を橋渡しする成果で、自動運転車の安全性検証などに応用されている。
+
+**確率空間の構成**
+
+arXiv論文[^19]は、決定論的過程から出発して抽象的確率空間を構成する手法を提案した。これは「確率的シミュレーションは決定論的アルゴリズムである」という哲学的洞察を形式化している。
+
+#### 6.9.3 情報理論の最新展開
+
+KLダイバージェンスとエントロピーは機械学習の中心概念だが、その理論はまだ発展途上だ。
+
+**α-ダイバージェンスとベイズ最適化**
+
+2024年の論文[^20]は、KLダイバージェンスを一般化したα-ダイバージェンスに基づく新しいベイズ最適化手法「Alpha Entropy Search (AES)」を提案した。α-ダイバージェンスは:
+
+$$
+D_\alpha(p \| q) = \frac{1}{\alpha(\alpha-1)} \left( \int p(x)^\alpha q(x)^{1-\alpha} dx - 1 \right)
+$$
+
+$\alpha \to 1$ でKLダイバージェンスに収束する。AESは獲得関数として、次の評価点での目的関数値と大域的最大値の「依存度」を最大化する。この依存度をα-ダイバージェンスで測ることで、KLベースの手法より探索と活用のバランスを柔軟に制御できる。
+
+**Jensen-ShannonとKLの関係**
+
+2025年の論文[^21]は、Jensen-Shannon (JS) ダイバージェンスとKLダイバージェンスの最適な下界を確立した:
+
+$$
+\text{JS}(p \| q) = \frac{1}{2} D_{\text{KL}}(p \| m) + \frac{1}{2} D_{\text{KL}}(q \| m), \quad m = \frac{p + q}{2}
+$$
+
+JSダイバージェンスはGANの目的関数として知られているが、KLとの定量的関係は長年不明だった。この成果により、GANの収束性理論が改善された。
+
+**幾何学的情報理論 (GAIT)**
+
+従来のKLダイバージェンスは確率分布を「点」として扱い、空間の幾何を無視する。2019年の論文[^22]は、確率分布の台（support）の幾何学的構造を考慮した新しいダイバージェンス「Geometric Information」を提案した。これは最適輸送理論とKLダイバージェンスを統合する試みだ。
+
+```python
+import numpy as np
+
+def kl_divergence(p, q):
+    """KL(p || q) = Σ p log(p/q)"""
+    return np.sum(p * np.log(p / (q + 1e-10) + 1e-10))
+
+def js_divergence(p, q):
+    """JS(p || q) = 0.5*KL(p||m) + 0.5*KL(q||m), m = (p+q)/2"""
+    m = (p + q) / 2
+    return 0.5 * kl_divergence(p, m) + 0.5 * kl_divergence(q, m)
+
+# Example: Compare KL and JS
+p = np.array([0.5, 0.3, 0.2])
+q = np.array([0.4, 0.4, 0.2])
+
+kl_pq = kl_divergence(p, q)
+kl_qp = kl_divergence(q, p)
+js_pq = js_divergence(p, q)
+
+print(f"=== Divergence Comparison ===")
+print(f"KL(p || q) = {kl_pq:.6f}")
+print(f"KL(q || p) = {kl_qp:.6f}")
+print(f"JS(p || q) = {js_pq:.6f}")
+print(f"\nKL is asymmetric: KL(p||q) ≠ KL(q||p)")
+print(f"JS is symmetric: JS(p||q) = JS(q||p)")
+print(f"JS(p||q) ≤ min(KL(p||q), KL(q||p)): {js_pq <= min(kl_pq, kl_qp)}")
+```
+
+#### 6.9.4 統計的推測の新理論
+
+**Extended Likelihoodとランダム未知量**
+
+2023年の論文[^23]は、従来の尤度理論を「固定された未知パラメータ」から「ランダムな未知量」へ拡張した。これは頻度主義とベイズ主義の中間的立場で、事前分布を仮定せずにランダム効果を扱える。
+
+**Maximum Ideal Likelihood**
+
+2024年の研究[^24]は、潜在変数モデルに対する新しい推定フレームワーク「Maximum Ideal Likelihood (MIL)」を提案した。従来のMLEは周辺化 $p(\mathbf{x}) = \int p(\mathbf{x}, \mathbf{z}) d\mathbf{z}$ が困難だったが、MILは潜在変数を「理想的な観測」として扱うことで、計算可能な目的関数を導出する。漸近的にMLEと等価であり、信頼区間も構成できる。
+
+```python
+import numpy as np
+from scipy import stats
+
+# Example: Bayesian vs Frequentist confidence intervals
+np.random.seed(42)
+
+# True parameter
+theta_true = 0.6
+
+# Generate data
+n = 30
+data = np.random.binomial(1, theta_true, n)
+n_heads = data.sum()
+
+# Frequentist 95% confidence interval (normal approximation)
+theta_mle = n_heads / n
+se = np.sqrt(theta_mle * (1 - theta_mle) / n)
+freq_ci = (theta_mle - 1.96 * se, theta_mle + 1.96 * se)
+
+# Bayesian 95% credible interval (Beta posterior)
+# Prior: Beta(1, 1) = Uniform(0, 1)
+post_a = 1 + n_heads
+post_b = 1 + (n - n_heads)
+bayes_ci = (stats.beta.ppf(0.025, post_a, post_b),
+             stats.beta.ppf(0.975, post_a, post_b))
+
+print(f"=== Confidence Intervals (n={n}, θ_true={theta_true}) ===")
+print(f"MLE: θ̂ = {theta_mle:.3f}")
+print(f"Frequentist 95% CI: [{freq_ci[0]:.3f}, {freq_ci[1]:.3f}]")
+print(f"Bayesian 95% credible interval: [{bayes_ci[0]:.3f}, {bayes_ci[1]:.3f}]")
+print(f"True θ in Freq CI: {freq_ci[0] <= theta_true <= freq_ci[1]}")
+print(f"True θ in Bayes CI: {bayes_ci[0] <= theta_true <= bayes_ci[1]}")
+
+# Coverage simulation
+n_sims = 10000
+freq_coverage = 0
+bayes_coverage = 0
+
+for _ in range(n_sims):
+    data_sim = np.random.binomial(1, theta_true, n)
+    n_heads_sim = data_sim.sum()
+
+    # Frequentist CI
+    theta_mle_sim = n_heads_sim / n
+    se_sim = np.sqrt(theta_mle_sim * (1 - theta_mle_sim) / n)
+    freq_ci_sim = (theta_mle_sim - 1.96 * se_sim, theta_mle_sim + 1.96 * se_sim)
+    if freq_ci_sim[0] <= theta_true <= freq_ci_sim[1]:
+        freq_coverage += 1
+
+    # Bayesian CI
+    post_a_sim = 1 + n_heads_sim
+    post_b_sim = 1 + (n - n_heads_sim)
+    bayes_ci_sim = (stats.beta.ppf(0.025, post_a_sim, post_b_sim),
+                     stats.beta.ppf(0.975, post_a_sim, post_b_sim))
+    if bayes_ci_sim[0] <= theta_true <= bayes_ci_sim[1]:
+        bayes_coverage += 1
+
+print(f"\nCoverage over {n_sims} simulations:")
+print(f"  Frequentist: {freq_coverage / n_sims:.3f} (target: 0.95)")
+print(f"  Bayesian: {bayes_coverage / n_sims:.3f} (target: 0.95)")
+```
+
+#### 6.9.5 非正規化統計モデルとスコアマッチング
+
+確率密度関数を正規化定数込みで計算するのは困難な場合が多い。Energy-Based Model (EBM) では $p(x) = \frac{1}{Z}\exp(-E(x))$ と表現するが、分配関数 $Z = \int \exp(-E(x))dx$ の計算が指数的に困難だ。
+
+**スコアマッチング** [^9] は、正規化定数を計算せずに確率モデルを推定する手法だ。スコア関数 $s(x) = \nabla_x \log p(x)$ は正規化定数に依存しないことを利用する:
+
+$$
+s(x) = \nabla_x \log p(x) = \nabla_x \log \frac{1}{Z}\exp(-E(x)) = \nabla_x [-E(x) - \log Z] = -\nabla_x E(x)
+$$
+
+スコアマッチング目的関数:
+
+$$
+J(\theta) = \frac{1}{2}\mathbb{E}_{p_{\text{data}}(x)}\left[\| \nabla_x \log p_\theta(x) - \nabla_x \log p_{\text{data}}(x) \|^2\right]
+$$
+
+これは正規化定数なしで計算可能な形に変形できる（部分積分を用いた恒等式）。拡散モデル [^10] の理論的基盤の一つでもある。
+
+```python
+import numpy as np
+
+# Score matching toy example
+def energy_function(x, theta):
+    """E(x; θ) = (x - θ)^2 / 2"""
+    return 0.5 * (x - theta)**2
+
+def score_function(x, theta):
+    """s(x; θ) = -∇E = -(x - θ)"""
+    return -(x - theta)
+
+# True distribution: N(2, 1)
+theta_true = 2.0
+sigma = 1.0
+
+# Generate data
+np.random.seed(42)
+data = np.random.normal(theta_true, sigma, 1000)
+
+# Score matching loss (simplified)
+def score_matching_loss(theta, data):
+    """J(θ) ≈ (1/N) Σ ||s(x; θ) - s_true(x)||^2"""
+    scores_model = score_function(data, theta)
+    scores_true = -(data - theta_true)  # true score for N(μ, 1)
+    return np.mean((scores_model - scores_true)**2)
+
+# Optimize
+theta_range = np.linspace(0, 4, 100)
+losses = [score_matching_loss(t, data) for t in theta_range]
+theta_sm = theta_range[np.argmin(losses)]
+
+print(f"=== Score Matching Estimation ===")
+print(f"True θ: {theta_true:.3f}")
+print(f"Score matching estimate: {theta_sm:.3f}")
+print(f"MLE estimate: {data.mean():.3f}")
+print(f"\n→ Score matching avoids computing Z = ∫ exp(-E(x)) dx")
+```
+
+#### 6.9.6 確率論とLLMの深い接続
+
+LLMの訓練は、次トークン予測という確率的タスクに帰着する。この接続を明確にしよう。
+
+**自己回帰モデルと連鎖規則**:
+
+$$
+p(\mathbf{x}) = \prod_{t=1}^{T} p(x_t \mid x_{<t})
+$$
+
+各時刻での条件付き分布 $p(x_t \mid x_{<t})$ はCategorical分布であり、Softmaxで定義される:
+
+$$
+p(x_t = k \mid x_{<t}) = \frac{\exp(z_k)}{\sum_{j=1}^{V} \exp(z_j)}, \quad z = f_\theta(x_{<t})
+$$
+
+**Cross-Entropy損失とMLE**:
+
+$$
+\mathcal{L} = -\frac{1}{T}\sum_{t=1}^{T} \log p_\theta(x_t \mid x_{<t}) = -\frac{1}{T} \log p_\theta(\mathbf{x})
+$$
+
+これは負の対数尤度であり、最小化はMLEと等価だ。
+
+**Perplexityと条件付きエントロピー**:
+
+$$
+\text{Perplexity} = \exp(\mathcal{L}) = \exp\left(-\frac{1}{T}\sum_{t=1}^{T} \log p(x_t \mid x_{<t})\right)
+$$
+
+これは条件付きエントロピー $H(X_t \mid X_{<t})$ の指数である。Perplexity=10は「各時刻で平均10個の候補から選択している」ことを意味する。
+
+**確率的ランキングとTop-k/Nucleus Sampling**:
+
+温度パラメータ $\tau$ を導入した確率分布:
+
+$$
+p_\tau(x_t = k) = \frac{\exp(z_k/\tau)}{\sum_j \exp(z_j/\tau)}
+$$
+
+- $\tau \to 0$: 決定論的（argmax）
+- $\tau = 1$: 元の分布
+- $\tau > 1$: より平坦（多様性増加）
+
+Nucleus sampling（Top-p）は累積確率 $\sum_{k \in \text{top-p}} p(k) \geq p$ を満たす最小集合からサンプリング。これは「確率質量の上位p%」という動的閾値だ。
+
+```python
+import numpy as np
+
+def temperature_sampling(logits, temperature=1.0):
+    """Apply temperature scaling to logits and sample"""
+    scaled_logits = logits / temperature
+    # Softmax with numerical stability
+    exp_logits = np.exp(scaled_logits - scaled_logits.max())
+    probs = exp_logits / exp_logits.sum()
+    return np.random.choice(len(probs), p=probs)
+
+def nucleus_sampling(logits, p=0.9):
+    """Nucleus (top-p) sampling"""
+    probs = np.exp(logits - logits.max())
+    probs = probs / probs.sum()
+
+    # Sort in descending order
+    sorted_indices = np.argsort(probs)[::-1]
+    sorted_probs = probs[sorted_indices]
+
+    # Find nucleus
+    cumsum = np.cumsum(sorted_probs)
+    nucleus_size = np.searchsorted(cumsum, p) + 1
+
+    # Sample from nucleus
+    nucleus_probs = sorted_probs[:nucleus_size]
+    nucleus_probs = nucleus_probs / nucleus_probs.sum()
+    local_idx = np.random.choice(nucleus_size, p=nucleus_probs)
+    return sorted_indices[local_idx]
+
+# Example
+np.random.seed(42)
+logits = np.array([2.0, 1.5, 1.0, 0.5, 0.1])  # 5 token logits
+
+print("=== Sampling Strategies ===")
+print(f"Logits: {logits}")
+
+# Greedy (temperature=0)
+greedy_idx = np.argmax(logits)
+print(f"Greedy (argmax): token {greedy_idx}")
+
+# Temperature sampling
+print(f"\nTemperature sampling (1000 samples):")
+for temp in [0.5, 1.0, 2.0]:
+    samples = [temperature_sampling(logits, temp) for _ in range(1000)]
+    counts = np.bincount(samples, minlength=len(logits))
+    print(f"  τ={temp}: {counts / 1000}")
+
+# Nucleus sampling
+print(f"\nNucleus (top-p=0.9) sampling:")
+samples = [nucleus_sampling(logits, p=0.9) for _ in range(1000)]
+counts = np.bincount(samples, minlength=len(logits))
+print(f"  Distribution: {counts / 1000}")
+```
+
+:::message
+**LLMの確率論的解釈**: 次トークン予測モデルは、シーケンスの条件付き確率分布を学習している。サンプリング戦略（temperature, top-k, nucleus）は、この確率分布からの「制御されたランダム化」だ。決定論的生成（greedy）は最尤推定、確率的生成はベイズ推論の視点と対応する。
+:::
+
+---
+
 ## 参考文献
 
 ### 主要論文
@@ -1198,6 +1578,42 @@ print("→ This is why VAE latent spaces need careful design (第10回)")
 
 [^12]: Hu, E.J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W. (2021). "LoRA: Low-Rank Adaptation of Large Language Models." *ICLR 2022*.
 @[card](https://arxiv.org/abs/2106.09685)
+
+[^13]: Relative Performance of Expected and Observed Fisher Information in Covariance Estimation for Maximum Likelihood Estimates. (2013). *arXiv preprint*.
+@[card](https://arxiv.org/abs/1305.1056)
+
+[^14]: Relative Performance of Fisher Information in Interval Estimation. (2021). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2107.04620)
+
+[^15]: Maximum Ideal Likelihood Estimator: A New Estimation and Inference Framework for Latent Variable Models. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2410.01194)
+
+[^16]: A Latent-Variable Formulation of the Poisson Canonical Polyadic Tensor Model: Maximum Likelihood Estimation and Fisher Information. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2511.05352)
+
+[^17]: The Taylor Measure and its Applications. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2508.04760)
+
+[^18]: On the Metric Temporal Logic for Continuous Stochastic Processes. (2023). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2308.00984)
+
+[^19]: A Probability Space at Inception of Stochastic Process. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.20824)
+
+[^20]: Alpha Entropy Search for New Information-based Bayesian Optimization. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2411.16586)
+
+[^21]: Connecting Jensen-Shannon and Kullback-Leibler. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.20644)
+
+[^22]: GAIT: A Geometric Approach to Information Theory. (2019). *arXiv preprint*.
+@[card](https://arxiv.org/abs/1906.08325)
+
+[^23]: Statistical Inference for Random Unknowns via Modifications of Extended Likelihood. (2023). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2310.09955)
+
+[^24]: Maximum Ideal Likelihood Estimator: An New Estimation and Inference Framework for Latent Variable Models. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/abs/2410.01194)
 
 ### 教科書
 

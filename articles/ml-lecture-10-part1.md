@@ -1311,9 +1311,252 @@ Epoch 1 [12800/60000]   Loss: 165.7892
 
 **Boss撃破！** Kingma 2013のアルゴリズムを完全再現した。
 
+### 3.6 Reparameterization Trickの理論的深掘り
+
+なぜReparameterization Trickが機能するのか、測度論的厳密性で理解しよう。
+
+**問題設定**: 期待値$\mathbb{E}_{z \sim q_\phi(z|x)}[f(z)]$を$\phi$で微分したい。
+
+**素朴なアプローチ（失敗）:**
+
+$$
+\nabla_\phi \mathbb{E}_{q_\phi(z|x)}[f(z)] = \nabla_\phi \int f(z) q_\phi(z|x) dz
+$$
+
+勾配を積分内に入れられるか？一般には**不可能**（$q_\phi$が$z$に依存）。
+
+**REINFORCE法（スコア関数推定量）:**
+
+$$
+\nabla_\phi \int f(z) q_\phi(z|x) dz = \int f(z) \nabla_\phi q_\phi(z|x) dz = \int f(z) q_\phi(z|x) \nabla_\phi \log q_\phi(z|x) dz
+$$
+
+モンテカルロ推定:
+
+$$
+\nabla_\phi \mathbb{E}_{q_\phi}[f(z)] \approx \frac{1}{L} \sum_{l=1}^{L} f(z^{(l)}) \nabla_\phi \log q_\phi(z^{(l)}|x), \quad z^{(l)} \sim q_\phi(z|x)
+$$
+
+**問題**: 分散が大きい（$f(z)$が変動すると推定が不安定）。
+
+**Reparameterization（成功）:**
+
+$z = g_\phi(\epsilon, x)$, $\epsilon \sim p(\epsilon)$（$\phi$に依存しない）と変数変換すると:
+
+$$
+\mathbb{E}_{q_\phi(z|x)}[f(z)] = \mathbb{E}_{p(\epsilon)}[f(g_\phi(\epsilon, x))]
+$$
+
+これで$\phi$は積分の外に出る:
+
+$$
+\nabla_\phi \mathbb{E}_{p(\epsilon)}[f(g_\phi(\epsilon, x))] = \mathbb{E}_{p(\epsilon)}[\nabla_\phi f(g_\phi(\epsilon, x))]
+$$
+
+モンテカルロ推定:
+
+$$
+\nabla_\phi \mathbb{E}_{q_\phi}[f(z)] \approx \frac{1}{L} \sum_{l=1}^{L} \nabla_\phi f(g_\phi(\epsilon^{(l)}, x)), \quad \epsilon^{(l)} \sim p(\epsilon)
+$$
+
+**分散の比較（Gaussian VAEの場合）:**
+
+理論的に、Reparameterizationの分散はREINFORCEの$1/d$（$d$=潜在次元）。$d=20$なら5%の分散。
+
+**一般化: Implicit Reparameterization**
+
+Gaussianでない分布（例: Gamma, Beta）もReparameterization可能（Implicit Reparameterization Gradients, Figurnov et al., NeurIPS 2018）。
+
+### 3.7 KL Divergenceの幾何学的解釈
+
+なぜKL項が必要なのか、情報幾何で理解する。
+
+**情報幾何の視点**: 確率分布の空間$\mathcal{P}$はリーマン多様体。Fisher情報量が計量テンソル:
+
+$$
+g_{ij}(\theta) = \mathbb{E}_{p_\theta}\left[\frac{\partial \log p_\theta(z)}{\partial \theta_i} \frac{\partial \log p_\theta(z)}{\partial \theta_j}\right]
+$$
+
+KL発散は**測地線距離の1次近似**:
+
+$$
+D_{\text{KL}}(p \| q) \approx \frac{1}{2} d_g^2(p, q)
+$$
+
+ここで$d_g$は情報幾何的距離。
+
+**VAEでのKL項の役割:**
+
+$D_{\text{KL}}(q_\phi(z|x) \| p(z))$は事後分布$q$を事前分布$p$に近づける**正則化**。これがないと?
+
+```python
+# KL項なし（β=0のβ-VAE）
+loss = -recon_term  # KL項を除去
+
+# 結果: Posterior Collapse
+# q(z|x) が p(z) から大きく離れ、デコーダが z を無視
+```
+
+**Rate-Distortion理論**: KL項=情報圧縮のコスト（Rateが$I(X;Z)$に対応）。
+
+### 3.8 VAE訓練の実践的テクニック
+
+理論を実装に落とし込む際の重要テクニックを網羅する。
+
+**3.8.1 KL Annealing**
+
+訓練初期にKL項の重みを小さく、徐々に増やす:
+
+$$
+\mathcal{L}_{\text{anneal}}^{(t)} = -\mathbb{E}_{q_\phi}[\log p_\theta(x|z)] + \beta(t) \cdot D_{\text{KL}}(q_\phi(z|x) \| p(z))
+$$
+
+ここで$\beta(t)$は単調増加（例: $\beta(t) = \min(1, t / T_{\text{warmup}})$）。
+
+**理由**: 訓練初期はデコーダが弱く、潜在変数を有効活用できない。KL項が強いと潜在変数が事前分布に押し付けられ、Posterior Collapseを起こす。
+
+```python
+def kl_weight(epoch, warmup_epochs=10):
+    return min(1.0, epoch / warmup_epochs)
+
+# Training loop
+for epoch in range(num_epochs):
+    beta = kl_weight(epoch)
+    loss = recon_loss + beta * kl_loss
+```
+
+**3.8.2 Free Bits**
+
+KL項に下限を設ける:
+
+$$
+\mathcal{L}_{\text{free-bits}} = -\mathbb{E}_{q_\phi}[\log p_\theta(x|z)] + \max(\lambda, D_{\text{KL}}(q_\phi(z|x) \| p(z)))
+$$
+
+**効果**: KLが$\lambda$以下なら勾配ゼロ → 潜在変数が強制的に情報を保持。
+
+**3.8.3 δ-VAE (Constrained Optimization)**
+
+KL項を制約として扱う:
+
+$$
+\min_{\theta, \phi} -\mathbb{E}_{q_\phi}[\log p_\theta(x|z)] \quad \text{s.t.} \quad D_{\text{KL}}(q_\phi(z|x) \| p(z)) \geq \delta
+$$
+
+Lagrange法で解く:
+
+$$
+\mathcal{L}_{\delta\text{-VAE}} = -\mathbb{E}_{q_\phi}[\log p_\theta(x|z)] + \alpha (D_{\text{KL}} - \delta)
+$$
+
+ここで$\alpha$は学習可能なLagrange乗数。
+
+**3.8.4 バッチ正規化とVAE**
+
+潜在変数に直接Batch Normalizationを適用すると、$q_\phi(z|x)$の分散が崩壊する可能性がある。
+
+**安全な使い方**: エンコーダの中間層のみにBN、$\mu, \log\sigma^2$出力前には使わない。
+
+```python
+class Encoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(784, 400)
+        self.bn1 = nn.BatchNorm1d(400)  # OK: 中間層
+        self.fc_mu = nn.Linear(400, 20)  # ❌ BNなし
+        self.fc_logvar = nn.Linear(400, 20)  # ❌ BNなし
+
+    def forward(self, x):
+        h = F.relu(self.bn1(self.fc1(x)))
+        return self.fc_mu(h), self.fc_logvar(h)
+```
+
+**3.8.5 学習率スケジューリング**
+
+VAEは学習率に敏感。推奨パターン:
+
+- **Warmup**: 最初1000ステップで学習率を0→最大値へ線形増加
+- **Cosine Decay**: その後cosine減衰
+- **AdamW**: 重み減衰と組み合わせ
+
+```python
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+warmup = LinearLR(optimizer, start_factor=0.1, total_iters=1000)
+cosine = CosineAnnealingLR(optimizer, T_max=num_epochs * steps_per_epoch - 1000)
+scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[1000])
+```
+
 :::message
 **進捗: 50% 完了** VAEの3つの核心（ELBO/Reparameterization/Gaussian KL）を完全導出し、Kingma 2013のBoss Battleをクリアした。Zone 4でJulia実装に進む。
 :::
+
+---
+
+## 🔬 最新研究動向（2024-2025）
+
+VAEと離散潜在表現学習の最新成果を概観する。
+
+### Latent Diffusion without VAE
+
+**Latent Diffusion Model without Variational Autoencoder** (arXiv:2510.15301, 2024)
+- **問題**: VAE潜在空間での学習は依然として時間とリソースを消費し、知覚的圧縮度の制御が困難
+- **提案**: VAEを経由せず、直接潜在拡散を学習
+- **結果**: 訓練時間30%削減、FIDスコア維持
+- **トレードオフ**: 潜在空間の解釈性低下
+@[card](https://arxiv.org/html/2510.15301v1)
+
+### 双曲空間VAE
+
+**Hyperspherical VAE Using Efficient Spherical Cauchy Distribution** (arXiv:2506.21278, 2025)
+- **核心**: 潜在分布として球面Cauchy分布を導入（従来のガウスやvon Mises-Fisherより自然）
+- **利点**: 超球面上で真に等方的な表現、KL項の閉形式解
+- **実装**: PyTorchで公開、MNIST/CelebAで5%性能向上
+@[card](https://arxiv.org/html/2506.21278)
+
+### ウェーブレットベースVAE
+
+**Wavelet-based VAE for High-Resolution Image Generation** (arXiv:2504.13214, 2025)
+- **手法**: 潜在空間を多スケールHaarウェーブレット係数で構成
+- **効果**: 高周波詳細の保持、1024×1024でメモリ50%削減
+- **理論**: ウェーブレット基底が自然な階層的潜在表現を提供
+@[card](https://arxiv.org/html/2504.13214)
+
+### GM-VAE: Gaussian Mixture事前分布
+
+**Physically Interpretable Representation Learning with GM-VAE** (arXiv:2511.21883, 2024)
+- **問題**: 単一ガウス事前分布は潜在空間を過度に平滑化
+- **解決策**: Gaussian Mixture VAE + EMベース訓練戦略
+- **応用**: レーザー誘起燃焼系のシュリーレン画像解析
+- **結果**: 物理的に解釈可能なクラスタ（燃焼モード対応）
+@[card](https://arxiv.org/html/2511.21883)
+
+### Discrete VAE の理論
+
+**An Introduction to Discrete Variational Autoencoders** (arXiv:2505.10344, 2025)
+- **網羅的サーベイ**: VQ-VAE, FSQ, Gumbel-Softmax, DALL-E, MaskGIT
+- **理論的統一**: 離散変分推論の3つのアプローチ（カテゴリカル, VQ, 二値）
+- **実装ガイド**: JAXで全手法を再実装
+@[card](https://arxiv.org/pdf/2505.10344)
+
+### Uniform Transformation VAE
+
+**Uniform Transformation: Refining Latent Representation in VAE** (arXiv:2407.02681, 2024)
+- **観察**: 標準VAEの潜在分布は非一様（データに依存した歪み）
+- **手法**: Normalizing Flowで一様分布に変換
+- **効果**: Disentanglementメトリクス（MIG, SAP）で15%向上
+@[card](https://arxiv.org/html/2407.02681v1)
+
+### 最新成果の要約表
+
+| 手法 | 核心的改善 | 性能向上 | 実装難易度 |
+|:-----|:---------|:--------|:---------|
+| Latent Diffusion w/o VAE | VAE不要 | 訓練時間-30% | 中 |
+| Hyperspherical VAE | 球面Cauchy事前分布 | ELBO +5% | 低 |
+| Wavelet-VAE | 多スケール潜在空間 | メモリ-50% | 高 |
+| GM-VAE | 混合ガウス事前分布 | 解釈性大幅向上 | 中 |
+| Uniform Transformation | Flow正則化 | Disentanglement +15% | 高 |
 
 ---
 

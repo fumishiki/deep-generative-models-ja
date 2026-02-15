@@ -1702,3 +1702,147 @@ Reverse KL: D(q_model || p_data)
 :::
 
 ---
+
+## 補遺 — Fisher 情報と Cramér-Rao 限界の現代的応用
+
+:::message
+**統計的推論の基礎定理**: Cramér-Rao 限界は、あらゆる不偏推定量の分散の下限を与える。Fisher 情報行列はこの限界を定量化し、機械学習における最適化・不確実性定量化・モデル選択の理論的基盤となる。
+:::
+
+### Fisher 情報行列の定義と解釈
+
+**定義**: パラメータ $\theta \in \mathbb{R}^d$ を持つ統計モデル $p(x;\theta)$ に対し、**Fisher 情報行列** $\mathcal{I}(\theta)$ は:
+
+$$
+\mathcal{I}(\theta)_{ij} = \mathbb{E}_{p(x;\theta)} \left[ \left( \frac{\partial \log p(x;\theta)}{\partial \theta_i} \right) \left( \frac{\partial \log p(x;\theta)}{\partial \theta_j} \right) \right]
+$$
+
+または同値的に（正則条件下）:
+
+$$
+\mathcal{I}(\theta)_{ij} = -\mathbb{E}_{p(x;\theta)} \left[ \frac{\partial^2 \log p(x;\theta)}{\partial \theta_i \partial \theta_j} \right]
+$$
+
+**幾何学的解釈**: $\mathcal{I}(\theta)$ は統計多様体上の Riemann 計量を定義し、KL divergence の局所的な2次近似を与える:
+
+$$
+D_{\text{KL}}(p(\cdot;\theta) \| p(\cdot;\theta + d\theta)) \approx \frac{1}{2} d\theta^\top \mathcal{I}(\theta) d\theta
+$$
+
+### Cramér-Rao 下限の定理
+
+**定理** (Cramér-Rao): $\hat{\theta}(x)$ を $\theta$ の任意の不偏推定量とする。このとき:
+
+$$
+\text{Var}(\hat{\theta}) \geq \mathcal{I}(\theta)^{-1}
+$$
+
+ここで不等式は半正定値の意味で成立（$A \geq B \Leftrightarrow A - B$ が半正定値）。
+
+**系**: スカラーパラメータの場合:
+
+$$
+\text{Var}(\hat{\theta}) \geq \frac{1}{\mathcal{I}(\theta)}
+$$
+
+**証明スケッチ**: Cauchy-Schwarz 不等式を $\mathbb{E}[\hat{\theta} \cdot s]$（ここで $s = \partial \log p / \partial \theta$ は score function）に適用。
+
+### 最尤推定量の漸近的性質
+
+**定理** (MLE の漸近正規性): 正則条件下で、サンプルサイズ $N$ に対するMLE $\hat{\theta}_{\text{MLE}}$ は:
+
+$$
+\sqrt{N}(\hat{\theta}_{\text{MLE}} - \theta_0) \xrightarrow{d} \mathcal{N}(0, \mathcal{I}(\theta_0)^{-1})
+$$
+
+**含意**:
+1. MLE は漸近的に不偏
+2. MLE は Cramér-Rao 下限を漸近的に達成（**漸近有効性**）
+3. 収束速度は $O(1/\sqrt{N})$
+
+### 実用的応用1: 不確実性定量化
+
+MLE $\hat{\theta}$ の信頼区間を Fisher 情報から構築:
+
+$$
+\hat{\theta} \pm z_{\alpha/2} \sqrt{\frac{1}{N \mathcal{I}(\hat{\theta})}}
+$$
+
+ここで $z_{\alpha/2}$ は標準正規分布の $(1-\alpha/2)$ 分位点。
+
+**例**: 深層学習の重みパラメータの不確実性推定:
+
+```python
+def fisher_information_uncertainty(model, data_loader, param_idx):
+    """Fisher情報に基づく不確実性推定"""
+    fisher_diag = torch.zeros_like(model.parameters()[param_idx])
+
+    for x, y in data_loader:
+        log_prob = model.log_likelihood(x, y)
+        grad = torch.autograd.grad(log_prob, model.parameters()[param_idx],
+                                    create_graph=True)[0]
+        fisher_diag += grad ** 2
+
+    fisher_diag /= len(data_loader.dataset)
+    std_error = 1.0 / torch.sqrt(fisher_diag)
+    return std_error
+```
+
+### 実用的応用2: 自然勾配法
+
+**自然勾配**: Fisher 情報を用いた勾配の再スケーリング:
+
+$$
+\theta_{t+1} = \theta_t + \alpha \mathcal{I}(\theta_t)^{-1} \nabla_\theta \mathcal{L}(\theta_t)
+$$
+
+**動機**: パラメータ空間での Euclid 距離ではなく、統計的距離（KL divergence）で最急降下。
+
+**実装**（K-FAC 近似）:
+
+$$
+\mathcal{I}(\theta) \approx \text{BlockDiag}(A_1 \otimes G_1, \ldots, A_L \otimes G_L)
+$$
+
+ここで $A_\ell$ は層 $\ell$ の入力の2次モーメント、$G_\ell$ は勾配の2次モーメント。
+
+### 実用的応用3: モデル選択と FIM
+
+**FIM トレース**: モデルの「複雑さ」の尺度:
+
+$$
+\text{Complexity} = \text{tr}(\mathcal{I}(\theta))
+$$
+
+**BIC (Bayesian Information Criterion)** の導出で Fisher 情報が現れる:
+
+$$
+\text{BIC} = -2 \log \mathcal{L}(\hat{\theta}) + k \log N
+$$
+
+ここで $k = \text{rank}(\mathcal{I}(\hat{\theta}))$ は有効パラメータ数。
+
+### 例: ガウス分布の Fisher 情報
+
+$$
+p(x; \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left( -\frac{(x-\mu)^2}{2\sigma^2} \right)
+$$
+
+Fisher 情報行列:
+
+$$
+\mathcal{I}(\mu, \sigma^2) = \begin{bmatrix}
+\frac{1}{\sigma^2} & 0 \\
+0 & \frac{1}{2\sigma^4}
+\end{bmatrix}
+$$
+
+**Cramér-Rao 限界**:
+
+$$
+\text{Var}(\hat{\mu}) \geq \frac{\sigma^2}{N}, \quad \text{Var}(\hat{\sigma}^2) \geq \frac{2\sigma^4}{N}
+$$
+
+サンプル平均とサンプル分散は、これらの限界を（漸近的に）達成。
+
+---

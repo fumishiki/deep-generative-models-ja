@@ -1624,6 +1624,9 @@ Juliaの創始者の言葉:
 [^7]: Kingma, D. P., Salimans, T., Jozefowicz, R., Chen, X., Sutskever, I., & Welling, M. (2016). Improved Variational Inference with Inverse Autoregressive Flow. *NeurIPS 2016*.
 @[card](https://arxiv.org/abs/1606.04934)
 
+[^30]: Zhao, S., Song, J., & Ermon, S. (2020). A Batch Normalized Inference Network Keeps the KL Vanishing Away.
+@[card](https://arxiv.org/abs/2004.12585)
+
 ### 関連論文
 
 - Burgess, C. P., Higgins, I., Pal, A., Matthey, L., Watters, N., Desjardins, G., & Lerchner, A. (2018). Understanding disentangling in β-VAE. arXiv:1804.03599.
@@ -1674,6 +1677,260 @@ Juliaの創始者の言葉:
 - `μ` (U+03BC), `σ` (U+03C3), `θ` (U+03B8), `φ` (U+03C6), `ε` (U+03B5) — Juliaでは変数名にギリシャ文字を使える
 - `.` — broadcast演算子（要素ごと適用）
 - `.*` — 要素ごとの積（$\odot$ に対応）
+
+---
+
+## 補遺 — VAE 実装の実践的テクニック
+
+:::message
+**実装の罠**: 理論的に正しいVAEも、実装の細部（正規化、初期化、学習率）で性能が大きく変わる[^30]。本節では実証済みのベストプラクティスを紹介。
+:::
+
+### テクニック1: Batch Normalization の正しい使い方
+
+**原則**[^30]: エンコーダには BN を使い、デコーダには使わない。
+
+```python
+class VAEEncoder(nn.Module):
+    def __init__(self, input_dim=784, hidden_dim=400, latent_dim=20):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)  # ✅ エンコーダにBN
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+
+    def forward(self, x):
+        h = F.relu(self.bn1(self.fc1(x)))  # BN → ReLU
+        return self.fc_mu(h), self.fc_logvar(h)
+
+class VAEDecoder(nn.Module):
+    def __init__(self, latent_dim=20, hidden_dim=400, output_dim=784):
+        super().__init__()
+        self.fc1 = nn.Linear(latent_dim, hidden_dim)
+        # ❌ デコーダにはBNを使わない（サンプリング時に不安定）
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, z):
+        h = F.relu(self.fc1(z))
+        return torch.sigmoid(self.fc2(h))
+```
+
+**理由**: デコーダに BN を使うと、テスト時のバッチサイズや統計量の違いで出力が変動。
+
+### テクニック2: Weight Initialization の最適化
+
+```python
+def init_weights(m):
+    """Xavier初期化でVAEの重みを初期化"""
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+
+# 適用
+encoder.apply(init_weights)
+decoder.apply(init_weights)
+
+# logvar の初期値を -1 に設定（σ = exp(-0.5) ≈ 0.6）
+nn.init.constant_(encoder.fc_logvar.bias, -1)
+```
+
+**効果**: 初期の KL 項を小さく保ち、posterior collapse を防ぐ。
+
+### テクニック3: Learning Rate Scheduling
+
+```python
+optimizer = torch.optim.Adam(
+    list(encoder.parameters()) + list(decoder.parameters()),
+    lr=1e-3
+)
+
+# Cosine Annealing with Warm Restarts
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    optimizer,
+    T_0=10,    # 最初のサイクル長（epochs）
+    T_mult=2,  # 次のサイクルは2倍長く
+    eta_min=1e-5
+)
+
+for epoch in range(100):
+    train_one_epoch(...)
+    scheduler.step()
+```
+
+**効果**: 周期的に学習率をリセットし、局所最適解から脱出。
+
+### テクニック4: Gradient Clipping（勾配爆発の防止）
+
+```python
+# 訓練ループ内
+loss.backward()
+torch.nn.utils.clip_grad_norm_(
+    list(encoder.parameters()) + list(decoder.parameters()),
+    max_norm=5.0  # 勾配ノルムの上限
+)
+optimizer.step()
+```
+
+**適用場面**: 深い階層VAE、RNN-based VAE で必須。
+
+### テクニック5: Reconstruction Loss の正規化
+
+```python
+def vae_loss(x, x_recon, mu, logvar, reduction='sum'):
+    """
+    正規化されたVAE損失
+
+    Parameters
+    ----------
+    reduction : str
+        'sum' — バッチ全体で合計（KL項と整合）
+        'mean' — バッチ平均（スケール不変）
+    """
+    batch_size = x.size(0)
+
+    # 再構成誤差（Binary Cross-Entropy）
+    recon_loss = F.binary_cross_entropy(
+        x_recon, x,
+        reduction='sum' if reduction == 'sum' else 'mean'
+    )
+
+    # KL発散
+    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+
+    if reduction == 'mean':
+        kl_loss /= batch_size
+
+    return recon_loss + kl_loss
+
+# 推奨: reduction='mean' でバッチサイズ不変
+```
+
+### テクニック6: Test-Time Sampling の注意点
+
+```python
+@torch.no_grad()
+def generate_samples(decoder, n_samples=64, latent_dim=20, device='cuda'):
+    """VAEからサンプル生成"""
+    decoder.eval()  # ⚠️ 必須
+
+    # 事前分布からサンプリング
+    z = torch.randn(n_samples, latent_dim, device=device)
+
+    # 生成
+    samples = decoder(z)
+
+    return samples
+
+# ❌ 間違い: decoder.train() のままサンプリング
+#    → BatchNorm の running stats が壊れる
+
+# ✅ 正しい: decoder.eval() でサンプリング
+```
+
+### テクニック7: Hierarchical VAE のスキップ接続
+
+```python
+class HierarchicalVAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.enc_z1 = Encoder(input_dim, z1_dim)
+        self.enc_z2 = Encoder(z1_dim, z2_dim)
+        self.dec_z1 = Decoder(z2_dim, z1_dim)
+        self.dec_x = Decoder(z1_dim + z2_dim, input_dim)  # ✅ z2も直接使用
+
+    def forward(self, x):
+        # Encode
+        mu1, logvar1 = self.enc_z1(x)
+        z1 = reparameterize(mu1, logvar1)
+        mu2, logvar2 = self.enc_z2(z1)
+        z2 = reparameterize(mu2, logvar2)
+
+        # Decode with skip connection
+        mu1_prior, logvar1_prior = self.dec_z1(z2)
+        z_concat = torch.cat([z1, z2], dim=-1)  # スキップ接続
+        x_recon = self.dec_x(z_concat)
+
+        return x_recon, mu1, logvar1, mu2, logvar2, mu1_prior, logvar1_prior
+```
+
+**効果**: 上位層の情報を直接デコーダに渡し、表現力向上。
+
+### テクニック8: Debugging Checklist
+
+| 症状 | 原因 | 対策 |
+|:---|:---|:---|
+| KL ≈ 0 (posterior collapse) | KL項が大きすぎる | Free-bits / β-warmup |
+| Reconstruction 改善せず | 学習率が高すぎる | lr=1e-4 に下げる |
+| NaN 発生 | logvar が発散 | Gradient clipping / logvar を [-10, 10] にclamp |
+| 生成画像がぼやける | MSE損失使用 | BCE または Perceptual Loss に変更 |
+| バッチサイズで性能変動 | Decoder に BN | BN を削除 |
+
+```python
+# logvar の clamp
+logvar = torch.clamp(logvar, min=-10, max=10)
+sigma = torch.exp(0.5 * logvar)
+
+# NaN チェック
+assert not torch.isnan(loss).any(), "NaN detected in loss!"
+```
+
+### 実装例: 完全なVAE訓練ループ
+
+```python
+def train_vae(
+    encoder,
+    decoder,
+    train_loader,
+    epochs=100,
+    latent_dim=20,
+    beta_schedule='linear',
+    device='cuda'
+):
+    """Production-ready VAE training"""
+    encoder.train()
+    decoder.train()
+
+    optimizer = torch.optim.Adam(
+        list(encoder.parameters()) + list(decoder.parameters()),
+        lr=1e-3, betas=(0.9, 0.999)
+    )
+
+    for epoch in range(epochs):
+        # β-annealing
+        if beta_schedule == 'linear':
+            beta = min(1.0, epoch / 10)  # 10 epochs で β=1
+        else:
+            beta = 1.0
+
+        epoch_loss = 0
+        for x, _ in train_loader:
+            x = x.to(device)
+
+            # Forward
+            mu, logvar = encoder(x)
+            logvar = torch.clamp(logvar, -10, 10)  # 安定化
+            z = reparameterize(mu, logvar)
+            x_recon = decoder(z)
+
+            # Loss
+            recon_loss = F.binary_cross_entropy(x_recon, x, reduction='sum')
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            loss = recon_loss + beta * kl_loss
+
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                list(encoder.parameters()) + list(decoder.parameters()),
+                max_norm=5.0
+            )
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        print(f"Epoch {epoch}: Loss={epoch_loss / len(train_loader.dataset):.4f}")
+```
 
 ---
 

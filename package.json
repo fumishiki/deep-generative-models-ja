@@ -1,0 +1,26 @@
+{
+  "name": "zenn",
+  "version": "1.0.0",
+  "description": "This repository hosts my articles and books published on [Zenn.dev](https://zenn.dev/fumi_shiki).",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fumi-shiki/zenn.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/fumi-shiki/zenn/issues"
+  },
+  "homepage": "https://github.com/fumi-shiki/zenn#readme",
+  "dependencies": {
+    "zenn-cli": "^0.4.5"
+  }
+}

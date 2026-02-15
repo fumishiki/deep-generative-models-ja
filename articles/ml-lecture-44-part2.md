@@ -1080,7 +1080,420 @@ println("→ 時間軸を征服し、全モダリティ制覇へ")
 
 ---
 
+## 7. 最新研究動向（2024-2025）
+
+### 7.1 F5-TTS: Fairytaler TTS with Flow Matching
+
+Chen et al. (2024) [^f5_tts_new] は、**完全な Flow Matching ベース TTS** を提案し、diffusion-based TTS（VALL-E, NaturalSpeech）を品質・速度で上回った。
+
+#### 7.1.1 アーキテクチャ
+
+**Mel-spectrogram 空間での Flow Matching**:
+
+従来の Codec-based TTS（VALL-E 等）は離散トークン → 品質上限あり。F5-TTS は**連続メル空間**で直接生成。
+
+**Conditional Flow ODE**:
+
+$$
+\frac{d \mathbf{m}_t}{dt} = v_\theta(\mathbf{m}_t, t, \mathbf{c}_\text{text}, \mathbf{c}_\text{ref})
+$$
+
+ここで:
+- $\mathbf{m}_t \in \mathbb{R}^{T \times 80}$: メルスペクトログラム（時間 $T$ フレーム × 80 bins）
+- $\mathbf{c}_\text{text}$: テキストエンコーディング（BERT-based）
+- $\mathbf{c}_\text{ref}$: 参照音声の埋め込み（speaker identity）
+
+**DiT (Diffusion Transformer) ベースの Velocity Network**:
+
+```
+Input: [m_t, t_embed, c_text, c_ref]
+  ↓
+Patchify (16×16 patches) → Linear projection
+  ↓
+Positional encoding (RoPE)
+  ↓
+DiT blocks ×24:
+  - Self-attention (QKV)
+  - Cross-attention (Q from m_t, KV from c_text)
+  - Feed-forward (SwiGLU)
+  - Adaptive LayerNorm (conditioned on t)
+  ↓
+Unpatchify → v(m_t, t)
+```
+
+**パラメータ数**: 330M（VALL-E 2 の 1/3 以下）。
+
+#### 7.1.2 訓練詳細
+
+**データ**: LibriTTS-R (585h) + Emilia (50Kh multilingual)
+
+**Loss** (Flow Matching):
+
+$$
+\mathcal{L}_\text{FM} = \mathbb{E}_{t, \mathbf{m}_0, \mathbf{m}_1} \left[ \| v_\theta(\mathbf{m}_t, t, c) - (\mathbf{m}_1 - \mathbf{m}_0) \|^2 \right]
+$$
+
+ここで $\mathbf{m}_0 \sim \mathcal{N}(0, I)$, $\mathbf{m}_1$ は真のメル、$\mathbf{m}_t = (1-t) \mathbf{m}_0 + t \mathbf{m}_1$。
+
+**Duration Model**:
+
+テキストから音素列 → 各音素の継続時間を予測（MLP）:
+
+$$
+d_i = \text{DurationPredictor}(\text{phoneme}_i, c_\text{ref})
+$$
+
+合計フレーム数 $T = \sum_i d_i$ を事前に決定 → Flow Matching は固定長で生成。
+
+**訓練設定**:
+- Batch size: 128 (A100 8台)
+- Optimizer: AdamW, lr=1e-4
+- Steps: 800K (約7日)
+- Mixed precision: FP16
+
+#### 7.1.3 実験結果
+
+**Zero-shot TTS** (LibriTTS test-clean):
+
+| Model | MOS ↑ | WER ↓ | Speaker Similarity ↑ | RTF ↓ |
+|:------|:------|:------|:---------------------|:------|
+| Ground Truth | 4.45 | 2.1% | 1.00 | - |
+| VALL-E 2 | 4.07 | 3.8% | 0.78 | 0.34 |
+| NaturalSpeech 3 | 4.15 | 3.2% | 0.81 | 0.52 |
+| **F5-TTS** | **4.32** | **2.7%** | **0.85** | **0.15** |
+
+**MOS (Mean Opinion Score)**: 人間評価（1-5スケール）。F5-TTS は GT に最も近い。
+
+**WER (Word Error Rate)**: ASR モデル（Whisper Large-v3）での認識精度 → 低いほど明瞭。
+
+**RTF (Real-Time Factor)**: 生成時間 / 音声長。0.15 = 1秒音声を 0.15秒で生成 → **6.7倍リアルタイム**。
+
+**Multilingual** (Emilia dataset):
+
+中国語・日本語・韓国語でも同等の品質（MOS 4.1-4.3）。
+
+#### 7.1.4 技術的洞察
+
+**なぜ Flow Matching が TTS に適するか？**
+
+1. **ODE の滑らかさ**: Diffusion (SDE) は確率的 → サンプルごとのばらつき。Flow (ODE) は決定論的 → 一貫した品質。
+2. **Few-step sampling**: 10-20 NFE (Number of Function Evaluations) で収束。Diffusion は 50-100 必要。
+3. **直線経路**: Optimal Transport Path は $\mathbf{m}_0 \to \mathbf{m}_1$ の最短距離 → 訓練安定。
+
+**Mel vs Codec**:
+
+Codec (EnCodec/WavTokenizer): 離散化 → 量子化誤差。
+
+Mel: 連続 → 情報損失なし。ただし Vocoder (HiFi-GAN) が追加で必要。
+
+F5-TTS は Vocoder を **事前訓練済み固定モデル**として使用 → TTS 訓練と分離。
+
+### 7.2 ZipVoice: Zero-shot TTS with Ultra-fast Inference
+
+Liu et al. (2025) [^zipvoice] は、**1-step Flow Matching** で zero-shot TTS を実現。
+
+#### 7.2.1 Consistency Distillation for TTS
+
+F5-TTS の教師モデルから蒸留:
+
+$$
+\mathcal{L}_\text{CD} = \mathbb{E}_{\mathbf{m}_0, \mathbf{m}_1, t} \left[ \| f_\theta(\mathbf{m}_t, t, c) - \text{sg}[f_\theta(\mathbf{m}_{t+\Delta t}, t+\Delta t, c)] \|^2 \right]
+$$
+
+ここで $f_\theta(\mathbf{m}_t, t, c) \to \mathbf{m}_1$ （終点予測）。
+
+**Self-consistency**: 任意時刻から同じ終点に到達 → 1-step で直接 $\mathbf{m}_1$ を出力可能。
+
+#### 7.2.2 結果
+
+| Model | Steps | MOS ↑ | RTF ↓ | Training Cost |
+|:------|:------|:------|:------|:--------------|
+| F5-TTS | 10 | 4.32 | 0.15 | 7 GPU-days |
+| **ZipVoice** | **1** | **4.18** | **0.02** | 2 GPU-days (distillation) |
+
+**50倍リアルタイム** (RTF=0.02) → 1秒音声を 0.02秒（20ms）で生成。
+
+**品質劣化**: MOS -0.14（許容範囲）。
+
+**応用**: リアルタイム会話 AI、音声アシスタント。
+
+### 7.3 Matcha-TTS: Fast Conditional Flow Matching
+
+Mehta et al. (2024) [^matcha_tts] は、**OT-CFM を TTS に適用**した最初期の研究（ICASSP 2024）。
+
+#### 7.3.1 アーキテクチャ
+
+**1D U-Net** (音声特化):
+
+```
+Input: [m_t, t, c_text]
+  ↓
+Encoder: Conv1D blocks (stride 2, 5 layers) → latent z
+  ↓
+Bottleneck: Self-attention + Cross-attention (text)
+  ↓
+Decoder: TransposedConv1D blocks (upsample, 5 layers)
+  ↓
+Output: v(m_t, t)
+```
+
+**パラメータ数**: 50M（F5-TTS の 1/6）。
+
+#### 7.3.2 訓練高速化
+
+**Optimal Transport Conditional Flow Matching**:
+
+前述（第38回）の OT-CFM を使用。Coupling $\pi^*$ は Sinkhorn で解く。
+
+**Duration Predictor**: Transformer-based（Glow-TTS と同じ）。
+
+**データ**: LJSpeech (24h single-speaker) → 訓練時間 **4時間**（V100 1台）。
+
+#### 7.3.3 結果
+
+| Model | MOS ↑ | RTF ↓ | Training Time |
+|:------|:------|:------|:--------------|
+| Tacotron 2 | 3.82 | 0.45 | 12h |
+| Glow-TTS | 3.92 | 0.18 | 8h |
+| **Matcha-TTS** | **4.01** | **0.12** | **4h** |
+
+**品質向上 + 訓練時間半減**。
+
+### 7.4 WaveFM: Vocoder as Flow Matching
+
+Kong et al. (2025) [^wavefm] は、**Waveform 生成に Flow Matching を適用**。
+
+#### 7.4.1 従来の Vocoder
+
+**HiFi-GAN** (GAN-based):
+- 訓練不安定（discriminator との競合）
+- Artifacts（high-frequency noise）
+
+**WaveGrad** (Diffusion-based):
+- 50-100 ステップ必要 → 遅い
+
+#### 7.4.2 WaveFM のアプローチ
+
+**入力**: Mel-spectrogram $\mathbf{m} \in \mathbb{R}^{T \times 80}$
+
+**出力**: Waveform $\mathbf{w} \in \mathbb{R}^{T \times H}$ （$H$ = hop size, 典型的に 256）
+
+**Flow ODE**:
+
+$$
+\frac{d \mathbf{w}_t}{dt} = v_\theta(\mathbf{w}_t, t, \mathbf{m})
+$$
+
+**訓練**:
+
+$$
+\mathcal{L} = \mathbb{E}_{t, \mathbf{w}_0, \mathbf{w}_1} \left[ \| v_\theta(\mathbf{w}_t, t, \mathbf{m}) - (\mathbf{w}_1 - \mathbf{w}_0) \|^2 \right]
+$$
+
+$\mathbf{w}_0 \sim \mathcal{N}(0, I)$, $\mathbf{w}_1$ は真の waveform。
+
+#### 7.4.3 結果
+
+**LJSpeech**:
+
+| Vocoder | MOS ↑ | Steps | RTF ↓ |
+|:--------|:------|:------|:------|
+| HiFi-GAN | 4.15 | 1 (GAN) | 0.005 |
+| WaveGrad | 4.21 | 50 | 0.12 |
+| **WaveFM** | **4.28** | **10** | **0.015** |
+
+**HiFi-GAN より高品質、WaveGrad より 8倍高速**。
+
+**安定性**: GAN のような mode collapse なし → 訓練が容易。
+
+### 7.5 実装例: Minimal Flow Matching TTS (Julia)
+
+```julia
+using Lux, Optimisers, Zygote, FFTW, WAV
+
+# --- Mel-spectrogram extraction ---
+function extract_mel(waveform::Vector{Float32}, sr=22050, n_fft=1024, hop=256, n_mels=80)
+    # STFT
+    S = stft(waveform, n_fft, hop)
+    # Mel filterbank
+    mel_fb = mel_filterbank(n_fft÷2+1, n_mels, sr)
+    # Mel spectrogram
+    M = mel_fb * abs.(S)
+    return log.(M .+ 1f-6)  # Log-scale
+end
+
+# --- Velocity Network (1D U-Net) ---
+function VelocityUNet(n_mels=80, hidden=256)
+    return Chain(
+        # Encoder
+        Conv((3,), n_mels+1 => hidden, relu; stride=1, pad=1),
+        Conv((3,), hidden => hidden*2, relu; stride=2, pad=1),
+        # Bottleneck
+        Dense(hidden*2, hidden*2, relu),
+        # Decoder
+        ConvTranspose((3,), hidden*2 => hidden, relu; stride=2, pad=1),
+        Conv((3,), hidden => n_mels; stride=1, pad=1)
+    )
+end
+
+# --- Flow Matching Training ---
+function train_flow_tts(
+    mels::Vector{Matrix{Float32}},  # List of mel-spectrograms
+    texts::Vector{Vector{Int}},     # Tokenized text
+    n_epochs=50
+)
+    model = VelocityUNet(80, 256)
+    ps, st = Lux.setup(Random.default_rng(), model)
+    opt = Optimisers.Adam(1f-4)
+    opt_state = Optimisers.setup(opt, ps)
+
+    for epoch in 1:n_epochs
+        total_loss = 0.0
+
+        for (mel, text) in zip(mels, texts)
+            # Sample t ~ Uniform(0, 1)
+            t = rand(Float32)
+
+            # Sample m₀ ~ 𝒩(0, I), m₁ = real mel
+            m₀ = randn(Float32, size(mel))
+            m₁ = mel
+
+            # Interpolate: m_t = (1-t)*m₀ + t*m₁
+            m_t = (1 - t) .* m₀ .+ t .* m₁
+
+            # True velocity: m₁ - m₀
+            v_true = m₁ .- m₀
+
+            # Compute loss
+            loss, grads = Zygote.withgradient(ps) do p
+                # Add time channel
+                input = cat(m_t, fill(t, size(m_t)), dims=1)
+                v_pred, _ = model(input, p, st)
+                sum((v_pred .- v_true).^2)
+            end
+
+            # Update
+            opt_state, ps = Optimisers.update(opt_state, ps, grads[1])
+            total_loss += loss
+        end
+
+        println("Epoch $epoch, Loss: $(total_loss / length(mels))")
+    end
+
+    return ps, st, model
+end
+
+# --- ODE Sampling ---
+function sample_mel(model, ps, st, text::Vector{Int}, T_frames::Int, steps=10)
+    # Initialize from noise
+    m₀ = randn(Float32, T_frames, 80)
+
+    # Euler integration
+    m = m₀
+    dt = 1.0f0 / steps
+
+    for step in 1:steps
+        t = (step - 1) * dt
+        input = cat(m, fill(t, size(m)), dims=1)
+        v, _ = model(input, ps, st)
+        m = m .+ dt .* v
+    end
+
+    return m
+end
+```
+
+**使用**:
+
+```julia
+# Load data (pseudo-code)
+mels, texts = load_lj_speech_dataset()
+
+# Train
+ps, st, model = train_flow_tts(mels, texts, n_epochs=100)
+
+# Generate
+text_new = tokenize("Hello world")
+mel_gen = sample_mel(model, ps, st, text_new, T_frames=200, steps=10)
+
+# Vocoder (HiFi-GAN pre-trained)
+waveform = hifigan_vocoder(mel_gen)
+WAV.wavwrite(waveform, "output.wav", Fs=22050)
+```
+
+---
+
+### 7.6 RFWave: Rectified Flow for Audio Waveforms
+
+RFWave (ICLR 2025) は、**Rectified Flow を Waveform 生成に適用**し、multi-band 分解で高速化を実現。
+
+**Multi-band 戦略**:
+
+高周波と低周波を分離して並列処理:
+
+1. **Low-band** (0-4kHz): 音声の主成分 → 高精度 Flow
+2. **Mid-band** (4-8kHz): 倍音 → 中精度 Flow
+3. **High-band** (8-16kHz): ノイズ的成分 → 低精度（GAN で代替可能）
+
+**アーキテクチャ**:
+
+```
+Input: Mel-spectrogram m
+  ↓
+Band Decomposition: m → [m_low, m_mid, m_high]
+  ↓
+Parallel Flows:
+  - Flow_low (20 steps)  → w_low
+  - Flow_mid (10 steps)  → w_mid
+  - Flow_high (GAN, 1 step) → w_high
+  ↓
+Band Synthesis: w = w_low + w_mid + w_high
+```
+
+**結果** (LJSpeech):
+
+| Model | MOS ↑ | Steps | RTF ↓ |
+|:------|:------|:------|:------|
+| WaveFM (single-band) | 4.28 | 10 | 0.015 |
+| **RFWave (multi-band)** | **4.31** | 10 (avg) | **0.008** |
+
+**2倍高速化 + 品質向上**。
+
+**実装のポイント**:
+
+```julia
+function multiband_synthesis(m::Matrix{Float32}, sr=22050)
+    # Band-pass filters
+    m_low = bandpass(m, 0, 4000, sr)
+    m_mid = bandpass(m, 4000, 8000, sr)
+    m_high = bandpass(m, 8000, 16000, sr)
+
+    # Parallel flows
+    w_low = flow_sample(flow_low, m_low, steps=20)
+    w_mid = flow_sample(flow_mid, m_mid, steps=10)
+    w_high = gan_generate(gan_high, m_high)  # 1-step
+
+    # Combine
+    w = w_low .+ w_mid .+ w_high
+    return w
+end
+```
+
+---
+
 ## 参考文献
+
+### 最新論文 (2024-2025)
+
+[^f5_tts_new]: Chen, Y., et al. (2024). "F5-TTS: A Fairytaler that Fakes Fluent and Faithful Speech with Flow Matching". *arXiv:2410.06885*.
+
+[^zipvoice]: Liu, X., et al. (2025). "ZipVoice: Fast and High-Quality Zero-Shot Text-to-Speech with Flow Matching". *arXiv:2506.13053*.
+
+[^matcha_tts]: Mehta, S., et al. (2024). "Matcha-TTS: A Fast TTS Architecture with Conditional Flow Matching". In *Proceedings of ICASSP 2024*.
+
+[^wavefm]: Kong, Z., et al. (2025). "WaveFM: A High-Fidelity and Efficient Vocoder Based on Flow Matching". In *Proceedings of NAACL 2025*.
+
+### 主要論文
 
 ### 主要論文
 

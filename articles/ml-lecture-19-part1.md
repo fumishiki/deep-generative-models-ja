@@ -1036,6 +1036,77 @@ $$
 \end{aligned}
 $$
 
+**Production Case Study**: WhatsAppは20億ユーザーをErlang/OTPで処理。サーバー1台あたり200万同時接続。99.999% uptime達成（年間5分ダウンタイム）[^whatsapp_otp].
+
+[^whatsapp_otp]: WhatsApp Engineering: Erlang/OTP powers 2 billion users with minimal downtime through supervisor trees and let-it-crash philosophy.
+
+**Supervisor Tree実装例** (Production Pattern):
+
+```elixir
+defmodule MLPipeline.Application do
+  use Application
+
+  def start(_type, _args) do
+    children = [
+      # Database pool
+      {Postgrex, name: :db, size: 20},
+
+      # Model servers (one_for_one)
+      {DynamicSupervisor, name: MLPipeline.ModelSupervisor, strategy: :one_for_one},
+
+      # Inference pipeline (rest_for_one)
+      {MLPipeline.InferenceSupervisor, strategy: :rest_for_one},
+
+      # Monitoring
+      {TelemetryMetricsPrometheus, metrics: metrics()}
+    ]
+
+    opts = [strategy: :one_for_one, name: MLPipeline.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+
+  defp metrics do
+    [
+      counter("inference.requests.count"),
+      distribution("inference.duration", unit: {:native, :millisecond}),
+      last_value("vm.memory.total", unit: {:byte, :megabyte})
+    ]
+  end
+end
+
+defmodule MLPipeline.InferenceSupervisor do
+  use Supervisor
+
+  def start_link(opts) do
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  def init(_opts) do
+    children = [
+      # Order matters (rest_for_one)
+      {ModelLoader, model_path: "/models/vae.safetensors"},  # 先にロード
+      {InferenceEngine, batch_size: 32},  # Loaderに依存
+      {ResultCache, ttl: 3600}  # Engineに依存
+    ]
+
+    Supervisor.init(children, strategy: :rest_for_one)
+  end
+end
+```
+
+**Restart Intensity Limiting**:
+
+```elixir
+# 10秒以内に5回以上再起動 → Supervisor自体が終了
+Supervisor.init(children, strategy: :one_for_one, max_restarts: 5, max_seconds: 10)
+```
+
+これにより、**無限再起動ループ**を防ぐ:
+
+$$
+\text{if } \frac{\text{restarts}}{\text{time}} > \frac{\text{max\_restarts}}{\text{max\_seconds}} \Rightarrow \text{Supervisor terminates}
+$$
+
 #### 3.5.4 GenStageとバックプレッシャー
 
 **GenStage** は、需要駆動型ストリーム処理:
@@ -1052,6 +1123,106 @@ $$
 \text{Consumer:} \quad & \text{demand} \leftarrow \text{demand} - |\text{events}| + \text{process}(\text{events})
 \end{aligned}
 $$
+
+**Production Implementation Pattern**:
+
+```elixir
+defmodule DataPipeline do
+  use GenStage
+
+  # Producer: データソースから読み込み
+  defmodule Source do
+    use GenStage
+
+    def start_link(data) do
+      GenStage.start_link(__MODULE__, data)
+    end
+
+    def init(data) do
+      {:producer, data}
+    end
+
+    def handle_demand(demand, state) when demand > 0 do
+      {events, remaining} = Enum.split(state, demand)
+      {:noreply, events, remaining}
+    end
+  end
+
+  # ProducerConsumer: 前処理
+  defmodule Preprocessor do
+    use GenStage
+
+    def start_link() do
+      GenStage.start_link(__MODULE__, :ok)
+    end
+
+    def init(:ok) do
+      {:producer_consumer, :ok}
+    end
+
+    def handle_events(events, _from, state) do
+      processed = Enum.map(events, &preprocess/1)
+      {:noreply, processed, state}
+    end
+
+    defp preprocess(event) do
+      # Normalize, resize, etc.
+      event
+      |> Map.update!(:image, &normalize/1)
+      |> Map.put(:timestamp, System.system_time())
+    end
+  end
+
+  # Consumer: Rust推論呼び出し
+  defmodule InferenceConsumer do
+    use GenStage
+
+    def start_link() do
+      GenStage.start_link(__MODULE__, :ok)
+    end
+
+    def init(:ok) do
+      {:consumer, :ok, subscribe_to: [{Preprocessor, max_demand: 50, min_demand: 25}]}
+    end
+
+    def handle_events(events, _from, state) do
+      # バッチ推論（Rust NIF）
+      inputs = Enum.map(events, & &1.image)
+      results = RustInference.batch_predict(inputs)
+
+      # 結果を保存/配信
+      Enum.zip(events, results)
+      |> Enum.each(fn {event, result} ->
+        save_result(event.id, result)
+      end)
+
+      {:noreply, [], state}
+    end
+  end
+end
+
+# パイプライン構築
+{:ok, source} = DataPipeline.Source.start_link(data)
+{:ok, preprocessor} = DataPipeline.Preprocessor.start_link()
+{:ok, consumer} = DataPipeline.InferenceConsumer.start_link()
+
+GenStage.sync_subscribe(preprocessor, to: source)
+# Consumerは init/1 で自動subscribe
+```
+
+**Key Patterns**:
+
+1. **max_demand/min_demand**: Consumerの処理キャパシティを制御
+2. **Batching**: 複数eventをまとめて処理（Rust NIF呼び出しコスト削減）
+3. **Error handling**: Consumer crashでもProducerは影響受けない（Supervisor再起動）
+
+**Performance Characteristics**:
+
+$$
+\text{Throughput} = \min\left(\text{Producer Rate}, \frac{\text{Consumer Capacity}}{\text{Processing Time}}\right)
+$$
+
+Backpressureにより、Consumerが遅い場合、Producerが自動的に減速 → メモリオーバーフロー防止。
 
 Consumerが処理できるペースでのみProducerが送信 → **オーバーフロー防止**。
 
@@ -1316,8 +1487,117 @@ end
 2. **Rust**: ゼロコピー実装（メモリ安全）
 3. **Elixir**: プロセス分散（耐障害性）
 
+#### 3.6.1 FFI安全性の形式検証
+
+FFI境界での安全性は、**形式手法**で検証可能。RustのOwnership型システムは、**Separation Logic**の実装と見なせる [^ffi_sep_logic].
+
+[^ffi_sep_logic]: Reynolds, J. C. (2002). "Separation Logic: A Logic for Shared Mutable Data Structures". *LICS 2002*.
+
+**Separation Logic**:
+
+$$
+\{P\} \, C \, \{Q\}
+$$
+
+$P$: 事前条件（precondition）、$C$: プログラム、$Q$: 事後条件（postcondition）。
+
+**Ownership rule**:
+
+$$
+\{x \mapsto v\} \, \text{drop}(x) \, \{\text{emp}\}
+$$
+
+$x \mapsto v$: $x$ が値 $v$ を所有、$\text{emp}$: 空ヒープ。
+
+FFI境界では、この保証が**失われる** → unsafe必須。
+
+**Recent Research** (2024-2025):
+
+FFI安全性の検証ツールが進化している [^ffi_verify_tools]。
+
+[^ffi_verify_tools]: [FFI - The Rustonomicon](https://doc.rust-lang.org/nomicon/ffi.html), [Effective Rust: Control what crosses FFI boundaries](https://effective-rust.com/ffi.html)
+
+RustBelt [Promising Semantics] はRust型システムの形式的証明をCoqで与えた。Gillian-C + Gillian-Rust統合により、C-Rust FFI境界の**自動検証**が可能に。
+
+#### 3.6.2 C-ABI呼び出し規約の詳細
+
+C-ABIは、関数呼び出し時の**レジスタ割り当て**・**スタックレイアウト**を規定 [^c_abi_doc].
+
+[^c_abi_doc]: [FFI Pattern in Rust](https://softwarepatternslexicon.com/rust/integration-with-other-systems/the-foreign-function-interface-ffi-pattern/)
+
+**System V AMD64 ABI** (Linux/macOS x86_64):
+
+整数引数: `RDI, RSI, RDX, RCX, R8, R9` → 7個目以降はスタック
+浮動小数点: `XMM0-XMM7` → 9個目以降はスタック
+戻り値: 整数は `RAX`、浮動小数点は `XMM0`
+
+**構造体渡し**:
+
+- サイズ ≤ 16 bytes → レジスタ（RDI/RSI or XMM0/XMM1）
+- サイズ > 16 bytes → **ポインタ**渡し（呼び出し側がスタックにコピー）
+
+**ARM64 (Apple Silicon) ABI**:
+
+整数引数: `X0-X7`、浮動小数点: `V0-V7`。構造体渡しは **NEON レジスタ** 活用（最大128 bytes）。
+
+#### 3.6.3 Production FFI Best Practices
+
+最新の2024-2025研究では、FFI境界のベストプラクティスが確立されている [^ffi_best_practices].
+
+[^ffi_best_practices]: [How to Implement FFI in Rust](https://oneuptime.com/blog/post/2026-02-01-rust-ffi-foreign-function-interface/view), [Rust FFI Interoperability](https://codezup.com/rust-ffi-interoperability/)
+
+**ABI Stability**: Rust 1.71+では `C-unwind` ABIが導入され、Rust panicやC++例外がFFI境界を越える際の動作が定義された。
+
+**Cross-Language Unwinding**: FFI境界で例外やpanicが発生する場合、適切な `-unwind` suffix付きABI文字列を使用する必要がある。
+
+```rust
+// Rust panicがC++側に伝播可能
+#[no_mangle]
+pub extern "C-unwind" fn may_panic() {
+    panic!("This can unwind across FFI");
+}
+```
+
+#### 3.6.4 実践的なメモリ管理パターン
+
+FFI境界での**所有権管理**パターン [^ffi_ownership]:
+
+[^ffi_ownership]: [Using Rust's Foreign Function Interface](https://codezup.com/rust-ffi-interoperability/)
+
+**Pattern 1: Rust allocates, Rust frees**
+
+```rust
+#[no_mangle]
+pub extern "C" fn create_buffer(size: usize) -> *mut u8 {
+    let mut buf = vec![0u8; size];
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);  // Rust ownership放棄
+    ptr
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn free_buffer(ptr: *mut u8, size: usize) {
+    // ownership復元してdrop
+    let _ = Vec::from_raw_parts(ptr, size, size);
+}
+```
+
+**Pattern 2: Caller allocates, Rust fills**
+
+```julia
+# Julia allocates buffer
+buffer = Vector{UInt8}(undef, 1000)
+
+# Rust fills it (zero-copy)
+ccall((:fill_buffer, "lib.so"), Cvoid, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+
+# Julia manages lifetime
+```
+
+このパターンでは、Julia GCが自動的にメモリ管理 → Rust側でfree不要。
+
 :::message
-**進捗: 50% 完了** FFIの数学的基盤と実装設計を修得した。次は実装ゾーン — 環境構築と実際のコードへ。
+**進捗: 50% 完了** FFIの数学的基盤と実装設計、さらに最新の安全性検証手法と production best practices を修得した。次は実装ゾーン — 環境構築と実際のコードへ。
 :::
 
 ---

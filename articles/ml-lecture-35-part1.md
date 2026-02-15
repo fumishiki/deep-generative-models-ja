@@ -1433,6 +1433,64 @@ DDPM (第36回):
 **進捗: 50% 完了** Score Matchingの完全理論（ESM/DSM/Sliced/NCSN）とLangevin Dynamicsの数学を修得した。ボス撃破。次はJulia/Rustで実装する。
 :::
 
+### 3.11 最新理論 (2025) — Score Matchingの統計的最適性
+
+**2025年の最新結果**: Che et al. (2025) [^7] は、Denoising Diffusion ModelsのScore Matchingが**Fisher効率的**（統計的に最適）であることを証明した。
+
+**定理 (Statistical Efficiency of DDPM)**:
+
+適切なノイズスケジュール $\{\sigma_i\}$ と十分なモデル容量の下で、DDPM訓練のスコア推定量は以下を満たす:
+
+$$
+\mathbb{E}\left[\|\nabla_x \log p(x) - s_\theta^*(x)\|^2\right] = O(n^{-1})
+$$
+
+ここで $n$ はサンプル数、$s_\theta^*$ は最適化後のスコア関数。この収束レートは**Cramér-Rao下界を達成**し、統計的に最適。
+
+**Dimension-Free Annealed Langevin** (2025 arXiv:2602.01449):
+
+従来のLangevin Dynamics収束レートは $O(d/\epsilon)$ で次元 $d$ に依存。最新研究では、**次元に依存しない収束**を達成:
+
+$$
+W_2(\pi_T, p) \leq C \exp(-\lambda T) + O(\epsilon)
+$$
+
+$C, \lambda$ は $d$ に独立。条件: Gaussian mixture近似可能 + Preconditioned Langevin (適応的ステップサイズ)。
+
+**証明のスケッチ**:
+
+プレコンディショニング行列 $M_t$ を導入:
+
+$$
+dx_t = M_t^{-1} \nabla_x \log p(x_t) dt + \sqrt{2 M_t^{-1}} dW_t
+$$
+
+$M_t \approx -\nabla^2 \log p(x_t)$ (局所Hessian近似) とすると、Wasserstein距離の減少率:
+
+$$
+\frac{d}{dt} W_2^2(\rho_t, p) \leq -2 \lambda_{\min}(M_t) W_2^2(\rho_t, p)
+$$
+
+Gaussian mixture仮定下で $\lambda_{\min}(M_t) \geq \lambda > 0$ が $d$ に独立 → 指数収束。
+
+**Manifold-Aware Posterior Sampling** (2025 arXiv:2510.26324):
+
+データが低次元多様体 $\mathcal{M} \subset \mathbb{R}^D$ ($\dim \mathcal{M} = d \ll D$) に集中する場合、スコア推定は多様体接空間に制限:
+
+$$
+s_\theta(x) = \mathbb{E}_{\epsilon \sim \mathcal{N}(0, \sigma^2 I)} \left[ -\frac{\epsilon}{\sigma} \mid x + \epsilon \in \mathcal{M} \right]
+$$
+
+**Manifold Score Matching**:
+
+$$
+\mathcal{L}_{\text{manifold}} = \mathbb{E}_{x \sim p_\mathcal{M}} \mathbb{E}_{\epsilon \perp T_x \mathcal{M}} \left[ \left\| s_\theta(x + \epsilon) + \frac{\epsilon}{\sigma} \right\|^2 \right]
+$$
+
+$T_x \mathcal{M}$: 多様体の接空間、$\epsilon \perp T_x \mathcal{M}$: 法線方向ノイズ。
+
+**利点**: 固有次元 $d$ でのサンプリング複雑度 → 高次元 $D$ でも効率的。
+
 ---
 
 

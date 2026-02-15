@@ -1729,17 +1729,26 @@ graph LR
 [^9]: Cubuk, E. D., Zoph, B., Shlens, J., & Le, Q. V. (2020). "RandAugment: Practical Automated Data Augmentation with a Reduced Search Space". *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)*, 702-703.
 @[card](https://arxiv.org/abs/1909.13719)
 
-[^10]: Stocker, C. (2017). "Augmentor.jl: A Julia Package for Image Augmentation". *GitHub*.
-@[card](https://github.com/Evizero/Augmentor.jl)
+[^10]: Dablain, D., Krawczyk, B., & Chawla, N. V. (2021). "DeepSMOTE: Fusing Deep Learning and SMOTE for Imbalanced Data". *IEEE Transactions on Neural Networks and Learning Systems*, 34(9), 6390-6404.
+@[card](https://arxiv.org/abs/2105.02340)
 
-[^11]: Müller, S. G., & Hutter, F. (2021). "TrivialAugment: Tuning-free Yet State-of-the-Art Data Augmentation". *Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)*, 774-782.
-@[card](https://arxiv.org/abs/2103.10158)
+[^11]: Sharma, A., et al. (2025). "An Enhanced Focal Loss Function to Mitigate Class Imbalance in Auto Insurance Fraud Detection with Explainable AI". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2508.02283)
 
-[^12]: Li, Y., Hu, G., Wang, Y., Hospedales, T., Robertson, N. M., & Yang, Y. (2020). "DADA: Differentiable Automatic Data Augmentation". *ECCV 2020*.
-@[card](https://arxiv.org/abs/2003.03780)
+[^12]: Zha, D., et al. (2023). "Data-centric Artificial Intelligence: A Survey". *ACM Computing Surveys*, 56(4), 1-37.
+@[card](https://arxiv.org/abs/2303.10158)
 
-[^13]: Kuprieiev, R., et al. (2024). "DVC: Data Version Control - Git for Data & Models".
-@[card](https://dvc.org/)
+[^13]: Wang, S., et al. (2024). "A Survey on Data Quality Dimensions and Tools for Machine Learning". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2406.19614)
+
+[^14]: Kotelnikov, A., et al. (2023). "TabDDPM: Modelling Tabular Data with Diffusion Models". *International Conference on Machine Learning (ICML)*, 17564-17579.
+@[card](https://arxiv.org/abs/2209.15421)
+
+[^15]: Chen, M., et al. (2024). "Tabular Data Augmentation for Machine Learning: Progress and Prospects of Embracing Generative AI". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2407.21523)
+
+[^16]: Zhao, S., et al. (2024). "Data augmentation with automated machine learning: approaches and performance comparison with classical data augmentation methods". *Neural Computing and Applications*, 36, 1-23.
+@[card](https://arxiv.org/abs/2403.08352)
 
 ### 教科書
 

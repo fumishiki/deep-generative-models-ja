@@ -1157,6 +1157,574 @@ Course IIIのゴールまであと1回。
 
 ---
 
+### 6.8 Advanced MLOps Frameworks & Tools (2020-2026)
+
+#### 6.8.1 Feature Store — 特徴量の一元管理
+
+**課題**: 訓練時と推論時で特徴量計算ロジックが不一致 → Training-Serving Skew
+
+**Feature Store**: 特徴量を中央リポジトリで管理・配信
+
+**主要プロダクト**:
+
+| Tool | Provider | Key Features |
+|:-----|:---------|:------------|
+| **Feast** | Open-source | Offline (batch) + Online (low-latency) |
+| **Tecton** | Commercial | Real-time features + monitoring |
+| **Hopsworks** | Open-source | End-to-end ML platform |
+
+**Feast Architecture**:
+
+```julia
+# Feature definition (feast.yaml)
+"""
+features:
+  - name: user_avg_purchase_7d
+    entity: user_id
+    type: float
+    source: data_warehouse
+    freshness: 1 hour
+"""
+
+# Offline retrieval (training)
+using PyCall
+feast = pyimport("feast")
+store = feast.FeatureStore(".")
+
+entity_df = DataFrame(
+    user_id = [1001, 1002, 1003],
+    event_timestamp = [now(), now(), now()]
+)
+
+training_df = store.get_historical_features(
+    entity_df = entity_df,
+    features = ["user_features:avg_purchase_7d", "user_features:total_sessions"]
+).to_df()
+
+# Online retrieval (inference, <10ms latency)
+features = store.get_online_features(
+    features = ["user_features:avg_purchase_7d"],
+    entity_rows = [Dict("user_id" => 1001)]
+).to_dict()
+```
+
+**利点**:
+- Training-Serving一貫性保証
+- 特徴量再利用 (チーム間共有)
+- Point-in-time correctness (時刻整合性)
+
+#### 6.8.2 Model Registry — モデルのライフサイクル管理
+
+**MLflow Model Registry** [^4]:
+
+**モデルステージ**:
+
+```
+None → Staging → Production → Archived
+```
+
+**バージョン管理 + メタデータ**:
+
+```julia
+using PyCall
+mlflow = pyimport("mlflow")
+
+# Register model
+mlflow.register_model(
+    model_uri = "runs:/abc123/model",
+    name = "fraud_detector_v2"
+)
+
+# Transition to production
+client = mlflow.tracking.MlflowClient()
+client.transition_model_version_stage(
+    name = "fraud_detector_v2",
+    version = 3,
+    stage = "Production"
+)
+
+# Load production model
+model_uri = "models:/fraud_detector_v2/Production"
+model = mlflow.pyfunc.load_model(model_uri)
+```
+
+**Governance機能**:
+- **Approval Workflow**: Staging → Production に承認必須
+- **Lineage Tracking**: データ → 訓練 → モデル の系譜
+- **Model Card**: 性能・公平性・制約の文書化
+
+#### 6.8.3 Experiment Tracking at Scale
+
+**Weights & Biases (W&B)** vs **MLflow**:
+
+| 機能 | MLflow | W&B |
+|:-----|:-------|:----|
+| **UI** | Basic | Rich (interactive charts) |
+| **Hyperparameter Sweep** | Manual | Automated (Bayesian) |
+| **Collaboration** | Limited | Team-centric |
+| **Artifact Storage** | Local/S3 | Cloud-native |
+| **Cost** | Free (self-host) | Free tier + Paid |
+
+**W&B Sweep (Bayesian Optimization)**:
+
+```julia
+using PyCall
+wandb = pyimport("wandb")
+
+# Sweep configuration
+sweep_config = Dict(
+    "method" => "bayes",
+    "metric" => Dict("name" => "val_loss", "goal" => "minimize"),
+    "parameters" => Dict(
+        "learning_rate" => Dict("min" => 1e-5, "max" => 1e-2),
+        "batch_size" => Dict("values" => [16, 32, 64, 128]),
+        "dropout" => Dict("min" => 0.1, "max" => 0.5)
+    )
+)
+
+sweep_id = wandb.sweep(sweep_config, project="my_project")
+
+# Training function
+function train()
+    wandb.init()
+    config = wandb.config
+
+    # Train with config.learning_rate, config.batch_size, etc.
+    for epoch in 1:10
+        loss = train_one_epoch(config)
+        wandb.log(Dict("loss" => loss, "epoch" => epoch))
+    end
+end
+
+# Run sweep
+wandb.agent(sweep_id, function=train, count=50)  # 50 trials
+```
+
+**効果**: Manual grid search → Bayesian optimization で探索効率**10倍向上**
+
+#### 6.8.4 Data Quality Monitoring — Great Expectations Integration
+
+**Great Expectations** [^3]: データ品質テストのフレームワーク
+
+**Expectation Suite**:
+
+```julia
+using PyCall
+ge = pyimport("great_expectations")
+
+# Create expectation suite
+context = ge.data_context.DataContext()
+suite = context.create_expectation_suite("transaction_data_suite")
+
+# Define expectations
+validator = context.get_validator(
+    batch_request = batch_request,
+    expectation_suite_name = "transaction_data_suite"
+)
+
+# Expectations (assertions on data)
+validator.expect_column_values_to_be_between("amount", min_value=0, max_value=1e6)
+validator.expect_column_values_to_not_be_null("user_id")
+validator.expect_column_values_to_be_in_set("status", ["pending", "completed", "failed"])
+validator.expect_column_values_to_match_regex("email", r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+# Save suite
+validator.save_expectation_suite(discard_failed_expectations=false)
+```
+
+**Validation in Pipeline**:
+
+```julia
+# Run validation
+checkpoint_config = Dict(
+    "name" => "daily_data_checkpoint",
+    "config_version" => 1,
+    "class_name" => "SimpleCheckpoint",
+    "validations" => [
+        Dict(
+            "batch_request" => batch_request,
+            "expectation_suite_name" => "transaction_data_suite"
+        )
+    ]
+)
+
+results = context.run_checkpoint(checkpoint_config)
+
+if !results["success"]
+    error("Data validation failed! $(results["statistics"])")
+end
+```
+
+**Production Integration** (Airflow DAG):
+
+```python
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
+def validate_data():
+    # Run Great Expectations
+    results = context.run_checkpoint("daily_data_checkpoint")
+    if not results["success"]:
+        raise ValueError("Data quality check failed")
+
+with DAG("ml_pipeline", schedule_interval="@daily") as dag:
+    validate = PythonOperator(task_id="validate_data", python_callable=validate_data)
+    train = PythonOperator(task_id="train_model", python_callable=train_model)
+
+    validate >> train  # Train only if validation passes
+```
+
+#### 6.8.5 CI/CD for ML — GitHub Actions + DVC
+
+**GitHub Actions Workflow**:
+
+```yaml
+# .github/workflows/ml_ci.yml
+name: ML CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: iterative/setup-dvc@v1
+
+      - name: Pull data with DVC
+        run: dvc pull
+
+      - name: Run unit tests
+        run: pytest tests/unit/
+
+      - name: Run data validation
+        run: |
+          python -m great_expectations checkpoint run data_validation
+
+      - name: Train model (smoke test)
+        run: |
+          python train.py --epochs 1 --smoke-test
+
+      - name: Run model tests
+        run: pytest tests/model/
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to staging
+        run: |
+          mlflow models serve -m "models:/my_model/Staging" -p 5001
+
+      - name: Run integration tests
+        run: pytest tests/integration/
+
+      - name: Promote to production
+        run: |
+          python scripts/promote_model.py --version ${{ github.sha }}
+```
+
+**CML (Continuous Machine Learning)** [^5]:
+
+```yaml
+# .github/workflows/cml.yml
+name: Model Performance Report
+
+on: [push]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: iterative/setup-cml@v1
+
+      - name: Train model
+        run: python train.py
+
+      - name: Generate metrics report
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create report
+          cat metrics.json | jq -r '.accuracy' > report.txt
+          echo "Accuracy: $(cat report.txt)" >> report.md
+
+          # Plot
+          python plot_metrics.py
+          cml-publish confusion_matrix.png --md >> report.md
+
+          # Send comment to PR
+          cml-send-comment report.md
+```
+
+**効果**: PRごとに自動でモデル性能レポート → レビュー時に可視化
+
+### 6.9 Scalable Training Infrastructure
+
+#### 6.9.1 Distributed Training — Ray + DeepSpeed
+
+**Ray Train** (分散訓練フレームワーク):
+
+```julia
+using PyCall
+ray = pyimport("ray")
+train = pyimport("ray.train")
+
+# Define training function
+function train_func(config)
+    model = create_model(config["lr"])
+
+    # Distributed data loading
+    train_dataset = train.get_dataset_shard("train")
+
+    for epoch in 1:config["epochs"]
+        for batch in train_dataset.iter_batches(batch_size=32)
+            loss = train_step(model, batch)
+            train.report(Dict("loss" => loss))
+        end
+    end
+end
+
+# Scale to 4 GPUs
+trainer = train.TorchTrainer(
+    train_func,
+    scaling_config = train.ScalingConfig(num_workers=4, use_gpu=true),
+    datasets = Dict("train" => ray.data.read_parquet("s3://data/train/"))
+)
+
+result = trainer.fit()
+```
+
+**DeepSpeed ZeRO-3** (メモリ効率化):
+
+| Stage | Parameter Partitioning | Gradient Partitioning | Optimizer State Partitioning | Memory Reduction |
+|:------|:----------------------|:---------------------|:----------------------------|:----------------|
+| ZeRO-1 | ❌ | ❌ | ✅ | 4x |
+| ZeRO-2 | ❌ | ✅ | ✅ | 8x |
+| **ZeRO-3** | ✅ | ✅ | ✅ | **15-60x** |
+
+**効果**: 175B parameter model を 16x V100 (16GB) で訓練可能
+
+#### 6.9.2 Serverless Inference — AWS Lambda + SageMaker
+
+**AWS Lambda (< 15MB model)**:
+
+```rust
+// Rust Lambda function for inference
+use lambda_runtime::{service_fn, LambdaEvent, Error};
+use serde::{Deserialize, Serialize};
+use ort::{Environment, SessionBuilder, Value};
+
+#[derive(Deserialize)]
+struct Request {
+    features: Vec<f32>,
+}
+
+#[derive(Serialize)]
+struct Response {
+    prediction: f32,
+}
+
+async fn handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
+    // Load ONNX model (embedded in Lambda)
+    let environment = Environment::builder().build()?;
+    let session = SessionBuilder::new(&environment)?
+        .with_model_from_memory(include_bytes!("model.onnx"))?;
+
+    // Run inference
+    let input = ndarray::arr1(&event.payload.features);
+    let outputs = session.run(vec![Value::from_array(input)?])?;
+    let prediction = outputs[0].extract::<f32>()?.view()[0];
+
+    Ok(Response { prediction })
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    lambda_runtime::run(service_fn(handler)).await
+}
+```
+
+**特徴**:
+- **Cold start**: 100-500ms (Rust), 500-3000ms (Python)
+- **Cost**: $0.20 per 1M requests (128MB, 100ms execution)
+- **Auto-scaling**: 0 → 10,000 concurrent無限スケール
+
+**SageMaker Serverless Inference** (> 15MB model):
+
+```julia
+using PyCall
+sagemaker = pyimport("sagemaker")
+
+# Deploy model as serverless endpoint
+predictor = model.deploy(
+    endpoint_type = "serverless",
+    serverless_inference_config = sagemaker.serverless.ServerlessInferenceConfig(
+        memory_size_in_mb = 2048,
+        max_concurrency = 20
+    )
+)
+
+# Inference
+result = predictor.predict(data)
+```
+
+**Cost comparison** (1M requests/month):
+
+| Service | Fixed Cost | Variable Cost | Total |
+|:--------|:----------|:-------------|:------|
+| EC2 (t3.medium 24/7) | $30/month | $0 | **$30** |
+| Lambda (100ms avg) | $0 | $0.20/1M | **$0.20** |
+| SageMaker Serverless | $0 | $0.20/1M + $0.10/GB-hr | **$0.30** |
+
+低トラフィック時はServerlessが**100倍安い**
+
+### 6.10 Production Best Practices (Industry Standard)
+
+#### 6.10.1 Model Governance — Audit Trail & Compliance
+
+**必須トラッキング項目** (規制対応):
+
+| Item | Requirement | Tool |
+|:-----|:-----------|:-----|
+| **Training Data Lineage** | データの出所・変換履歴 | DVC + Pachyderm |
+| **Model Versioning** | 全モデルのバージョン管理 | MLflow Registry |
+| **Prediction Logging** | 全推論結果の記録 (90日保持) | CloudWatch Logs |
+| **Bias Monitoring** | 人種・性別等での性能差 | AWS SageMaker Clarify |
+| **Explainability** | 個別予測の説明 | SHAP / LIME |
+
+**Audit Log Example**:
+
+```json
+{
+  "timestamp": "2026-02-15T10:30:00Z",
+  "model_id": "fraud_detector_v3.2",
+  "model_version": "sha256:abc123...",
+  "input": {"user_id": 1001, "amount": 500},
+  "output": {"fraud_score": 0.82, "decision": "flag"},
+  "explanation": {
+    "top_features": [
+      {"feature": "transaction_velocity", "contribution": 0.35},
+      {"feature": "geolocation_mismatch", "contribution": 0.28}
+    ]
+  },
+  "data_lineage": {
+    "training_data": "s3://data/fraud/2026-01-15/",
+    "training_commit": "git-sha:def456"
+  }
+}
+```
+
+#### 6.10.2 Security — Secrets Management & Access Control
+
+**AWS Secrets Manager** (credentials保管):
+
+```rust
+use aws_sdk_secretsmanager::Client;
+
+async fn get_db_password() -> Result<String, Box<dyn std::error::Error>> {
+    let config = aws_config::load_from_env().await;
+    let client = Client::new(&config);
+
+    let response = client
+        .get_secret_value()
+        .secret_id("prod/mlops/db_password")
+        .send()
+        .await?;
+
+    Ok(response.secret_string().unwrap().to_string())
+}
+```
+
+**IAM Role-based Access**:
+
+```yaml
+# Kubernetes ServiceAccount (EKS)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-inference-sa
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/MLInferenceRole
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-api
+spec:
+  template:
+    spec:
+      serviceAccountName: ml-inference-sa  # Inherits IAM permissions
+      containers:
+      - name: api
+        image: my-inference:latest
+```
+
+**Network Isolation**:
+
+```
+Internet → ALB (HTTPS) → API Gateway → Private Subnet (Inference) → VPC Endpoint → S3 (models)
+                                             ↓
+                                    Security Group (port 8080 only)
+```
+
+:::message
+**進捗: 完全制覇!** Advanced MLOps tools、分散訓練、Serverless推論、Governance、Securityまで全て習得。Production-readyシステム構築の完全知識を獲得！
+:::
+
+---
+
+### 6.11 Emerging Trends (2025-2026)
+
+#### MLOps + LLMOps Convergence
+
+**LLMOps特有の課題**:
+- **Prompt Versioning**: プロンプトテンプレートの管理
+- **Few-shot Example Management**: In-context learning用サンプル
+- **Token Cost Optimization**: API呼び出しコスト最小化
+
+**統合ツール**: LangChain + LangSmith
+
+```julia
+# Prompt versioning with LangSmith
+prompt_template = """
+You are a helpful assistant. Answer based on context:
+Context: {context}
+Question: {question}
+Answer:
+"""
+
+# Track prompt performance
+langsmith.log_prompt(
+    template=prompt_template,
+    version="v2.1",
+    metrics=Dict("accuracy" => 0.92, "cost_per_query" => 0.003)
+)
+```
+
+#### Edge MLOps — On-device Inference
+
+**TensorFlow Lite** + **ONNX Runtime Mobile**:
+
+- Model quantization (FP32 → INT8): **4倍小型化**
+- On-device training: Federated Learning
+- OTA (Over-The-Air) model updates
+
+**典型的なEdge Pipeline**:
+
+```
+Cloud Training → Quantization → ONNX → Edge Device (ARM) → Telemetry → Cloud Retraining
+```
+
+---
+
 ## 参考文献
 
 ### 主要論文
@@ -1169,6 +1737,12 @@ Course IIIのゴールまであと1回。
 
 [^3]: Great Expectations: Data validation framework.
 @[card](https://greatexpectations.io/)
+
+[^4]: MLflow: Open source platform for the machine learning lifecycle.
+@[card](https://mlflow.org/)
+
+[^5]: CML (Continuous Machine Learning): CI/CD for Machine Learning Projects.
+@[card](https://cml.dev/)
 
 ### 教科書
 

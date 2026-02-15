@@ -1688,3 +1688,121 @@ print(f"K=5 components → {np.math.factorial(5)} equivalent optima")
 | $d$ | ディー | モデルのパラメータ数（BIC/AIC） | **第8回** |
 
 ---
+
+## 補遺 — EM算法の収束理論と変分推論への橋渡し
+
+:::message
+**EM算法の本質**: 潜在変数 $\mathbf{z}$ を導入することで、難しい最適化問題を2つの簡単なステップ（E-step: 期待値計算、M-step: 最大化）に分割。変分推論（第9回）の原型となる。
+:::
+
+### EM算法の収束保証
+
+**定理**: EM algorithm は対数尤度 $\log p(\mathbf{x}|\theta)$ を単調増加させる。
+
+**証明**: Jensen 不等式により、任意の分布 $q(\mathbf{z})$ に対し:
+
+$$
+\log p(\mathbf{x}|\theta) \geq \mathbb{E}_{q(\mathbf{z})} \left[ \log \frac{p(\mathbf{x}, \mathbf{z}|\theta)}{q(\mathbf{z})} \right] =: \mathcal{L}(q, \theta)
+$$
+
+E-step で $q^{(t)}(\mathbf{z}) = p(\mathbf{z}|\mathbf{x}, \theta^{(t)})$ と選ぶと、等号成立（tightness）:
+
+$$
+\mathcal{L}(q^{(t)}, \theta^{(t)}) = \log p(\mathbf{x}|\theta^{(t)})
+$$
+
+M-step で $\theta^{(t+1)} = \arg\max_\theta \mathcal{L}(q^{(t)}, \theta)$ とすると:
+
+$$
+\log p(\mathbf{x}|\theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t)}) = \log p(\mathbf{x}|\theta^{(t)})
+$$
+
+よって単調増加。 □
+
+### EM算法の収束速度
+
+**線形収束**: 通常の EM は線形収束（1次収束）:
+
+$$
+\|\theta^{(t+1)} - \theta^*\| \leq c \|\theta^{(t)} - \theta^*\|, \quad c < 1
+$$
+
+**収束定数 $c$ の計算**:
+
+$$
+c = \lambda_{\max}\left( \mathbf{I} - \mathcal{I}_{\text{observed}}(\theta^*) \mathcal{I}_{\text{complete}}(\theta^*)^{-1} \right)
+$$
+
+ここで:
+- $\mathcal{I}_{\text{observed}}$: 観測データの Fisher 情報
+- $\mathcal{I}_{\text{complete}}$: 完全データ（観測＋潜在）の Fisher 情報
+
+**含意**: 潜在変数が観測変数と強く相関するほど、$c \to 1$（収束が遅い）。
+
+### 高速化手法1: Incremental EM（オンライン学習）
+
+大規模データ $\{\mathbf{x}_1, \ldots, \mathbf{x}_N\}$ に対し、全データを使わずに逐次更新:
+
+$$
+\theta^{(t+1)} = \theta^{(t)} + \alpha_t \mathbb{E}_{p(\mathbf{z}_i|\mathbf{x}_i, \theta^{(t)})} [\nabla_\theta \log p(\mathbf{x}_i, \mathbf{z}_i|\theta^{(t)})]
+$$
+
+ここで $\alpha_t$ は学習率（例: $\alpha_t = 1/t$）。
+
+**利点**: メモリ効率 $O(1)$（バッチサイズ固定）、大規模データに対応。
+
+### 高速化手法2: Variational EM（Mean-Field近似）
+
+E-step を閉形式で解けない場合、$q(\mathbf{z})$ を制約:
+
+$$
+q(\mathbf{z}) = \prod_{i=1}^d q_i(z_i) \quad \text{(Mean-Field)}
+$$
+
+各 $q_i$ を交互に更新（Coordinate Ascent VI）:
+
+$$
+q_i^*(z_i) \propto \exp\left( \mathbb{E}_{q_{-i}} [\log p(\mathbf{x}, \mathbf{z}|\theta)] \right)
+$$
+
+**応用**: Latent Dirichlet Allocation (LDA), Variational Autoencoders (VAE)。
+
+### EM算法の限界と対策
+
+| 問題 | 原因 | 対策 |
+|:---|:---|:---|
+| 局所最適解に収束 | 非凸性 | 複数の初期値 / MCMC-EM |
+| 収束が遅い | 強い相関 | 加速 EM (Accelerated EM) |
+| M-step が困難 | 閉形式解なし | GEM (Generalized EM): 1ステップだけ改善 |
+| 高次元潜在変数 | 計算コスト | Variational EM / Sampling-based EM |
+
+### EM算法から変分推論へ
+
+**EM** と **変分推論** の関係:
+
+| 項目 | EM | 変分推論 (VI) |
+|:---|:---|:---|
+| 目的 | $\max_\theta \log p(\mathbf{x}\|\theta)$ | $\min_{q} D_{\text{KL}}(q \| p)$ |
+| E-step | $q(\mathbf{z}) = p(\mathbf{z}\|\mathbf{x}, \theta)$ (exact) | $q(\mathbf{z})$ を近似族から選択 |
+| M-step | $\theta = \arg\max \mathbb{E}_q [\log p(\mathbf{x}, \mathbf{z}\|\theta)]$ | $\theta$ も $q$ と同時最適化 (VAE) |
+| 適用範囲 | 潜在変数が離散 or 低次元 | 高次元連続潜在変数 |
+
+**変分推論 (第9回)** では、$q(\mathbf{z})$ をニューラルネットでパラメトライズし、$\theta$ と同時最適化する **Amortized Inference** へと発展。
+
+### 実例: ガウス混合モデルの収束定数
+
+$K=2$ 成分の GMM で、2つのクラスタが十分に離れている場合:
+
+$$
+c \approx 0.1 \quad \text{(高速収束)}
+$$
+
+逆に、クラスタが重なる場合:
+
+$$
+c \approx 0.9 \quad \text{(収束が遅い)}
+$$
+
+**実験的検証**: $\theta^{(t)}$ と $\theta^*$ の距離をプロットし、指数的減衰を確認。
+
+---

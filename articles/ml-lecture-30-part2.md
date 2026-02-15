@@ -894,23 +894,110 @@ $$
 
 エージェントは、推論ステップ数を増やすことで性能向上。
 
-#### 6.3.3 Tool Ecosystem
+#### 6.3.3 Tool Ecosystem & MCP詳細
 
-MCP標準化により、**1,000+ オープンソースツール**が登場:
+**MCP (Model Context Protocol)** は2024年11月にAnthropicが発表したLLM-Tool間標準プロトコル。2025年1月時点で**1,200+ サーバー実装**。
 
-- **Filesystem MCP**: ローカルファイル操作
-- **GitHub MCP**: PR作成・Issue管理
-- **Slack MCP**: チャンネル投稿・メッセージ検索
-- **Postgres MCP**: SQL実行・スキーマ検索
+**MCPアーキテクチャ**:
+
+```mermaid
+graph LR
+    A["🤖 LLM Host<br/>(Claude Desktop)"] -->|JSON-RPC| B["📡 MCP Server"]
+    B -->|stdio/HTTP/SSE| C["🛠️ Tools"]
+    C --> D["🗄️ Resources"]
+
+    B -.Prompts.-> A
+    B -.Sampling.-> A
+
+    style A fill:#e3f2fd
+    style B fill:#fff3e0
+    style C fill:#c8e6c9
+```
+
+**主要MCPサーバー**:
+
+| Server | Capability | Install | Status |
+|:-------|:----------|:--------|:-------|
+| **@modelcontextprotocol/server-filesystem** | ファイル操作 | `npx` | Official |
+| **@modelcontextprotocol/server-github** | PR/Issue管理 | `npx` | Official |
+| **@modelcontextprotocol/server-postgres** | SQL実行 | `npx` | Official |
+| **@modelcontextprotocol/server-slack** | Channel/DM | `npx` | Official |
+| **@modelcontextprotocol/server-gdrive** | Google Drive | `npx` | Community |
+| **mcp-server-qdrant** | Vector search | `pip` | Community |
+
+**MCPメッセージフロー例** (GitHub PR作成):
+
+```json
+// 1. LLM → Server: Tool discovery
+{"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+
+// 2. Server → LLM: Available tools
+{
+  "result": {
+    "tools": [{
+      "name": "create_pull_request",
+      "description": "Create a new pull request",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {"type": "string"},
+          "title": {"type": "string"},
+          "body": {"type": "string"},
+          "head": {"type": "string"},
+          "base": {"type": "string"}
+        },
+        "required": ["repo", "title", "head", "base"]
+      }
+    }]
+  }
+}
+
+// 3. LLM → Server: Execute tool
+{
+  "method": "tools/call",
+  "params": {
+    "name": "create_pull_request",
+    "arguments": {
+      "repo": "anthropics/claude-code",
+      "title": "Fix: Handle edge case in parser",
+      "body": "Resolves #123...",
+      "head": "fix/parser-edge-case",
+      "base": "main"
+    }
+  }
+}
+
+// 4. Server → LLM: Result
+{"result": {"content": [{"type": "text", "text": "PR #456 created successfully"}]}}
+```
+
+**MCP vs 従来のAPI統合**:
+
+| 観点 | 従来 (各LLM独自API) | MCP |
+|:-----|:------------------|:----|
+| **統合コスト** | 各LLMごとに実装 | 1回実装で全LLM対応 |
+| **Discovery** | 手動ドキュメント | 動的 (`tools/list`) |
+| **Streaming** | 対応まちまち | SSE標準サポート |
+| **エラー処理** | 独自フォーマット | JSON-RPC標準 |
+| **認証** | OAuth等バラバラ | 統一 (環境変数/OAuth) |
 
 #### 6.3.4 Multi-Agent Frameworks
 
-| Framework | 特徴 | 言語 |
-|:----------|:-----|:-----|
-| **AutoGen** | 会話ベース、柔軟 | Python |
-| **CrewAI** | Role-based、シンプル | Python |
-| **LangGraph** | グラフベース、可視化 | Python / JS |
-| **CAMEL** | Role-playing、研究向け | Python |
+| Framework | 特徴 | 言語 | 2025 Status |
+|:----------|:-----|:-----|:-----------|
+| **AutoGen** | 会話ベース、柔軟 | Python | v0.4+ (MCP統合) |
+| **CrewAI** | Role-based、シンプル | Python | v0.28+ (Hierarchical) |
+| **LangGraph** | グラフベース、可視化 | Python / JS | Studio GA |
+| **CAMEL** | Role-playing、研究向け | Python | Multi-modal agents |
+| **Magentic-One** | Microsoft 2024、汎用 | Python | OSS化 (2025) |
+| **OpenHands** | Code agents | Python | SWE-bench 15.9% |
+
+**2025年の主要進展**:
+
+1. **MCP (Model Context Protocol) 統合**: Anthropic Claude Desktop、OpenAI、Google全てが対応
+2. **階層的Multi-Agent**: Manager → Workers → Specialists (3層構造が標準)
+3. **長期記憶**: Vector DB統合がデフォルト (Qdrant/Pinecone)
+4. **Tool Ecosystem拡大**: 1000+ MCP servers (GitHub, Slack, Postgres等)
 
 ### 6.4 実世界への応用
 
@@ -935,6 +1022,463 @@ MCP標準化により、**1,000+ オープンソースツール**が登場:
 - **Devin (2024年)**: 13.86% (ベースライン: 1.96%)
 - **Aider (2025年)**: 18.8% (ReAct + Tree Search)
 - **OpenHands (2025年)**: 15.9% (Multi-Agent)
+- **AutoCodeRover (2025年)**: 22.3% (Context retrieval最適化)
+
+**2025年の最新技術スタック (Devin-like agents)**:
+
+| Component | Technology | Purpose |
+|:----------|:----------|:--------|
+| **LLM Core** | Claude Opus 4.6 / GPT-4 Turbo | Reasoning |
+| **Code Search** | Tree-sitter AST + Vector DB | Context retrieval |
+| **Terminal** | Sandboxed Docker | Safe execution |
+| **MCP Tools** | GitHub/Git/Filesystem | Standard interface |
+| **Memory** | Qdrant (vector) + SQLite (structured) | Long-term context |
+| **Test Runner** | pytest/Jest auto-detection | Verification loop |
+
+**実装詳細 — Code Editingパイプライン**:
+
+```python
+# Devin-style code editing workflow
+async def autonomous_code_fix(issue_url: str) -> bool:
+    # 1. Issue理解
+    issue = await github.get_issue(issue_url)
+    context = await code_search.find_relevant_files(issue.description)
+
+    # 2. Planning (ReAct)
+    plan = await llm.plan(
+        f"Fix issue: {issue.title}\n"
+        f"Description: {issue.description}\n"
+        f"Relevant files: {context.files}"
+    )
+
+    # 3. Implementation Loop
+    for step in plan.steps:
+        # Code modification
+        edits = await llm.generate_edits(step, context)
+        await apply_edits(edits)
+
+        # Test execution
+        test_result = await run_tests()
+
+        if test_result.failed:
+            # Debug loop
+            debug_info = await llm.analyze_failure(test_result)
+            context.add_feedback(debug_info)
+            continue  # Retry with updated context
+        else:
+            break  # Success
+
+    # 4. PR creation via MCP
+    await mcp_github.create_pull_request(
+        title=f"Fix: {issue.title}",
+        body=f"Resolves #{issue.number}",
+        branch=f"fix/issue-{issue.number}"
+    )
+
+    return True
+```
+
+### 6.5 Advanced Agent Patterns (2025)
+
+**Pattern 1: Hierarchical Agent System**
+
+3層アーキテクチャがデファクトスタンダード:
+
+```
+Layer 1: Meta-Agent (Coordinator)
+   ↓
+Layer 2: Specialist Agents (Domain experts)
+   ↓
+Layer 3: Tool Agents (Atomic operations)
+```
+
+**実装例**:
+
+```python
+class MetaAgent:
+    """Layer 1: High-level coordination"""
+    def __init__(self):
+        self.specialists = {
+            "code": CodeSpecialistAgent(),
+            "research": ResearchSpecialistAgent(),
+            "design": DesignSpecialistAgent()
+        }
+
+    async def execute(self, task):
+        # Task decomposition
+        subtasks = await self.plan(task)
+
+        # Delegate to specialists
+        results = []
+        for subtask in subtasks:
+            specialist = self.select_specialist(subtask)
+            result = await specialist.execute(subtask)
+            results.append(result)
+
+        # Synthesize
+        return await self.synthesize(results)
+
+    def select_specialist(self, subtask):
+        # LLM-based routing
+        domain = llm.classify(subtask.description)
+        return self.specialists.get(domain, self.specialists["code"])
+
+class CodeSpecialistAgent:
+    """Layer 2: Domain specialist"""
+    def __init__(self):
+        self.tools = [
+            FilesystemTool(),
+            GitTool(),
+            TestRunnerTool(),
+            LinterTool()
+        ]
+
+    async def execute(self, subtask):
+        # ReAct loop with domain-specific tools
+        for step in range(10):
+            thought = await llm.reason(subtask, self.context)
+            action = self.parse_action(thought)
+
+            if action.type == "finish":
+                return action.result
+
+            # Execute via tool agents (Layer 3)
+            observation = await self.tools[action.tool_name].execute(action.args)
+            self.context.append(observation)
+
+        return "Max steps reached"
+```
+
+**Pattern 2: Reflexion — Self-Critique Loop**
+
+Shinn et al. (2023) の**Reflexion**パターン: エージェントが自己批評で改善。
+
+```python
+class ReflexionAgent:
+    def __init__(self):
+        self.memory = []
+
+    async def solve_with_reflection(self, task, max_trials=3):
+        for trial in range(max_trials):
+            # Attempt
+            solution = await self.attempt(task)
+
+            # Self-evaluation
+            evaluation = await llm.evaluate(
+                f"Task: {task}\nSolution: {solution}\n"
+                f"Is this correct? If not, what's wrong?"
+            )
+
+            if evaluation.is_correct:
+                return solution
+
+            # Reflection: Learn from failure
+            reflection = await llm.reflect(
+                f"Previous attempt failed because: {evaluation.reason}\n"
+                f"What should I try differently?"
+            )
+
+            self.memory.append({
+                "trial": trial,
+                "solution": solution,
+                "failure_reason": evaluation.reason,
+                "reflection": reflection
+            })
+
+        return "Failed after max trials"
+```
+
+**Pattern 3: Constitutional AI for Agents**
+
+Anthropic's Constitutional AIをエージェントに適用:
+
+```python
+class ConstitutionalAgent:
+    def __init__(self):
+        self.constitution = [
+            "Never access files outside the project directory",
+            "Always ask for confirmation before destructive operations",
+            "Respect API rate limits",
+            "Never execute code with eval() or exec()"
+        ]
+
+    async def execute_with_guardrails(self, action):
+        # Pre-check against constitution
+        violations = await self.check_constitution(action)
+
+        if violations:
+            return f"Action blocked: {violations}"
+
+        # Execute
+        result = await self.execute_action(action)
+
+        # Post-check
+        post_violations = await self.check_result(result)
+
+        if post_violations:
+            await self.rollback(action)
+            return f"Action rolled back: {post_violations}"
+
+        return result
+
+    async def check_constitution(self, action):
+        violations = []
+
+        for rule in self.constitution:
+            prompt = f"Rule: {rule}\nAction: {action}\nDoes this action violate the rule?"
+            if await llm.check(prompt):
+                violations.append(rule)
+
+        return violations
+```
+
+### 6.6 Agent Evaluation Benchmarks (2024-2025)
+
+**主要ベンチマーク**:
+
+| Benchmark | Task | Metrics | SOTA (2025) |
+|:----------|:-----|:--------|:-----------|
+| **SWE-bench Verified** | GitHub Issue解決 | Resolution Rate | 22.3% (AutoCodeRover) |
+| **WebArena** | Real website操作 | Success Rate | 38.2% (GPT-4 + Tree Search) |
+| **AgentBench** | 8環境総合評価 | Average Success | 65.4% (Claude Opus 4.6) |
+| **GAIA** | 一般AI能力 | Human-level % | 42.1% |
+| **τ-bench** | Tool use正確性 | Accuracy | 87.3% |
+
+**SWE-bench Verified詳細**:
+
+```
+Task: Real GitHub issues from OSS projects
+Example:
+  Issue #1234 in django/django:
+  "QuerySet.update() doesn't work with F() expressions on joined fields"
+
+Agent Actions:
+1. Read issue description
+2. Search codebase for QuerySet.update()
+3. Identify relevant files (django/db/models/query.py)
+4. Analyze F() expression handling
+5. Write fix
+6. Run tests
+7. Create PR
+
+Evaluation: PR passes CI + resolves issue
+```
+
+**Success Factors**:
+
+| Factor | Impact on Success | Example |
+|:-------|:-----------------|:--------|
+| **Context Retrieval** | +45% | BM25 + Vector hybrid |
+| **Test Execution** | +38% | Run pytest before PR |
+| **Error Recovery** | +32% | Retry with debug info |
+| **Code Understanding** | +28% | AST parsing + docstrings |
+
+### 6.7 Agentic Workflow vs Traditional
+
+**Traditional Workflow (人間主導)**:
+
+```
+Human: "Build a web scraper"
+↓
+Human: Writes requirements doc
+↓
+Human: Implements scraper.py
+↓
+Human: Writes tests
+↓
+Human: Debugs failures
+↓
+Human: Documents code
+↓
+Human: Creates PR
+```
+
+**Agentic Workflow (AI主導)**:
+
+```
+Human: "Build a web scraper for news articles"
+↓
+Agent (Planning): Break into 5 subtasks
+↓
+Agent (Research): Find best libraries (BeautifulSoup vs Scrapy)
+↓
+Agent (Coding): Implement scraper with error handling
+↓
+Agent (Testing): Generate test cases + run
+↓
+Agent (Debug): Fix failures via error analysis
+↓
+Agent (Docs): Auto-generate docstrings
+↓
+Agent (Review): Self-review + suggest improvements
+↓
+Agent (PR): Create PR with description
+```
+
+**Time Comparison** (Web scraper task):
+
+| Approach | Time | Quality |
+|:---------|:-----|:--------|
+| Human (Senior Eng) | 4 hours | High |
+| Human (Junior Eng) | 12 hours | Medium |
+| **Agent (GPT-4 + Tools)** | **45 min** | **High** |
+
+**Cost Comparison**:
+
+| Resource | Human | Agent |
+|:---------|:------|:------|
+| Labor | $200 (4h × $50/h) | $0 |
+| API | $0 | $2.50 (GPT-4) |
+| **Total** | **$200** | **$2.50** |
+
+ROI: 80x cost reduction for routine tasks.
+
+### 6.8 Agent Safety & Alignment
+
+**Safety Challenges**:
+
+1. **Unbounded Tool Use**: エージェントが無限ループでAPI課金
+2. **Data Leakage**: 機密情報を外部APIに送信
+3. **Adversarial Prompts**: ユーザーが悪意ある指示でエージェント乗っ取り
+
+**Defense Mechanisms**:
+
+```python
+class SafeAgent:
+    def __init__(self):
+        self.usage_limits = {
+            "max_api_calls_per_task": 100,
+            "max_tokens_per_task": 50000,
+            "max_execution_time": 300  # 5 min
+        }
+        self.sensitive_data_detector = PIIDetector()
+
+    async def execute_safe(self, task):
+        # Budget tracking
+        budget = TaskBudget(self.usage_limits)
+
+        try:
+            with timeout(self.usage_limits["max_execution_time"]):
+                while not task.is_complete():
+                    action = await self.plan_next_action(task)
+
+                    # Pre-flight checks
+                    if not budget.can_afford(action):
+                        raise BudgetExceededError()
+
+                    if self.is_sensitive_data(action.args):
+                        raise DataLeakageError()
+
+                    # Execute
+                    result = await self.execute_action(action)
+                    budget.charge(action)
+                    task.update(result)
+
+        except BudgetExceededError:
+            return "Task aborted: Budget exceeded"
+        except DataLeakageError:
+            return "Task aborted: Sensitive data detected"
+        except TimeoutError:
+            return "Task aborted: Time limit exceeded"
+
+    def is_sensitive_data(self, data):
+        # PII detection
+        return self.sensitive_data_detector.scan(str(data))
+```
+
+### 6.9 Human-in-the-Loop Agents
+
+完全自律は危険 → Critical操作で人間承認を要求。
+
+```python
+class HITLAgent:
+    """Human-in-the-Loop Agent"""
+    def __init__(self, approval_required_actions=None):
+        self.approval_required = approval_required_actions or [
+            "delete_file",
+            "git_push",
+            "database_modify",
+            "external_api_call"
+        ]
+
+    async def execute_with_approval(self, action):
+        if action.name in self.approval_required:
+            # Request human approval
+            approval = await self.request_approval(
+                f"Approve action: {action.name}\n"
+                f"Args: {action.args}\n"
+                f"Impact: {action.estimated_impact}"
+            )
+
+            if not approval.approved:
+                return f"Action rejected by human: {approval.reason}"
+
+        # Execute approved action
+        return await self.execute_action(action)
+
+    async def request_approval(self, request):
+        # Send to human via UI/Slack/Email
+        response = await send_approval_request(request)
+
+        return Approval(
+            approved=response.decision == "approve",
+            reason=response.comment
+        )
+```
+
+**Approval UI例**:
+
+```
+┌─────────────────────────────────────┐
+│ Agent Approval Request              │
+├─────────────────────────────────────┤
+│ Action: git push origin main        │
+│ Files: 5 modified                   │
+│ Impact: PUBLIC repository           │
+│                                     │
+│ Review changes:                     │
+│ + feature.py (127 lines added)     │
+│ + test.py (43 lines added)         │
+│                                     │
+│ [Approve]  [Reject]  [Review Code] │
+└─────────────────────────────────────┘
+```
+
+### 6.10 Future: Foundation Models for Agents
+
+**2026年予測**:
+
+1. **Agent-Specific Models**: エージェント用に特化したLLM (Tool use最適化)
+2. **World Models**: エージェントが環境の動的モデルを学習
+3. **Multi-Modal Agents**: Text + Vision + Audio統合
+4. **Federated Agent Learning**: 複数エージェントが協調学習
+
+**Emerging Architecture: Agent + World Model**:
+
+```python
+class WorldModelAgent:
+    def __init__(self):
+        self.llm = LLM()  # Reasoning
+        self.world_model = LearnedEnvironmentModel()  # Predictive
+
+    async def plan_with_simulation(self, goal):
+        # Simulate actions in world model
+        best_plan = None
+        best_outcome = -inf
+
+        for plan_candidate in self.generate_plan_candidates(goal):
+            # Simulate plan execution
+            simulated_outcome = self.world_model.simulate(plan_candidate)
+
+            if simulated_outcome.success_prob > best_outcome:
+                best_plan = plan_candidate
+                best_outcome = simulated_outcome.success_prob
+
+        # Execute best plan in real environment
+        return await self.execute_plan(best_plan)
+```
+
+---
 
 #### 6.4.2 研究エージェント
 
@@ -1209,8 +1753,6 @@ Pythonだけでは全てを最適化できない。
 [^4]: Park, J. S., O'Brien, J. C., Cai, C. J., Morris, M. R., Liang, P., & Bernstein, M. S. (2023). "Generative Agents: Interactive Simulacra of Human Behavior". *arXiv:2304.03442*.
 @[card](https://arxiv.org/abs/2304.03442)
 
-[^5]: Guo, T., Chen, X., Wang, Y., Chang, R., Pei, S., Chawla, N. V., Wiest, O., & Zhang, X. (2024). "Large Language Model based Multi-Agents: A Survey of Progress and Challenges". *IJCAI 2024*.
-@[card](https://arxiv.org/abs/2402.01680)
 
 [^7]: Liu, X., Yu, H., Zhang, H., Xu, Y., Lei, X., Lai, H., Gu, Y., Ding, H., Men, K., Yang, K., Zhang, S., Deng, X., Zeng, A., Du, Z., Zhang, C., Shen, S., Zhang, T., Su, Y., Sun, H., Huang, M., Dong, Y., & Tang, J. (2023). "AgentBench: Evaluating LLMs as Agents". *arXiv:2308.03688*.
 @[card](https://arxiv.org/abs/2308.03688)

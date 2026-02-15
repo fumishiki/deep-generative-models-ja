@@ -1030,3 +1030,575 @@ $$
 
 ---
 
+## 🔧 4. 実装ゾーン（45分）— Rustで3D Conv + Julia DiT訓練
+
+**ゴール**: 3D Convolution カーネルをRustで実装し、DiT訓練をJuliaで高速化する。
+
+### 4.1 Rust 3D Convolution: C Pointer Modelで高速化
+
+Zone 1で学んだ3D Convの数式をRustで実装する。C Pointer Modelに従い、zero-copy設計を徹底する。
+
+```rust
+// src/video_kernels.rs — Rust 3D Convolution (C-ABI対応)
+
+#![deny(clippy::unwrap_used)]
+#![warn(clippy::pedantic, missing_docs)]
+
+/// 3D Convolution: (T, H, W, C_in) * (k_t, k_h, k_w, C_in, C_out) → (T, H, W, C_out)
+/// Rust Pointer Model: flat array + offset計算 = zero-copy
+#[no_mangle]
+pub unsafe extern "C" fn conv3d_forward(
+    input: *const f32,      // (T, H, W, C_in)
+    kernel: *const f32,     // (k_t, k_h, k_w, C_in, C_out)
+    output: *mut f32,       // (T, H, W, C_out) — caller allocates
+    T: usize, H: usize, W: usize,
+    C_in: usize, C_out: usize,
+    k_t: usize, k_h: usize, k_w: usize,
+) {
+    let pad_t = k_t / 2;
+    let pad_h = k_h / 2;
+    let pad_w = k_w / 2;
+
+    for t in 0..T {
+        for h in 0..H {
+            for w in 0..W {
+                for c_out in 0..C_out {
+                    let mut sum = 0.0f32;
+
+                    // 3D Convolution loop
+                    for kt in 0..k_t {
+                        for kh in 0..k_h {
+                            for kw in 0..k_w {
+                                let t_idx = (t + kt).wrapping_sub(pad_t);
+                                let h_idx = (h + kh).wrapping_sub(pad_h);
+                                let w_idx = (w + kw).wrapping_sub(pad_w);
+
+                                // Bounds check
+                                if t_idx >= T || h_idx >= H || w_idx >= W {
+                                    continue;
+                                }
+
+                                for c_in in 0..C_in {
+                                    // Input: (T, H, W, C_in) flat index
+                                    let input_idx = ((t_idx * H + h_idx) * W + w_idx) * C_in + c_in;
+                                    // Kernel: (k_t, k_h, k_w, C_in, C_out) flat index
+                                    let kernel_idx = ((((kt * k_h + kh) * k_w + kw) * C_in + c_in) * C_out + c_out);
+
+                                    sum += *input.add(input_idx) * *kernel.add(kernel_idx);
+                                }
+                            }
+                        }
+                    }
+
+                    // Output: (T, H, W, C_out)
+                    let output_idx = ((t * H + h) * W + w) * C_out + c_out;
+                    *output.add(output_idx) = sum;
+                }
+            }
+        }
+    }
+}
+
+/// Julia → Rust FFI test
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_conv3d() {
+        let T = 4; let H = 8; let W = 8;
+        let C_in = 3; let C_out = 16;
+        let k_t = 3; let k_h = 3; let k_w = 3;
+
+        let mut input = vec![1.0f32; T * H * W * C_in];
+        let kernel = vec![0.01f32; k_t * k_h * k_w * C_in * C_out];
+        let mut output = vec![0.0f32; T * H * W * C_out];
+
+        unsafe {
+            conv3d_forward(
+                input.as_ptr(), kernel.as_ptr(), output.as_mut_ptr(),
+                T, H, W, C_in, C_out, k_t, k_h, k_w,
+            );
+        }
+
+        // 期待値: sum ≈ 3*3*3*3*0.01 = 0.81
+        assert!((output[0] - 0.81).abs() < 0.01);
+    }
+}
+```
+
+### 4.2 Julia DiT訓練: Lux + Reactant GPU加速
+
+Zone 3のDiT理論をJuliaで実装する。Lux.jl (Flux後継) + Reactant.jl (XLA AOT GPU) でGPU訓練を実現。
+
+```julia
+# julia/dit_video_train.jl — DiT訓練 (Lux + Reactant)
+
+using Lux, Reactant, Optimisers, Random, Statistics, CUDA
+
+# DiT Block: Multi-Head Self-Attention + MLP + AdaLN
+struct DiTBlock{A,M,N1,N2}
+    attn::A
+    mlp::M
+    norm1::N1
+    norm2::N2
+end
+
+function DiTBlock(dim::Int, n_heads::Int)
+    attn = MultiHeadAttention(dim, n_heads=n_heads)
+    mlp = Chain(Dense(dim, 4*dim, gelu), Dense(4*dim, dim))
+    norm1 = LayerNorm(dim)
+    norm2 = LayerNorm(dim)
+    DiTBlock(attn, mlp, norm1, norm2)
+end
+
+function (m::DiTBlock)(x, ps, st)
+    # Residual connection + Layer Norm
+    attn_out, st_attn = m.attn(m.norm1(x, ps.norm1, st.norm1)[1], ps.attn, st.attn)
+    x = x + attn_out[1]
+
+    mlp_out, st_mlp = m.mlp(m.norm2(x, ps.norm2, st.norm2)[1], ps.mlp, st.mlp)
+    x = x + mlp_out[1]
+
+    return x, (attn=st_attn, mlp=st_mlp, norm1=st.norm1, norm2=st.norm2)
+end
+
+# DiT: Patchify → Transformer Blocks → Unpatchify
+function DiT(; patch_size=16, n_layers=12, dim=768, n_heads=12)
+    patchify = Conv((patch_size, patch_size), 3 => dim, stride=patch_size)
+    blocks = [DiTBlock(dim, n_heads) for _ in 1:n_layers]
+    unpatchify = ConvTranspose((patch_size, patch_size), dim => 3, stride=patch_size)
+
+    Chain(patchify, blocks..., unpatchify)
+end
+
+# 訓練ループ (Reactant GPU AOT)
+function train_dit!(model, data_loader, epochs=10)
+    opt_state = Optimisers.setup(Adam(1e-4), model.ps)
+
+    for epoch in 1:epochs
+        total_loss = 0.0
+        for (x_batch,) in data_loader
+            x_batch = x_batch |> gpu  # CUDA.jl GPU転送
+
+            # Forward + Backward
+            loss, grads = Lux.Training.compute_gradients(model, x_batch)
+            total_loss += loss
+
+            # Update
+            Optimisers.update!(opt_state, model.ps, grads)
+        end
+
+        @info "Epoch $epoch: Loss = $(total_loss / length(data_loader))"
+    end
+end
+```
+
+### 4.3 3言語統合: Julia訓練 → Rust推論 → Elixir配信
+
+Course III第19回の3言語FFIパターンを動画生成に適用する。
+
+```elixir
+# elixir/video_gen_server.ex — Elixir分散配信サーバー
+
+defmodule VideoGenServer do
+  use GenServer
+
+  # Rust FFI: 3D Conv呼び出し
+  @on_load :load_nif
+  def load_nif do
+    :erlang.load_nif('./target/release/libvideo_kernels', 0)
+  end
+
+  def conv3d_forward(_input, _kernel, _output, _dims), do: :erlang.nif_error(:not_loaded)
+
+  # Julia訓練モデル読み込み
+  def load_julia_model(model_path) do
+    # jlrs経由でJuliaモデルロード (第19回参照)
+    Jlrs.call(:load_model, [model_path])
+  end
+
+  # 動画生成API
+  def handle_call({:generate_video, prompt, num_frames}, _from, state) do
+    # 1. Rust: 3D Conv高速推論
+    # 2. Julia: DiT forward pass
+    # 3. Elixir: 分散配信
+    video = generate_with_dit(prompt, num_frames, state.model)
+    {:reply, {:ok, video}, state}
+  end
+end
+```
+
+---
+
+## 🧪 5. 実験ゾーン（30分）— SmolVLM2動画理解 + LTX-Video生成デモ
+
+**ゴール**: 実際の動画を入力し、SmolVLM2で理解 → LTX-Videoで新規動画生成する統合デモを実行する。
+
+### 5.1 SmolVLM2 (256M): 動画理解
+
+SmolVLM2は256Mパラメータの小型VLMだが、動画理解が可能。ローカルGPU (RTX 4090等) で実行可能。
+
+```julia
+# julia/smolvlm2_video.jl — SmolVLM2動画理解
+
+using Transformers, VideoIO
+
+# SmolVLM2モデルロード (256M params)
+smol_vlm = load_model("HuggingFaceTB/SmolVLM2-256M")
+
+# 動画フレーム抽出 (24fps → 1fps サンプリング)
+function extract_frames(video_path::String; fps=1)
+    reader = VideoIO.openvideo(video_path)
+    frames = []
+
+    frame_interval = Int(reader.fps / fps)
+    for (i, frame) in enumerate(reader)
+        if i % frame_interval == 0
+            push!(frames, frame)
+        end
+    end
+
+    return frames
+end
+
+# 動画理解
+video_path = "demo.mp4"
+frames = extract_frames(video_path)  # 10秒動画 → 10フレーム
+
+# SmolVLM2推論
+caption = smol_vlm(frames, prompt="この動画で何が起こっているか詳しく説明してください")
+
+println("SmolVLM2理解: ", caption)
+# 出力例: "カフェで2人の女性が会話している。窓の外には桜の木が見える。春の昼間のシーン。"
+```
+
+### 5.2 LTX-Video: テキスト→動画生成
+
+LTX-VideoはDiT-based動画生成モデル。Pyramidal Flow Matching (arXiv:2410.05954) の実装例。
+
+```julia
+# julia/ltx_video_gen.jl — LTX-Video動画生成
+
+using Diffusers, VideoIO
+
+# LTX-Videoモデルロード
+ltx_model = load_model("Lightricks/LTX-Video")
+
+# テキストプロンプト → 動画生成
+prompt = "桜の木の下のカフェで2人の女性が会話している、春の昼間、アニメ調"
+generated_video = ltx_model(
+    prompt,
+    num_frames=48,        # 2秒 (24fps)
+    resolution=(768, 768),
+    num_steps=28,         # Rectified Flow: 28ステップ
+    guidance_scale=7.5
+)
+
+# 保存
+save_video(generated_video, "generated_cafe.mp4", framerate=24)
+println("✅ LTX-Video生成完了: generated_cafe.mp4")
+```
+
+### 5.3 統合デモ: SmolVLM2理解 → プロンプト改善 → LTX-Video生成
+
+動画を入力 → SmolVLM2で理解 → 理解結果をプロンプトに変換 → LTX-Videoで新規動画生成。
+
+```julia
+# julia/integrated_demo.jl — 統合デモ
+
+using Transformers, Diffusers, VideoIO
+
+# 1️⃣ 入力動画を SmolVLM2 で理解
+input_video = "input_cafe.mp4"
+frames = extract_frames(input_video)
+smol_vlm = load_model("HuggingFaceTB/SmolVLM2-256M")
+
+understanding = smol_vlm(frames, prompt="この動画のスタイル、シーン、雰囲気を詳しく説明してください")
+println("SmolVLM2理解:\n", understanding)
+# 出力: "アニメ調のカフェシーン。春の桜が窓の外に見える。明るい昼間。2人の女性が笑顔で会話。"
+
+# 2️⃣ 理解結果からプロンプト生成
+enhanced_prompt = """
+$(understanding)
+さらに、カメラが桜の木にズームインする動きを追加。
+高品質、詳細なアニメーション、シネマティックライティング。
+"""
+
+# 3️⃣ LTX-Videoで新規動画生成
+ltx_model = load_model("Lightricks/LTX-Video")
+new_video = ltx_model(
+    enhanced_prompt,
+    num_frames=96,  # 4秒 (24fps)
+    resolution=(1024, 1024),
+    num_steps=28
+)
+
+save_video(new_video, "enhanced_cafe.mp4", framerate=24)
+println("✅ 統合デモ完了: enhanced_cafe.mp4")
+```
+
+---
+
+## 🌟 6. 発展ゾーン（30分）— 2025最新手法 + 研究フロンティア
+
+**ゴール**: 2025年の最新Video Diffusion研究を理解し、次のブレイクスルーを予測する視点を獲得する。
+
+### 6.1 TurboDiffusion: 100-200倍高速化 (arXiv:2512.16093)
+
+**問題**: Sora 2等のVideo Diffusionは、1動画生成に数分かかる。
+
+**TurboDiffusionの解決策** [^1]:
+- **End-to-End高速化**: 生成を100-200倍加速
+- **品質保持**: 高速化しつつ品質を維持
+- **手法**: Knowledge distillation + Adaptive sampling + Early stopping
+
+```julia
+# TurboDiffusion風の高速化手法 (疑似コード)
+function turbo_diffusion(model, prompt, num_steps_base=50)
+    # Adaptive sampling: 重要度が低いステップをスキップ
+    important_steps = adaptive_step_selection(num_steps_base)  # 50 → 5-10 steps
+
+    # Early stopping: 品質が閾値を超えたら終了
+    for step in important_steps
+        latent = model.denoise_step(latent, step)
+
+        if quality_score(latent) > threshold
+            break  # Early stopping
+        end
+    end
+
+    return decode_latent(latent)
+end
+```
+
+**結果**: 従来50ステップ → TurboD 5ステップ で同等品質 → 10倍高速化。さらにKD蒸留で100倍達成。
+
+### 6.2 Pyramidal Flow Matching (arXiv:2410.05954)
+
+**問題**: 高解像度動画生成 (1024p, 2K) は計算量が爆発。
+
+**Pyramidal Flow Matchingの解決策** [^2]:
+- **Pyramid構造**: 低解像度 → 中解像度 → 高解像度 の段階的生成
+- **単一DiT**: 全解像度を1つのDiTで処理 (Multi-scale patchify)
+- **End-to-End訓練**: Pyramidを統合的に最適化
+
+**アーキテクチャ**:
+
+```
+入力: Text prompt
+  ↓
+Level 1: 256×256 (粗い構造生成)
+  ↓ Upsample
+Level 2: 512×512 (詳細追加)
+  ↓ Upsample
+Level 3: 768×768 (最終品質)
+```
+
+**数式** (Multi-scale Flow Matching):
+
+$$
+\mathcal{L}_{\text{pyramid}} = \sum_{l=1}^{L} \lambda_l \mathbb{E}_{t, x_0^{(l)}, x_1^{(l)}} \left[ \|v_\theta(x_t^{(l)}, t, l) - u_t(x_t^{(l)} | x_1^{(l)})\|^2 \right]
+$$
+
+ここで $l$ はレベル、$\lambda_l$ は重み。
+
+**結果**: 768p, 24fps, 5秒動画を単一DiTで生成可能。
+
+### 6.3 Survey: Video Diffusion全体像 (arXiv:2504.16081)
+
+2025年のVideo Diffusion Survey [^3] によると、以下のパラダイムシフトが進行中:
+
+| 観点 | 従来 (2022-2023) | 最新 (2024-2025) |
+|:-----|:----------------|:----------------|
+| **アーキテクチャ** | 3D U-Net | DiT (Diffusion Transformer) |
+| **Sampling** | 1000 steps (DDPM) | 10-50 steps (Flow Matching) |
+| **高速化** | DPM-Solver (50 steps) | TurboDiffusion (5 steps) |
+| **解像度** | 512×512 | 768×768 → 1024×1024 (Pyramidal) |
+| **長さ** | 2-5秒 | 15-25秒 (Sora 2) |
+| **制御性** | Text only | Text + Image + Audio (Multimodal control) |
+
+**未解決問題**:
+1. **長時間一貫性**: 数分の動画で一貫性が崩れる
+2. **物理法則**: 重力・衝突を完全には学習できていない
+3. **計算コスト**: 1動画生成に数千GPU時間 (Sora 2推定)
+
+### 6.4 研究フロンティア: 次のブレイクスルー予測
+
+**予測1: SSM (State Space Models) の動画生成適用** (2026-2027)
+
+- **動機**: Transformer は $O(T^2)$ のAttentionで長時間動画が苦手。SSM (Mamba) は $O(T)$。
+- **手法**: Mamba-DiT Hybrid — 時間軸はMamba、空間軸はAttention
+- **期待**: 数分〜数十分の長時間動画一貫性
+
+**予測2: Test-Time Training for Video** (2026)
+
+- **動機**: Inference-Time Scalingの動画版
+- **手法**: 生成中に動画の「物理法則」を推論時に学習・微調整
+- **期待**: Soraの物理法則エラー (破片消失等) を推論時に修正
+
+**予測3: Neural PDE統合World Models** (2027-2028)
+
+- **動機**: 暗黙的物理法則学習の限界
+- **手法**: Diffusion + Differentiable Physics Simulator 統合
+- **期待**: 物理法則を明示的に保証した動画生成
+
+---
+
+## 🎓 7. 振り返りゾーン (30分) — 全知識の接続
+
+**ゴール**: 第45回で学んだVideo生成の理論・実装・最新研究を振り返り、全50回の到達点を確認する。
+
+### 7.1 第45回の到達点チェックリスト
+
+全7ゾーンを振り返り、理解度を自己評価しましょう。
+
+| Zone | 内容 | 理解度 (自己評価) |
+|:-----|:-----|:-----------------|
+| **Zone 0** | 30秒クイックスタート — Temporal Attention体感 | ✅ / ⚠️ / ❌ |
+| **Zone 1** | 体験ゾーン — Spatial/Temporal/3D Conv/Optical Flow実装 | ✅ / ⚠️ / ❌ |
+| **Zone 2** | 直感ゾーン — 3つの困難・3つのパラダイム | ✅ / ⚠️ / ❌ |
+| **Zone 3** | 数式修行 — Video Diffusion/DiT/3D VAE/Optical Flow導出 | ✅ / ⚠️ / ❌ |
+| **Zone 4** | 実装ゾーン — Rust 3D Conv + Julia DiT訓練 | ✅ / ⚠️ / ❌ |
+| **Zone 5** | 実験ゾーン — SmolVLM2 + LTX-Video統合デモ | ✅ / ⚠️ / ❌ |
+| **Zone 6** | 発展ゾーン — TurboDiffusion/Pyramidal/Survey/Frontier | ✅ / ⚠️ / ❌ |
+
+**✅ = 完全理解** / **⚠️ = 部分的理解** / **❌ = 要復習**
+
+### 7.2 Course I-Vとの接続: 第45回の位置づけ
+
+第45回は、Course I-Vの全知識が接続される地点だ。
+
+```mermaid
+graph TD
+    A["Course I<br/>第2回: 線形代数"] -.->|"QKᵀ / softmax"| B["Zone 1: Temporal Attention"]
+    C["Course I<br/>第4回: 微積分"] -.->|"∂/∂θ backprop"| D["Zone 4: Julia訓練"]
+    E["Course II<br/>第16回: Transformer"] -.->|"Self-Attention"| B
+    F["Course IV<br/>第36回: DDPM"] -.->|"ノイズ予測"| G["Zone 3: Video Diffusion"]
+    H["Course IV<br/>第38回: Flow Matching"] -.->|"Rectified Flow"| I["Zone 6: Pyramidal FM"]
+    J["Course III<br/>第19回: FFI"] -.->|"Julia→Rust"| D
+    K["Course V<br/>第43回: DiT"] -.->|"Spacetime DiT"| G
+
+    style B fill:#ffe6f0
+    style G fill:#e6f3ff
+    style D fill:#fff4e6
+    style I fill:#e6fff0
+```
+
+**全50回の統合例**:
+
+- **第2回 線形代数** → Zone 1 Temporal Attention の $QK^\top$ 計算
+- **第4回 微積分** → Zone 4 Julia訓練の勾配降下
+- **第16回 Transformer** → Zone 1 Spatial/Temporal Attention の基礎
+- **第36回 DDPM** → Zone 3 Video Diffusion のノイズ予測
+- **第38回 Flow Matching** → Zone 6 Pyramidal Flow Matching
+- **第19回 FFI** → Zone 4 Julia→Rust 3D Conv呼び出し
+- **第43回 DiT** → Zone 3 Spacetime DiT
+
+### 7.3 次のステップ: 第46回「3D生成」へ
+
+第45回で**時空間2D+時間**を征服した。次は**空間3D**だ。
+
+```mermaid
+graph LR
+    A["第44回<br/>音声生成<br/>時系列1D"] --> B["第45回<br/>Video生成<br/>時空間2D+時間"]
+    B --> C["第46回<br/>3D生成<br/>空間3D"]
+    C --> D["第47回<br/>4D生成<br/>空間3D+時間"]
+
+    style B fill:#ffd700,stroke:#ff6347,stroke-width:4px
+    style C fill:#98fb98
+```
+
+**第46回で学ぶこと**:
+- **NeRF**: Neural Radiance Fields — Volume Rendering方程式
+- **3DGS**: 3D Gaussian Splatting — 1000倍高速化の微分可能ラスタライゼーション
+- **DreamFusion**: Score Distillation Sampling (SDS) でText-to-3D
+- **SLAM応用**: GARAD-SLAM, Dy3DGS-SLAM (2025年の最新SLAM)
+
+### 7.4 全50回での第45回の役割
+
+第45回は、Course Vの中核を担う。
+
+| 講義 | モダリティ | 次元 | 役割 |
+|:-----|:----------|:-----|:-----|
+| 第43回 | 画像 | 2D空間 | DiT/ControlNet — 基盤 |
+| 第44回 | 音声 | 1D時間 | 時系列モデリング |
+| **第45回** | **動画** | **2D空間+時間** | **時空間統合** — 3D/4Dへの橋渡し |
+| 第46回 | 3D | 3D空間 | 空間モデリング |
+| 第47回 | 4D | 3D空間+時間 | 究極の統合 |
+
+第45回の**時空間DiT**は、第46回の**3D NeRF/3DGS**、第47回の**4D-GS**への架け橋だ。
+
+### 7.5 実践課題: 自分で動画生成システムを作る
+
+第45回の全知識を使って、以下のチャレンジに挑戦しよう。
+
+**課題1: SmolVLM2 + LTX-Video統合システム構築** (難易度: ★★★☆☆)
+
+- Zone 5のデモを拡張し、Web UIを追加 (Genie.jl等)
+- 入力: 動画ファイルアップロード
+- 処理: SmolVLM2で理解 → LLM (GPT-4等) でプロンプト改善 → LTX-Video生成
+- 出力: 生成動画ダウンロード
+
+**課題2: Rust 3D Conv + Julia DiT訓練パイプライン** (難易度: ★★★★☆)
+
+- Zone 4のRust 3D ConvをCUDA対応に拡張 (cuDNN C API呼び出し)
+- Julia側でLux + Reactant GPUパイプライン構築
+- 小規模データセット (UCF-101等) で訓練 → 推論速度計測
+
+**課題3: TurboDiffusion実装** (難易度: ★★★★★)
+
+- arXiv:2512.16093 を読み、Adaptive sampling部分を実装
+- Knowledge distillationでLTX-Videoを蒸留 (50 steps → 5 steps)
+- 品質評価 (FVD, IS) で検証
+
+### 7.6 24時間以内に始める3つのアクション
+
+第45回を読了した「今」、以下のアクションを24時間以内に実行しよう。
+
+1. **SmolVLM2デモ実行**: Zone 5のコードをコピペして動画理解を試す (30分)
+2. **Sora 2 Technical Reportを読む**: OpenAIの公式レポートを精読 (1時間)
+3. **arXiv最新論文1本**: TurboDiffusion or Pyramidal Flow Matching を読む (1時間)
+
+---
+
+**第45回完走おめでとうございます！** 時空間Diffusionの理論・実装・最新研究を完全習得しました。次は第46回「3D生成」で空間3Dを征服しましょう。
+
+### 7.7 補足資料: Juliaパッケージエコシステム
+
+動画生成に役立つJuliaパッケージをまとめます。
+
+| パッケージ | 用途 | インストール |
+|:----------|:-----|:-----------|
+| **Lux.jl** | Neural network framework (Flux後継) | `using Pkg; Pkg.add("Lux")` |
+| **Reactant.jl** | XLA AOT GPU compilation | `Pkg.add("Reactant")` |
+| **VideoIO.jl** | 動画読み込み・書き込み | `Pkg.add("VideoIO")` |
+| **Transformers.jl** | HuggingFace互換推論 | `Pkg.add("Transformers")` |
+| **CUDA.jl** | NVIDIA GPU programming | `Pkg.add("CUDA")` |
+| **Optimisers.jl** | Adam, AdamW, etc. | `Pkg.add("Optimisers")` |
+
+実装時のトラブルシューティング:
+
+```julia
+# Issue 1: VideoIO.jl installation error
+# Solution: ffmpegをシステムにインストール
+# macOS: brew install ffmpeg
+# Linux: apt install ffmpeg
+
+# Issue 2: CUDA out of memory
+# Solution: Batch sizeを削減 or Gradient checkpointing
+using Lux.Experimental: gradient_checkpointing
+
+# Issue 3: Reactant.jl not found
+# Solution: Julia 1.11+ required
+versioninfo()  # Julia 1.11.0 以上を確認
+```
+
+## 参考文献
+
+[^1]: [TurboDiffusion: Accelerating Video Diffusion Models by 100-200 Times](https://arxiv.org/abs/2512.16093) — arXiv:2512.16093, Dec 2025
+[^2]: [Pyramidal Flow Matching for Efficient Video Generative Modeling](https://arxiv.org/abs/2410.05954) — arXiv:2410.05954, Oct 2024
+[^3]: [Survey of Video Diffusion Models: Foundations, Implementations, and Applications](https://arxiv.org/abs/2504.16081) — arXiv:2504.16081, Apr 2025
+
+---
+

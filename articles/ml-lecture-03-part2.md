@@ -347,7 +347,210 @@ print(f"Top singular values: {np.round(s[::-1][:5], 4)}")
 # U, s, Vt = torch.linalg.svd(A.float())
 ```
 
-### 4.6 行列微分の数値検証パターン
+### 4.6 テンソル演算の高度なパターン
+
+Einsteinの縮約記法とNumPyの`einsum`は、複雑なテンソル演算を簡潔に表現する強力なツールだ。ここではTransformer実装で頻出するパターンを網羅する。
+
+```python
+import numpy as np
+
+# Setup: Batch=2, Heads=4, SeqLen=8, HeadDim=16
+B, H, T, d = 2, 4, 8, 16
+
+Q = np.random.randn(B, H, T, d)  # Query
+K = np.random.randn(B, H, T, d)  # Key
+V = np.random.randn(B, H, T, d)  # Value
+
+# Pattern 1: Attention scores (Q @ K^T)
+# Naive: for b, h, i, j: scores[b,h,i,j] = Σₖ Q[b,h,i,k] * K[b,h,j,k]
+scores_loop = np.zeros((B, H, T, T))
+for b in range(B):
+    for h in range(H):
+        scores_loop[b, h] = Q[b, h] @ K[b, h].T
+
+# einsum: 'bhik,bhjk->bhij'
+scores_einsum = np.einsum('bhik,bhjk->bhij', Q, K)
+
+# Verify
+assert np.allclose(scores_loop, scores_einsum)
+print("✓ Pattern 1: Q @ K^T")
+
+# Pattern 2: Scaled dot-product attention
+scores = scores_einsum / np.sqrt(d)
+attn = np.exp(scores - scores.max(axis=-1, keepdims=True))  # numerical stability
+attn = attn / attn.sum(axis=-1, keepdims=True)  # softmax
+
+# Apply attention to values: O[b,h,i,k] = Σⱼ attn[b,h,i,j] * V[b,h,j,k]
+output_loop = np.zeros((B, H, T, d))
+for b in range(B):
+    for h in range(H):
+        output_loop[b, h] = attn[b, h] @ V[b, h]
+
+output_einsum = np.einsum('bhij,bhjk->bhik', attn, V)
+assert np.allclose(output_loop, output_einsum)
+print("✓ Pattern 2: Attn @ V")
+
+# Pattern 3: Multi-head concatenation and projection
+# Flatten heads: (B, H, T, d) -> (B, T, H*d)
+output_concat = output_einsum.transpose(0, 2, 1, 3).reshape(B, T, H * d)
+
+# Alternative using einsum reshape
+# Not directly supported, but can use reshape + einsum for projection
+
+W_out = np.random.randn(H * d, H * d)  # output projection
+final_output = output_concat @ W_out
+print(f"✓ Pattern 3: Multi-head concat -> shape {final_output.shape}")
+
+# Pattern 4: Layer normalization gradient
+# Given: x (B, T, d), γ (d,), β (d,)
+# LN(x) = γ * (x - μ) / σ + β
+x = np.random.randn(B, T, d)
+gamma = np.random.randn(d)
+beta = np.random.randn(d)
+
+mu = x.mean(axis=-1, keepdims=True)
+sigma = x.std(axis=-1, keepdims=True)
+x_norm = (x - mu) / (sigma + 1e-5)
+y = gamma * x_norm + beta
+
+# Gradient w.r.t. input (simplified, assuming dy/dx chain rule)
+# This is complex; showing structure only
+dy = np.random.randn(B, T, d)  # upstream gradient
+dx_norm = dy * gamma  # element-wise
+
+# Full gradient includes sigma and mu terms
+# d(sigma)/dx = (x - mu) / (d * sigma)
+# d(mu)/dx = 1/d
+# Chain rule: complex but mechanical
+print("✓ Pattern 4: LayerNorm gradient structure")
+
+# Pattern 5: Batch matrix multiplication with different shapes
+A = np.random.randn(B, 10, 20)
+B_mat = np.random.randn(B, 20, 30)
+C = np.einsum('bij,bjk->bik', A, B_mat)
+assert C.shape == (B, 10, 30)
+print("✓ Pattern 5: Batched matmul")
+
+# Pattern 6: Outer product in batch
+v1 = np.random.randn(B, T, d)
+v2 = np.random.randn(B, T, d)
+outer = np.einsum('bti,btj->btij', v1, v2)
+assert outer.shape == (B, T, d, d)
+print("✓ Pattern 6: Batched outer product")
+
+# Pattern 7: Trace over specific dimensions
+# Compute trace of outer[b, t, :, :] for all b, t
+traces = np.einsum('btii->bt', outer)
+assert traces.shape == (B, T)
+print("✓ Pattern 7: Batched trace")
+
+print("\n=== einsum Performance Tips ===")
+print("1. Use optimize='optimal' for complex contractions")
+print("2. Explicit is better than implicit: write all indices")
+print("3. Profile: sometimes @ is faster for simple matmul")
+print("4. Memory: einsum can create large intermediate tensors")
+```
+
+:::message
+**einsum のコスト**: `einsum` は可読性が高いが、常に最速とは限らない。2つの行列の積では `@` 演算子の方が BLAS ルーチンに直接マップされ高速な場合がある。`optimize='optimal'` オプションは縮約順序を最適化するが、最悪ケースでは指数時間かかる（小規模テンソルなら問題ない）。
+:::
+
+### 4.7 行列分解の応用: QR分解とCholesky分解
+
+SVD以外の行列分解も、数値計算で重要な役割を果たす。
+
+#### QR分解: 直交化と最小二乗法
+
+$$
+A = QR, \quad Q^\top Q = I, \quad R \text{ は上三角}
+$$
+
+QR分解は、列ベクトルを直交化する**Gram-Schmidt法**の安定化版だ。最小二乗問題 $\min_\mathbf{x} \|A\mathbf{x} - \mathbf{b}\|^2$ を解くとき、$A = QR$ とすると:
+
+$$
+A^\top A \mathbf{x} = A^\top \mathbf{b} \quad \Rightarrow \quad R^\top Q^\top Q R \mathbf{x} = R^\top Q^\top \mathbf{b} \quad \Rightarrow \quad R \mathbf{x} = Q^\top \mathbf{b}
+$$
+
+$R$ は上三角なので、後退代入で $O(n^2)$ で解ける。
+
+```python
+import numpy as np
+
+# QR decomposition for least squares
+A = np.random.randn(100, 50)  # overdetermined system
+b = np.random.randn(100)
+
+# Method 1: Normal equations (numerically unstable for ill-conditioned A)
+x_normal = np.linalg.solve(A.T @ A, A.T @ b)
+
+# Method 2: QR decomposition (stable)
+Q, R = np.linalg.qr(A)
+x_qr = np.linalg.solve(R, Q.T @ b)
+
+# Method 3: SVD (most stable, but slowest)
+U, s, Vt = np.linalg.svd(A, full_matrices=False)
+x_svd = Vt.T @ (np.diag(1/s) @ (U.T @ b))
+
+print(f"Normal equations: {np.linalg.norm(A @ x_normal - b):.6f}")
+print(f"QR decomposition: {np.linalg.norm(A @ x_qr - b):.6f}")
+print(f"SVD (pseudoinverse): {np.linalg.norm(A @ x_svd - b):.6f}")
+print(f"\nSolution agreement (QR vs SVD): {np.allclose(x_qr, x_svd)}")
+
+# Condition number matters
+print(f"Condition number: {np.linalg.cond(A):.2e}")
+```
+
+#### Cholesky分解: 正定値行列の高速分解
+
+$$
+A = LL^\top, \quad L \text{ は下三角}
+$$
+
+正定値対称行列 $A$ （例: 共分散行列）に対して、Cholesky分解は $O(n^3/3)$ で計算でき、LU分解の2倍高速だ。
+
+**応用: 多変量正規分布のサンプリング**
+
+$$
+\mathbf{z} \sim \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Sigma}) \quad \Leftrightarrow \quad \mathbf{z} = \boldsymbol{\mu} + L \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+$$
+
+$\boldsymbol{\Sigma} = LL^\top$ とCholesky分解すれば、標準正規分布のサンプル $\boldsymbol{\epsilon}$ を線形変換するだけで、任意の共分散を持つガウス分布からサンプリングできる。
+
+```python
+import numpy as np
+
+# Cholesky decomposition for sampling
+mu = np.array([1.0, 2.0, 3.0])
+Sigma = np.array([[2.0, 0.5, 0.3],
+                   [0.5, 1.5, 0.2],
+                   [0.3, 0.2, 1.0]])
+
+# Verify positive definite
+eigenvalues = np.linalg.eigvalsh(Sigma)
+print(f"Eigenvalues: {eigenvalues}")
+assert np.all(eigenvalues > 0), "Matrix must be positive definite"
+
+# Cholesky decomposition
+L = np.linalg.cholesky(Sigma)
+print(f"L @ L.T matches Sigma: {np.allclose(L @ L.T, Sigma)}")
+
+# Sampling
+n_samples = 10000
+epsilon = np.random.randn(n_samples, 3)
+samples = mu + epsilon @ L.T  # broadcasting
+
+# Verify sample statistics
+sample_mean = samples.mean(axis=0)
+sample_cov = np.cov(samples.T)
+
+print(f"\nTrue mean: {mu}")
+print(f"Sample mean: {sample_mean}")
+print(f"\nTrue covariance:\n{Sigma}")
+print(f"Sample covariance:\n{sample_cov}")
+print(f"Covariance error: {np.linalg.norm(sample_cov - Sigma):.4f}")
+```
+
+### 4.8 行列微分の数値検証パターン
 
 行列微分を手で導出したら、必ず数値微分で検証する。これは研究でも実務でも不可欠なデバッグ手法。
 
@@ -406,8 +609,260 @@ print(f"Match: {np.allclose(grad_analytical_3, grad_numerical_3)}")
 **実践のルール**: 行列微分を導出したら、**必ず** `numerical_gradient_matrix` で検証する。一致しなければ導出に間違いがある。この習慣が、Backpropの実装バグを防ぐ。
 :::
 
+### 4.9 行列微分のデバッグ技法
+
+実装した勾配が正しいか確認するための体系的アプローチ。
+
+```python
+import numpy as np
+
+def gradient_check(f, grad_f, X, eps=1e-7, rtol=1e-5, atol=1e-7, sample_size=10):
+    """
+    Comprehensive gradient checker for matrix-valued functions.
+
+    Parameters:
+        f: scalar-valued function f(X)
+        grad_f: analytical gradient function, returns dL/dX
+        X: input matrix
+        eps: finite difference step size
+        rtol: relative tolerance
+        atol: absolute tolerance
+        sample_size: number of random entries to check (for large matrices)
+
+    Returns:
+        dict with check results
+    """
+    grad_analytical = grad_f(X)
+    grad_numerical = np.zeros_like(X)
+
+    m, n = X.shape
+    total_entries = m * n
+
+    # For large matrices, sample random entries
+    if total_entries > sample_size**2:
+        indices = np.random.choice(total_entries, size=min(sample_size, total_entries), replace=False)
+        check_indices = [(i // n, i % n) for i in indices]
+    else:
+        check_indices = [(i, j) for i in range(m) for j in range(n)]
+
+    errors = []
+    for i, j in check_indices:
+        X_plus = X.copy(); X_plus[i, j] += eps
+        X_minus = X.copy(); X_minus[i, j] -= eps
+        grad_numerical[i, j] = (f(X_plus) - f(X_minus)) / (2 * eps)
+
+        anal = grad_analytical[i, j]
+        numer = grad_numerical[i, j]
+        err = abs(anal - numer)
+        rel_err = err / (abs(anal) + abs(numer) + 1e-10)
+        errors.append((i, j, anal, numer, err, rel_err))
+
+    # Summary statistics
+    errors_arr = np.array([e[4] for e in errors])
+    rel_errors_arr = np.array([e[5] for e in errors])
+
+    max_error = errors_arr.max()
+    max_rel_error = rel_errors_arr.max()
+    mean_error = errors_arr.mean()
+
+    # Check pass/fail
+    passed = np.allclose(
+        [e[2] for e in errors],  # analytical
+        [e[3] for e in errors],  # numerical
+        rtol=rtol, atol=atol
+    )
+
+    result = {
+        'passed': passed,
+        'max_absolute_error': max_error,
+        'max_relative_error': max_rel_error,
+        'mean_absolute_error': mean_error,
+        'num_checked': len(check_indices),
+        'worst_entries': sorted(errors, key=lambda x: x[5], reverse=True)[:5]
+    }
+
+    return result
+
+# Example 1: Simple quadratic form dL/dW = 2X^T(XW - y)
+def test_linear_regression_gradient():
+    X = np.random.randn(50, 10)
+    W = np.random.randn(10, 3)
+    y = np.random.randn(50, 3)
+
+    def loss(W_):
+        return np.linalg.norm(X @ W_ - y)**2
+
+    def grad_loss(W_):
+        return 2 * X.T @ (X @ W_ - y)
+
+    result = gradient_check(loss, grad_loss, W)
+
+    print("=== Linear Regression Gradient Check ===")
+    print(f"Passed: {result['passed']}")
+    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
+    print(f"Max relative error: {result['max_relative_error']:.2e}")
+    print(f"Entries checked: {result['num_checked']}")
+
+    if not result['passed']:
+        print("\nWorst 3 entries:")
+        for i, j, anal, numer, err, rel_err in result['worst_entries'][:3]:
+            print(f"  [{i},{j}]: analytical={anal:.6f}, numerical={numer:.6f}, rel_err={rel_err:.2e}")
+
+# Example 2: Softmax gradient
+def test_softmax_gradient():
+    z = np.random.randn(5, 10)  # logits
+    y = np.random.randint(0, 10, size=5)  # true labels
+
+    def softmax(z_):
+        e = np.exp(z_ - z_.max(axis=1, keepdims=True))
+        return e / e.sum(axis=1, keepdims=True)
+
+    def cross_entropy_loss(z_):
+        s = softmax(z_)
+        # Clip for numerical stability
+        return -np.sum(np.log(s[range(len(y)), y] + 1e-10))
+
+    def cross_entropy_grad(z_):
+        s = softmax(z_)
+        grad = s.copy()
+        grad[range(len(y)), y] -= 1
+        return grad
+
+    result = gradient_check(cross_entropy_loss, cross_entropy_grad, z)
+
+    print("\n=== Softmax + Cross-Entropy Gradient Check ===")
+    print(f"Passed: {result['passed']}")
+    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
+    print(f"Max relative error: {result['max_relative_error']:.2e}")
+
+# Example 3: Matrix trace dL/dW = A^T
+def test_trace_gradient():
+    A = np.random.randn(8, 10)
+    W = np.random.randn(10, 8)
+
+    def loss(W_):
+        return np.trace(A @ W_)
+
+    def grad_loss(W_):
+        return A.T
+
+    result = gradient_check(loss, grad_loss, W)
+
+    print("\n=== Trace Gradient Check ===")
+    print(f"Passed: {result['passed']}")
+    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
+
+# Run all tests
+test_linear_regression_gradient()
+test_softmax_gradient()
+test_trace_gradient()
+
+print("\n=== Debugging Tips ===")
+print("1. Start with small matrices (3x3) where you can inspect all entries")
+print("2. Use atol=1e-6 for typical float32, atol=1e-10 for float64")
+print("3. If check fails: print worst entries and manually verify the formula")
+print("4. Common bugs: forgot transpose, wrong sign, off-by-one in broadcasting")
+print("5. Numerical gradient is O(ε) error; analytical should be O(ε²) better")
+```
+
+### 4.10 実践的な行列演算の落とし穴
+
+実装で頻出するバグパターンと回避法。
+
+```python
+import numpy as np
+
+print("=== Common Matrix Operation Pitfalls ===\n")
+
+# Pitfall 1: In-place operations breaking autograd
+A = np.array([[1.0, 2.0], [3.0, 4.0]])
+B = A  # B is a view, not a copy!
+B[0, 0] = 999
+print(f"Pitfall 1: In-place modification")
+print(f"  A[0,0] = {A[0,0]} (expected 1.0, got {A[0,0]})")
+print(f"  Solution: Use A.copy() when you need independence\n")
+
+# Pitfall 2: Broadcasting ambiguity
+v = np.array([1, 2, 3])  # shape (3,) — is this row or column?
+M = np.random.randn(3, 5)
+
+result1 = M + v[:, None]  # explicit column: (3,1) broadcasts to (3,5)
+result2 = M + v  # implicit: (3,) broadcasts to (3,5) — same as row broadcast!
+# result3 = v + M  # same as result2
+
+print(f"Pitfall 2: 1D array broadcasting ambiguity")
+print(f"  v.shape = {v.shape} — neither row nor column!")
+print(f"  M + v[:, None] shape: {result1.shape} (column broadcast)")
+print(f"  M + v shape: {result2.shape} (row broadcast)")
+print(f"  Solution: Always use explicit reshape for clarity\n")
+
+# Pitfall 3: @ vs * operator
+A = np.array([[1, 2], [3, 4]])
+B = np.array([[5, 6], [7, 8]])
+
+mat_product = A @ B  # matrix multiplication
+elem_product = A * B  # element-wise (Hadamard)
+
+print(f"Pitfall 3: @ vs * operator")
+print(f"  A @ B (matrix):\n{mat_product}")
+print(f"  A * B (element-wise):\n{elem_product}")
+print(f"  These are VERY different!\n")
+
+# Pitfall 4: inv() vs solve()
+A = np.random.randn(100, 100)
+b = np.random.randn(100)
+
+import time
+
+# Bad: compute inverse explicitly
+t0 = time.time()
+x_inv = np.linalg.inv(A) @ b
+t_inv = time.time() - t0
+
+# Good: use solve()
+t0 = time.time()
+x_solve = np.linalg.solve(A, b)
+t_solve = time.time() - t0
+
+print(f"Pitfall 4: inv() vs solve()")
+print(f"  inv(A) @ b: {t_inv*1000:.2f} ms")
+print(f"  solve(A, b): {t_solve*1000:.2f} ms")
+print(f"  Speedup: {t_inv/t_solve:.1f}x")
+print(f"  Error: {np.linalg.norm(x_inv - x_solve):.2e}")
+print(f"  Solution: NEVER compute inverse for solving Ax=b\n")
+
+# Pitfall 5: Numerical instability in softmax
+logits = np.array([1000.0, 1001.0, 1002.0])
+
+# Naive softmax: overflow!
+try:
+    naive_softmax = np.exp(logits) / np.sum(np.exp(logits))
+    print(f"Naive softmax: {naive_softmax}")
+except:
+    print(f"Pitfall 5: Naive softmax overflows!")
+
+# Stable softmax
+stable_softmax = np.exp(logits - logits.max()) / np.sum(np.exp(logits - logits.max()))
+print(f"  Stable softmax: {stable_softmax}")
+print(f"  Solution: Subtract max before exp\n")
+
+# Pitfall 6: Precision loss in variance calculation
+data = np.array([1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3])
+
+# Naive: Var(X) = E[X²] - E[X]²
+mean = data.mean()
+var_naive = (data**2).mean() - mean**2
+var_correct = ((data - mean)**2).mean()
+
+print(f"Pitfall 6: Numerical precision in variance")
+print(f"  Naive (E[X²] - E[X]²): {var_naive:.10f}")
+print(f"  Correct ((X-μ)²): {var_correct:.10f}")
+print(f"  Relative error: {abs(var_naive - var_correct)/var_correct:.2e}")
+print(f"  Solution: Use two-pass algorithm or Welford's method\n")
+```
+
 :::message
-**進捗: 85% 完了** SVD画像圧縮、Randomized SVD、Reverse Mode AD の完全実装、条件数と数値安定性、スパース行列、行列微分の数値検証を習得した。
+**進捗: 90% 完了** SVD画像圧縮、Randomized SVD、Reverse Mode AD の完全実装、条件数と数値安定性、スパース行列、QR/Cholesky分解、行列微分の数値検証、実践的デバッグ技法を習得した。
 :::
 
 ---
@@ -1074,6 +1529,149 @@ Eckart-Young定理は、この低次元構造を「最適に」抽出する方�
 
 ---
 
+### 6.9 最新研究 (2020-2026)
+
+#### 6.9.1 SVDとニューラルネットワーク
+
+SVDは深層学習において、重み行列の初期化、圧縮、解析に広く使われている。最近の研究は、SVDを「微分可能な層」としてニューラルネットワークに組み込むことで、新たな表現力を獲得している[^14]。
+
+**微分可能SVD層**: 特異値分解を勾配降下法で学習可能にするため、重複特異値の場合でも安定した勾配伝播を保証する技術が開発された。ニューラルネットワークの重みを $W = U\Sigma V^\top$ とパラメータ化し、$U, V$ は直交/ユニタリ、$\Sigma$ は学習され、スパースネスや低ランク性を正則化項で促進する[^15]。
+
+**重み行列の低ランク近似**: 深層ニューラルネットワークの圧縮において、SVDによる低ランク近似が計算量削減に貢献する。特に、畳み込み層やTransformerのAttention重み行列に適用することで、パラメータ数を大幅に削減しつつ精度を維持できる[^16]。
+
+**SVDとLoRAの理論的接続**: LoRA (Low-Rank Adaptation)[^10]は、ファインチューニング時の重み更新 $\Delta W$ が本質的に低ランク構造を持つという経験則に基づく。これは、$\Delta W$ のSVDを取ると上位数個の特異値が支配的であることを意味し、Eckart-Young定理[^3]がその理論的裏付けを与える。
+
+#### 6.9.2 Randomized SVDの進化
+
+大規模行列に対するSVDの計算コストは $O(\min(mn^2, m^2n))$ であり、数百万×数百万の行列には実用的でない。Randomized SVD[^17]は、ランダム射影で次元を落としてからSVDを計算することで、計算量を劇的に削減する。
+
+**GPU実装の最適化**: 2021年のarXiv論文[^18]は、Randomized SVDをGPU上で効率的に実装する手法を提案した。BLAS-3演算（行列積）をビルディングブロックとして再構成することで、CPUの数十倍の高速化を達成した。
+
+$$
+\text{Complexity: } O(k(m+n)\log k + k^2 \min(m,n)) \quad (\text{Full SVD: } O(\min(mn^2, m^2n)))
+$$
+
+**適応的ランク選択**: 従来のRandomized SVDはランクkを事前に固定する必要があったが、最近の手法は特異値の減衰率に基づいて動的にkを調整する。これにより、精度と計算コストのトレードオフを自動的に最適化できる。
+
+**行列補完への応用**: Randomized SVDは、レコメンデーションシステムにおける欠損値補完問題（Netflix Prize）で重要な役割を果たす。$10^6 \times 10^6$ のユーザー-アイテム行列の99%が欠損しているケースでも、低ランク近似により効率的に補完できる[^19]。
+
+#### 6.9.3 自動微分の最新動向
+
+Automatic Differentiationは深層学習の基盤技術であり、常に進化し続けている。
+
+**テンソルネットワークへの応用**: 物理学で発展したテンソルネットワーク理論と自動微分の融合が進んでいる[^20]。テンソル繰り込み群（TRG）アルゴリズムを微分可能にすることで、量子多体系のシミュレーションと機械学習を統合できる。
+
+**Forward-mode ADの復権**: Reverse-mode ADが支配的だが、パラメータ数よりも出力数が多い場合（例: シミュレーションの感度解析）では、Forward-mode ADの方が効率的だ[^21]。特にテンソル繰り込みでは、局所テンソルの勾配を順方向に伝播させることで、深い計算グラフを回避できる。
+
+**変分微分の自動化**: 関数空間上の微分（変分微分）を自動化する技術が発展している[^22]。これは物理学や応用数学で広く使われるが、機械学習でもNeural ODEやPDE制約最適化で重要性が増している。
+
+$$
+\frac{\delta F[\phi]}{\delta \phi(x)} \quad \text{(functional derivative)}
+$$
+
+**高階微分の効率化**: ヘシアン計算は $O(n^2)$ のコストがかかるが、ヘシアン-ベクトル積 $H\mathbf{v}$ は Forward-over-Reverse AD で $O(n)$ で計算可能。これは2次最適化法（Newton法、Natural Gradient）で重要だ。
+
+#### 6.9.4 行列微分の計算複雑性理論
+
+行列微分の計算には、演算回数だけでなくメモリアクセスパターンも重要だ。
+
+**FlashAttentionの革新**: Transformer のAttentionメカニズムは、Softmaxの行列微分が支配的コストだった。FlashAttention[^12]は、メモリ階層（HBM ↔ SRAM）を意識した計算順序の再構成により、IO回数を $O(N^2)$ から $O(N^2/M)$ に削減した（$M$: SRAMサイズ）。これは「同じFLOPSでも速い」という、計算量理論の限界を超えた最適化だ。
+
+**因果律と計算グラフ**: Backpropagationは計算グラフの因果構造に依存する。グラフの「幅」（同時に生きているノード数）がメモリ使用量を決定し、「深さ」が逆伝播のステップ数を決定する。Checkpointing技術は、深さと幅のトレードオフを制御する。
+
+**数値安定性とスケーリング**: 行列微分の数値誤差は、条件数 $\kappa(A) = \sigma_{\max}/\sigma_{\min}$ に依存する。LayerNormやBatchNormは、活性化の条件数を抑制することで、深いネットワークでの勾配伝播を安定化する。
+
+```python
+# Condition number and gradient stability
+import numpy as np
+
+A = np.random.randn(100, 100)
+U, s, Vt = np.linalg.svd(A, full_matrices=False)
+
+# Create ill-conditioned matrix
+s_ill = np.logspace(0, -10, 100)  # condition number = 1e10
+A_ill = U @ np.diag(s_ill) @ Vt
+
+# Create well-conditioned matrix
+s_well = np.ones(100)  # condition number = 1
+A_well = U @ np.diag(s_well) @ Vt
+
+print(f"Ill-conditioned:  κ = {np.linalg.cond(A_ill):.2e}")
+print(f"Well-conditioned: κ = {np.linalg.cond(A_well):.2e}")
+
+# Gradient computation stability
+def loss_fn(W, x, y):
+    return np.linalg.norm(W @ x - y)**2
+
+x = np.random.randn(100)
+y = np.random.randn(100)
+
+# Numerical gradient (finite difference)
+eps = 1e-7
+grad_num_ill = np.zeros_like(A_ill)
+for i in range(min(5, 100)):  # sample for speed
+    for j in range(min(5, 100)):
+        A_plus = A_ill.copy(); A_plus[i,j] += eps
+        A_minus = A_ill.copy(); A_minus[i,j] -= eps
+        grad_num_ill[i,j] = (loss_fn(A_plus, x, y) - loss_fn(A_minus, x, y)) / (2*eps)
+
+# Analytical gradient
+pred_ill = A_ill @ x
+grad_analytical_ill = 2 * np.outer(pred_ill - y, x)
+
+# Check first 5x5 block
+error = np.max(np.abs(grad_num_ill[:5,:5] - grad_analytical_ill[:5,:5]))
+print(f"Gradient error (ill-conditioned): {error:.2e}")
+
+# → Ill-conditioned matrices amplify numerical errors in gradient computation
+```
+
+#### 6.9.5 量子コンピューティングとSVD
+
+量子アルゴリズムにおけるSVDの役割が注目されている。
+
+**量子SVDアルゴリズム**: 量子コンピュータ上でのSVD計算は、古典コンピュータの $O(mn^2)$ を指数的に改善する可能性がある。ただし、量子状態の読み出しコストを含めた全体の複雑性は依然として研究中だ。
+
+**テンソルネットワークと行列積状態**: 量子多体系のシミュレーションでは、波動関数を行列積状態（MPS）で表現する。MPSの最適化はSVDの反復適用であり、量子エンタングルメントのランクが計算複雑性を決定する。
+
+```python
+# Singular value decay and entanglement entropy
+import numpy as np
+
+# Random matrix representing quantum state
+psi = np.random.randn(2**10, 2**10) + 1j * np.random.randn(2**10, 2**10)
+psi = psi / np.linalg.norm(psi)
+
+# SVD
+U, s, Vt = np.linalg.svd(psi, full_matrices=False)
+
+# Entanglement entropy: S = -Σ λᵢ log λᵢ, where λᵢ = sᵢ²
+lambda_sq = s**2
+lambda_sq = lambda_sq / lambda_sq.sum()  # normalize
+entropy = -np.sum(lambda_sq * np.log(lambda_sq + 1e-16))
+
+print(f"Entanglement entropy: {entropy:.4f}")
+print(f"Max entropy (uniform): {np.log(len(s)):.4f}")
+print(f"Entropy/Max: {entropy/np.log(len(s)):.2%}")
+
+# Truncation rank for 99% fidelity
+cumsum = np.cumsum(lambda_sq)
+rank_99 = np.searchsorted(cumsum, 0.99) + 1
+print(f"Rank for 99% fidelity: {rank_99} (out of {len(s)})")
+```
+
+### 6.10 SVDとデータサイエンスの未来
+
+SVDは、データ圧縮・ノイズ除去・潜在構造発見の普遍的ツールであり続ける。しかし、その適用範囲は進化している。
+
+**非負値行列分解（NMF）との比較**: SVDは負の値を許すが、NMF（Non-negative Matrix Factorization）は $A \approx WH$, $W, H \geq 0$ と分解する。NMFは画像の「部品」や文書のトピック構造を解釈しやすい形で抽出できる。SVDとNMFは補完的な関係にある。
+
+**テンソル分解**: 3次元以上のデータはテンソルとして扱う。Tucker分解やCP分解は、SVDのテンソル版だ。動画データ（時間×高さ×幅）やfMRI脳画像（時間×x×y×z）の解析で威力を発揮する。
+
+**深層学習との融合**: SVDは「線形」の世界の道具だが、深層学習は「非線形」だ。しかし、各層のヤコビアンをSVDで解析することで、勾配伝播の安定性や表現力を定量化できる。これは「なぜこのネットワークは学習できるのか」という理論解析の鍵となる。
+
+---
+
 ## 参考文献
 
 ### 主要論文
@@ -1104,6 +1702,32 @@ Eckart-Young定理は、この低次元構造を「最適に」抽出する方�
 
 [^13]: Rezende, D. J. & Mohamed, S. (2015). Variational Inference with Normalizing Flows. *ICML 2015*.
 @[card](https://arxiv.org/abs/1505.05770)
+
+[^14]: Mathiasen, A. & Hvilshøj, F. (2020). What if Neural Networks had SVDs? *NeurIPS 2020*.
+@[card](https://proceedings.neurips.cc/paper/2020/file/d61e4bbd6393c9111e6526ea173a7c8b-Paper.pdf)
+
+[^15]: Differentiable SVD Layer. (2024). Emergent Mind Topics.
+@[card](https://www.emergentmind.com/topics/differentiable-singular-value-decomposition-svd-layer)
+
+[^16]: Low-Rank Matrix Approximation for Neural Network Compression. (2025). *arXiv preprint*.
+@[card](https://arxiv.org/pdf/2504.20078)
+
+[^17]: Halko, N., Martinsson, P. G., & Tropp, J. A. (2011). Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. *SIAM Review*, 53(2), 217-288.
+
+[^18]: Feng, X., Xie, Y., Song, M., Yu, W., & Tang, J. (2021). Efficient GPU Implementation of Randomized SVD and Its Applications. *arXiv preprint*.
+@[card](https://arxiv.org/abs/2110.03423)
+
+[^19]: Feng, X., et al. (2018). Faster Matrix Completion Using Randomized SVD. *arXiv preprint*.
+@[card](https://arxiv.org/abs/1810.06860)
+
+[^20]: Liu, J. G., et al. (2019). Differentiable Programming Tensor Networks. *arXiv preprint*.
+@[card](https://arxiv.org/abs/1903.09650)
+
+[^21]: Forward-mode automatic differentiation for the tensor renormalization group. (2026). *arXiv preprint*.
+@[card](https://arxiv.org/html/2602.08987)
+
+[^22]: Automating Variational Differentiation. (2024). *arXiv preprint*.
+@[card](https://arxiv.org/html/2406.16154)
 
 ### 教科書
 

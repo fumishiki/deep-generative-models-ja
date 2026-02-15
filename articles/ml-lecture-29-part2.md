@@ -2167,10 +2167,6 @@ RAGは単なる"知識不足の補完"ではない。**知識管理の新しい�
 
 [^3]: Yan, S., et al. (2024). "Corrective Retrieval Augmented Generation." *arXiv preprint*. [arXiv:2401.15884](https://arxiv.org/abs/2401.15884)
 
-[^4]: Jeong, S., et al. (2024). "Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity." *arXiv preprint*. [arXiv:2403.14403](https://arxiv.org/abs/2403.14403)
-
-[^5]: Karpukhin, V., et al. (2020). "Dense Passage Retrieval for Open-Domain Question Answering." *EMNLP 2020*. [arXiv:2004.04906](https://arxiv.org/abs/2004.04906)
-
 [^6]: Malkov, Y. A., & Yashunin, D. A. (2018). "Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs." *IEEE TPAMI*. [arXiv:1603.09320](https://arxiv.org/abs/1603.09320)
 
 [^7]: qdrant. "Qdrant - Vector Database." [GitHub](https://github.com/qdrant/qdrant) | [Docs](https://qdrant.tech/)

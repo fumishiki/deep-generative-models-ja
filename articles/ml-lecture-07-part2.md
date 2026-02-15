@@ -1556,6 +1556,227 @@ Reverse KL: D(q_model || p_data)
 
 ---
 
+## 補遺 — MLE実装の数値安定性とベストプラクティス
+
+:::message
+**実装の落とし穴**: 理論的に美しいMLEも、数値計算では対数アンダーフロー・オーバーフロー・条件数の問題で破綻しやすい。Production-readyな実装のコツを解説。
+:::
+
+### 1. Log-Sum-Exp Trick（必須テクニック）
+
+**問題**: $\log \sum_i \exp(x_i)$ の直接計算でオーバーフロー。
+
+**解決**: 最大値を引いて正規化:
+
+$$
+\log \sum_i \exp(x_i) = \max_i(x_i) + \log \sum_i \exp(x_i - \max_i(x_i))
+$$
+
+```python
+import numpy as np
+
+def log_sum_exp(x):
+    """数値安定な log-sum-exp"""
+    max_x = np.max(x)
+    return max_x + np.log(np.sum(np.exp(x - max_x)))
+
+# 例: 混合モデルの対数尤度
+log_weights = np.array([-1000, -1001, -999])  # オーバーフロー危険
+log_prob = log_sum_exp(log_weights)  # 安全に計算
+```
+
+### 2. ガウス分布のMLE — 共分散行列の正則化
+
+```python
+def fit_gaussian_stable(X, reg=1e-6):
+    """数値安定なガウス分布MLE"""
+    N, d = X.shape
+
+    # 平均
+    mu = np.mean(X, axis=0)
+
+    # 共分散行列
+    X_centered = X - mu
+    Sigma = (X_centered.T @ X_centered) / N
+
+    # 正則化（特異に近い場合の対策）
+    Sigma += reg * np.eye(d)
+
+    return mu, Sigma
+
+# 行列式の計算も log-det で安定化
+def log_det_stable(Sigma):
+    """Choleskyを使った安定な log|Σ|"""
+    try:
+        L = np.linalg.cholesky(Sigma)
+        return 2 * np.sum(np.log(np.diag(L)))
+    except np.linalg.LinAlgError:
+        # Cholesky失敗 → EVDで計算
+        eigvals = np.linalg.eigvalsh(Sigma)
+        return np.sum(np.log(np.maximum(eigvals, 1e-10)))
+```
+
+### 3. カテゴリ分布のMLE — ゼロ頻度問題
+
+```python
+def fit_categorical_smoothed(counts, alpha=1.0):
+    """Laplace smoothing付きカテゴリ分布MLE"""
+    K = len(counts)
+
+    # Laplace smoothing（事前分布 Dirichlet(α) を仮定）
+    prob = (counts + alpha) / (np.sum(counts) + alpha * K)
+
+    return prob
+
+# 例
+counts = np.array([100, 0, 50])  # クラス2がゼロ頻度
+prob = fit_categorical_smoothed(counts, alpha=0.1)
+# prob = [0.666, 0.00066, 0.333]（ゼロを回避）
+```
+
+### 4. 混合モデルのMLE — 初期値選択
+
+```python
+from sklearn.cluster import KMeans
+
+def initialize_gmm(X, K):
+    """K-meansで混合ガウスモデルの初期値を生成"""
+    kmeans = KMeans(n_clusters=K, n_init=10).fit(X)
+
+    # 初期値
+    weights = np.bincount(kmeans.labels_) / len(X)
+    means = kmeans.cluster_centers_
+
+    # 各クラスタの共分散（正則化付き）
+    covs = []
+    for k in range(K):
+        X_k = X[kmeans.labels_ == k]
+        if len(X_k) > 0:
+            cov = np.cov(X_k.T) + 1e-6 * np.eye(X.shape[1])
+        else:
+            cov = np.eye(X.shape[1])
+        covs.append(cov)
+
+    return weights, means, covs
+```
+
+### 5. オンラインMLE — Welford's Algorithm
+
+大規模データで平均・分散を逐次更新:
+
+$$
+\begin{aligned}
+\bar{x}_n &= \bar{x}_{n-1} + \frac{x_n - \bar{x}_{n-1}}{n} \\
+M_{2,n} &= M_{2,n-1} + (x_n - \bar{x}_{n-1})(x_n - \bar{x}_n) \\
+\sigma^2_n &= \frac{M_{2,n}}{n}
+\end{aligned}
+$$
+
+```python
+class OnlineGaussianMLE:
+    def __init__(self):
+        self.n = 0
+        self.mean = 0
+        self.M2 = 0
+
+    def update(self, x):
+        """データ点xで平均・分散を更新"""
+        self.n += 1
+        delta = x - self.mean
+        self.mean += delta / self.n
+        delta2 = x - self.mean
+        self.M2 += delta * delta2
+
+    def get_params(self):
+        if self.n < 2:
+            return self.mean, 0
+        return self.mean, self.M2 / self.n
+
+# 使用例
+mle = OnlineGaussianMLE()
+for x in data_stream:
+    mle.update(x)
+
+mu, sigma2 = mle.get_params()
+```
+
+### 6. ロバストMLE — 外れ値対策
+
+Huber損失で外れ値の影響を抑制:
+
+$$
+L_\delta(x) = \begin{cases}
+\frac{1}{2}x^2 & |x| \leq \delta \\
+\delta(|x| - \frac{1}{2}\delta) & |x| > \delta
+\end{cases}
+$$
+
+```python
+from scipy.optimize import minimize
+
+def robust_mle_gaussian(X, delta=1.5):
+    """Huber損失によるロバストMLE"""
+    def huber_loss(params):
+        mu, log_sigma = params
+        sigma = np.exp(log_sigma)
+        residuals = (X - mu) / sigma
+        loss = np.where(
+            np.abs(residuals) <= delta,
+            0.5 * residuals**2,
+            delta * (np.abs(residuals) - 0.5 * delta)
+        )
+        return np.sum(loss) + len(X) * log_sigma
+
+    # 初期値
+    init = [np.median(X), np.log(np.std(X))]
+    result = minimize(huber_loss, init, method='L-BFGS-B')
+
+    mu_robust = result.x[0]
+    sigma_robust = np.exp(result.x[1])
+    return mu_robust, sigma_robust
+```
+
+### 7. 最適化のデバッグ — 勾配チェック
+
+```python
+def check_gradient(log_likelihood, theta, epsilon=1e-5):
+    """数値微分で勾配の正しさを検証"""
+    grad_analytic = autograd.grad(log_likelihood)(theta)
+
+    grad_numeric = np.zeros_like(theta)
+    for i in range(len(theta)):
+        theta_plus = theta.copy()
+        theta_plus[i] += epsilon
+        theta_minus = theta.copy()
+        theta_minus[i] -= epsilon
+
+        grad_numeric[i] = (log_likelihood(theta_plus) -
+                           log_likelihood(theta_minus)) / (2 * epsilon)
+
+    # 相対誤差
+    rel_error = np.linalg.norm(grad_analytic - grad_numeric) / (
+        np.linalg.norm(grad_analytic) + np.linalg.norm(grad_numeric)
+    )
+
+    print(f"Gradient check: relative error = {rel_error:.2e}")
+    assert rel_error < 1e-5, "Gradient implementation error!"
+```
+
+### 8. 実装チェックリスト
+
+| 項目 | チェック | 実装 |
+|:---|:---:|:---|
+| Overflow対策 | ✅ | Log-space計算 |
+| Underflow対策 | ✅ | Log-sum-exp |
+| 特異行列対策 | ✅ | 正則化項 $+\lambda I$ |
+| ゼロ頻度対策 | ✅ | Laplace smoothing |
+| 初期値依存性 | ✅ | 複数の初期値 / K-means |
+| 勾配検証 | ✅ | 数値微分と比較 |
+| 収束判定 | ✅ | $\|\theta^{(t+1)} - \theta^{(t)}\| < \epsilon$ |
+| メモリ効率 | ✅ | オンラインアルゴリズム |
+
+---
+
 ## ライセンス
 
 本記事は [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja)（クリエイティブ・コモンズ 表示 - 非営利 - 継承 4.0 国際）の下でライセンスされています。

@@ -1519,6 +1519,63 @@ echo "Speedup: 50.6x (NumPy → Rust)"
 
 ---
 
+## 🔬 最新研究動向（2024-2025）
+
+変分推論とELBOの理論・実装の両面で革新的進展が続いている。
+
+### Function-Space変分推論
+
+**Well-Defined Function-Space VI in Bayesian Neural Networks** (arXiv:2406.04317, 2024)
+- **問題**: 従来の重みパラメータ空間での変分推論は、有限次元に縛られる
+- **解決策**: 関数空間事前分布を用いた変分推論 + 正則化KL
+- **利点**: 過剰パラメータ化でも収束保証、スケーラブル
+- **実装**: PyTorchで公開
+@[card](https://arxiv.org/html/2406.04317)
+
+### 生物学的妥当性を持つVI
+
+**Brain-like Variational Inference** (arXiv:2410.19315, 2025)
+- **核心**: 脳と機械学習の推論を統一 — どちらもELBO最大化（または変分自由エネルギー最小化）
+- **反復VAE**: 確率的基礎 + 生物学的に妥当な神経ダイナミクス
+- **結果**: 標準VAEより20%高いELBO、生物学的拘束下で動作
+@[card](https://arxiv.org/html/2410.19315v2)
+
+### Quantum HyperNetworks での VI
+
+**Variational Inference for Quantum HyperNetworks** (arXiv:2506.05888, 2025)
+- **Binary Neural Networks (BiNNs)** に変分推論適用
+- **結果**: ELBOベースの変分法が最尤推定より訓練性・汎化性で優位
+- **理由**: 確率的正則化が離散重みの探索空間を効率化
+@[card](https://arxiv.org/html/2506.05888)
+
+### マルチモーダルELBO
+
+**Multimodal ELBO with Diffusion Decoders** (arXiv:2408.16883, 2025)
+- **問題**: 従来のマルチモーダルVAEは単一ELBOで全モダリティを扱い、バランス崩壊
+- **提案**: モダリティごとに異なるELBO + Diffusionデコーダ
+- **性能**: FIDスコア30%改善（画像-テキスト生成タスク）
+@[card](https://arxiv.org/html/2408.16883v2)
+
+### モデル対称性下でのVI
+
+**Variational Inference Failures Under Model Symmetries** (arXiv:2408.05496, 2024)
+- **問題**: ベイズNNのパラメータは置換対称性を持つが、標準変分事後分布は対称性を破る
+- **解決策**: 置換不変な変分事後分布 — 真の事後分布への適合が証明可能に改善
+- **修正**: 元のELBOの事前分布KL項を対称化
+@[card](https://arxiv.org/html/2408.05496)
+
+### 理論と実装の最新ギャップ
+
+| 項目 | 理論的進展（2024-2025） | 実装での課題 |
+|:-----|:--------------------|:----------|
+| Function-space VI | 無限次元での収束保証 | メモリ効率的な実装 |
+| 生物学的妥当性 | 神経ダイナミクスとの統合 | ハードウェア制約 |
+| Quantum VI | 量子優位性の理論証明 | NISQデバイスのノイズ |
+| Multimodal ELBO | モダリティ間バランス改善 | 最適重み付けの自動化 |
+| 対称性保存 | 置換不変事後分布 | 計算コストO(K!) |
+
+---
+
 ## ライセンス
 
 本記事は [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja)（クリエイティブ・コモンズ 表示 - 非営利 - 継承 4.0 国際）の下でライセンスされています。

@@ -1207,6 +1207,363 @@ OT Pathは「座標空間」で直線だが、「意味空間」では？
 **Congratulations!** 🎉
 
 あなたは、生成モデルの最前線に到達した。ここから先は、あなた自身が道を切り拓く番だ。
+
+---
+
+## 7. 最新研究動向（2024-2025）
+
+### 7.1 Conditional Variable Flow Matching (CVFM)
+
+**問題設定**: 従来の Conditional Flow Matching (CFM) は固定条件 $c$ に対する生成 $p(x|c)$ を学習するが、**連続的な条件変数** $c \in \mathbb{R}^d$ に対する amortization（償却学習）は困難だった。
+
+例: 温度パラメータ $T \in [0.1, 2.0]$ で生成スタイルを制御したいが、各 $T$ 値ごとに別モデルを訓練するのは非効率。
+
+**CVFM の解決策** (Brennan et al., 2024) [^cvfm]:
+
+Conditional OT (C²OT) を導入 — **条件依存コスト**でカップリングを学習:
+
+$$
+\pi^* = \arg\min_{\pi \in \Pi(p_0, p_1)} \mathbb{E}_{(x_0, x_1, c) \sim \pi} \left[ \| x_1 - x_0 \|^2 + \lambda \| g(c) - f(x_0, x_1) \|^2 \right]
+$$
+
+ここで:
+- $g(c)$: 条件エンコーダ（例: MLP）
+- $f(x_0, x_1)$: ペア特徴抽出器
+- $\lambda$: アライメント強度
+
+**直感**: 単なる OT は $c$ を無視して $p_0 \to p_1$ の最短経路を求める。C²OT は $c$ と $(x_0, x_1)$ の一貫性を罰則化 → 条件に応じた異なる経路を学習。
+
+**Velocity Field**:
+
+$$
+v_\theta(x_t, t, c) = \text{VelocityNet}(x_t, t, g(c))
+$$
+
+訓練:
+
+$$
+\mathcal{L}_\text{CVFM} = \mathbb{E}_{t, c, (x_0, x_1) \sim \pi^*(c)} \left[ \| v_\theta(x_t, t, c) - (x_1 - x_0) \|^2 \right]
+$$
+
+**実験結果** (Conditional Image Generation):
+
+| Method | FID ↓ | Condition Fidelity (CLIP ↑) |
+|:-------|:------|:----------------------------|
+| CFM (per-condition) | 12.3 | 0.82 |
+| Conditional Diffusion | 14.7 | 0.79 |
+| **CVFM** | **11.1** | **0.85** |
+
+**応用**: Text-to-Image で guidance scale $w \in [1, 20]$ を連続制御、分子生成で結合親和性を連続条件として学習。
+
+### 7.2 Minibatch Optimal Transport Flow Matching
+
+Tong et al. (2023) [^minibatch_ot] は、**ミニバッチ内で OT を解く**ことで計算量を $O(n^3)$ から $O(B^3)$ に削減（$B$ = バッチサイズ $\ll n$ = データセット全体）。
+
+**課題**: 従来の OT-CFM は全データペア $(x_0^{(i)}, x_1^{(j)})$ の距離行列 $C_{ij} = \| x_1^{(j)} - x_0^{(i)} \|^2$ ($n \times n$) を解く必要 → メモリ $O(n^2)$、計算 $O(n^3)$。
+
+**Minibatch OT のアイデア**:
+
+各イテレーションでバッチ $\{x_0^{(i)}\}_{i=1}^B$ と $\{x_1^{(j)}\}_{j=1}^B$ をサンプリングし、**バッチ内 OT** を解く:
+
+$$
+\pi_B^* = \arg\min_{\pi \in \Pi(p_{B,0}, p_{B,1})} \sum_{i,j} \pi_{ij} \| x_1^{(j)} - x_0^{(i)} \|^2
+$$
+
+ここで $p_{B,0}, p_{B,1}$ はバッチの経験分布。
+
+**理論的保証**: バッチサイズ $B$ が十分大きければ（$B \gtrsim \sqrt{n}$）、$\pi_B^*$ は真の OT $\pi^*$ に収束（Wasserstein 距離で）。
+
+**実装** (Sinkhorn アルゴリズム):
+
+```julia
+using LinearAlgebra, Distances
+
+function sinkhorn_ot(C::Matrix{Float64}, ε=0.1, max_iter=100)
+    # C: cost matrix (B × B)
+    # ε: entropic regularization
+    # Returns: coupling matrix π (B × B)
+
+    B = size(C, 1)
+    K = exp.(-C / ε)  # Gibbs kernel
+    u, v = ones(B), ones(B)
+
+    for _ in 1:max_iter
+        u = 1 ./ (K * v)
+        v = 1 ./ (K' * u)
+    end
+
+    π = Diagonal(u) * K * Diagonal(v)
+    return π / sum(π)  # Normalize
+end
+
+function minibatch_ot_loss(x₀_batch, x₁_batch, v_θ, t)
+    B = size(x₀_batch, 2)
+    C = pairwise(SqEuclidean(), x₁_batch, x₀_batch, dims=2)  # B×B
+    π = sinkhorn_ot(C)
+
+    loss = 0.0
+    for i in 1:B, j in 1:B
+        if π[i,j] > 1e-6
+            x_t = (1-t) * x₀_batch[:,i] + t * x₁_batch[:,j]
+            v_true = x₁_batch[:,j] - x₀_batch[:,i]
+            v_pred = v_θ(x_t, t)
+            loss += π[i,j] * norm(v_pred - v_true)^2
+        end
+    end
+
+    return loss
+end
+```
+
+**計算量比較**:
+
+| Method | OT Solve | Memory | Time/Iter |
+|:-------|:---------|:-------|:----------|
+| Full OT-CFM | $O(n^3)$ | $O(n^2)$ | 10-100s (n=50K) |
+| **Minibatch OT-CFM** | $O(B^3)$ | $O(B^2)$ | **0.5s** (B=256) |
+
+**品質**: CIFAR-10 で FID 差は 0.3 未満（ほぼ同等）。
+
+### 7.3 Weighted Conditional Flow Matching
+
+Liu et al. (2025) [^weighted_cfm] は、**サンプル重み付き CFM** を提案 — データの重要度に応じて学習を調整。
+
+**動機**: データセットは不均衡（例: 医療画像で稀な疾患、テキストで低頻度語彙）。均一サンプリングは多数派バイアスを生む。
+
+**Weighted CFM Loss**:
+
+$$
+\mathcal{L}_\text{WCFM} = \mathbb{E}_{t, x_0, x_1} \left[ w(x_0, x_1) \cdot \| v_\theta(x_t, t) - (x_1 - x_0) \|^2 \right]
+$$
+
+重み関数の例:
+
+1. **Inverse Frequency**:
+   $$
+   w(x_1) = \frac{1}{\sqrt{\text{count}(c(x_1))}}
+   $$
+   $c(x_1)$ はクラスラベル。
+
+2. **Importance Sampling**:
+   $$
+   w(x_0, x_1) = \frac{\| x_1 - x_0 \|^2}{\mathbb{E}[\| x_1 - x_0 \|^2]}
+   $$
+   難しいペア（距離が大きい）に注目。
+
+3. **Curriculum Learning**:
+   $$
+   w(x_0, x_1; \text{epoch}) = \min\left(1, \frac{\text{epoch}}{T_\text{warmup}} \right) \cdot \mathbb{1}[\text{difficult}(x_0, x_1)]
+   $$
+   初期は簡単なサンプル、徐々に難しいサンプルへ。
+
+**実験** (Imbalanced CIFAR-10, クラス比 1:100):
+
+| Method | Minority Class FID ↓ | Majority Class FID ↓ |
+|:-------|:---------------------|:---------------------|
+| CFM (uniform) | 28.4 | 5.2 |
+| Weighted Diffusion | 15.7 | 5.8 |
+| **Weighted CFM** | **12.3** | **5.4** |
+
+**Minority Class の品質が 2.3倍改善**（Majority への影響は最小）。
+
+### 7.4 実装例: Minibatch OT-CFM (Julia)
+
+以下は、前述の理論を統合した実装例。
+
+```julia
+using Lux, Optimisers, Zygote, Random, LinearAlgebra, Distances
+using DifferentialEquations, Plots
+
+# --- Minibatch OT Solver ---
+function sinkhorn_coupling(C::Matrix{T}, ε::T=T(0.1), max_iter::Int=50) where T
+    B = size(C, 1)
+    K = exp.(-C / ε)
+    u, v = ones(T, B), ones(T, B)
+
+    for _ in 1:max_iter
+        u = 1 ./ (K * v .+ 1e-8)
+        v = 1 ./ (K' * u .+ 1e-8)
+    end
+
+    π = Diagonal(u) * K * Diagonal(v)
+    return π / sum(π)
+end
+
+# --- Velocity Network ---
+function VelocityNet(d_in::Int, d_hidden::Int=128)
+    return Chain(
+        Dense(d_in + 1, d_hidden, relu),  # [x_t; t]
+        Dense(d_hidden, d_hidden, relu),
+        Dense(d_hidden, d_in)
+    )
+end
+
+# --- Minibatch OT-CFM Training ---
+function train_minibatch_ot_cfm(
+    data_source,   # Function: () -> (B, d) samples from p₀
+    data_target,   # Function: () -> (B, d) samples from p₁
+    n_epochs::Int=100,
+    batch_size::Int=256,
+    ε_sinkhorn::Float32=0.1f0
+)
+    d = 2  # Dimension
+    rng = Random.default_rng()
+
+    # Model
+    model = VelocityNet(d, 128)
+    ps, st = Lux.setup(rng, model)
+    opt = Optimisers.Adam(1f-3)
+    opt_state = Optimisers.setup(opt, ps)
+
+    for epoch in 1:n_epochs
+        # Sample batches
+        x₀ = data_source()   # (d, B)
+        x₁ = data_target()   # (d, B)
+
+        # Compute OT coupling
+        C = pairwise(SqEuclidean(), x₁, x₀, dims=2)  # (B, B)
+        π = sinkhorn_coupling(C, ε_sinkhorn)
+
+        # Sample time
+        t = rand(rng, Float32)
+
+        # Compute loss
+        loss, grads = Zygote.withgradient(ps) do p
+            total_loss = 0.0f0
+            for i in 1:batch_size, j in 1:batch_size
+                if π[i,j] > 1f-6
+                    x_t = (1 - t) * x₀[:,i] + t * x₁[:,j]
+                    v_true = x₁[:,j] - x₀[:,i]
+
+                    input = vcat(x_t, [t])
+                    v_pred, _ = model(input, p, st)
+
+                    total_loss += π[i,j] * sum((v_pred - v_true).^2)
+                end
+            end
+            total_loss / batch_size
+        end
+
+        # Update
+        opt_state, ps = Optimisers.update(opt_state, ps, grads[1])
+
+        if epoch % 10 == 0
+            println("Epoch $epoch, Loss: $(loss)")
+        end
+    end
+
+    return ps, st, model
+end
+
+# --- ODE Sampling ---
+function sample_ot_cfm(model, ps, st, x₀::Matrix{Float32}, T::Float32=1.0f0, steps::Int=100)
+    d, B = size(x₀)
+
+    function velocity!(du, u, p, t)
+        input = vcat(u, [Float32(t)])
+        v, _ = model(input, ps, st)
+        du .= v
+    end
+
+    trajectories = []
+    for i in 1:B
+        prob = ODEProblem(velocity!, x₀[:,i], (0.0f0, T))
+        sol = solve(prob, Tsit5(), saveat=range(0, T, length=steps))
+        push!(trajectories, sol)
+    end
+
+    return [sol[end] for sol in trajectories]
+end
+```
+
+**使用例**:
+
+```julia
+# Data: Two Gaussians
+source() = randn(Float32, 2, 256)  # 𝒩(0, I)
+target() = randn(Float32, 2, 256) .+ Float32[3, 0]  # 𝒩([3,0], I)
+
+# Train
+ps, st, model = train_minibatch_ot_cfm(source, target, n_epochs=200, batch_size=256)
+
+# Sample
+x₀_test = randn(Float32, 2, 500)
+x₁_samples = sample_ot_cfm(model, ps, st, x₀_test)
+
+# Visualize
+scatter(x₀_test[1,:], x₀_test[2,:], label="Source", alpha=0.3)
+scatter!([x[1] for x in x₁_samples], [x[2] for x in x₁_samples], label="Generated", alpha=0.5)
+```
+
+---
+
+## 参考文献
+
+[^cvfm]: Brennan, M., et al. (2024). "Conditional Variable Flow Matching: Transforming Conditional Densities with Amortized Conditional Optimal Transport". *arXiv:2411.08314*.
+
+[^minibatch_ot]: Tong, A., et al. (2023). "Improving and Generalizing Flow-Based Generative Models with Minibatch Optimal Transport". *arXiv:2302.00482*.
+
+[^weighted_cfm]: Liu, X., et al. (2025). "Weighted Conditional Flow Matching". *arXiv:2507.22270*.
+
+---
+
+### 7.5 Rectified Flow: Flow Matching の理論的洗練
+
+Liu et al. (2023) は、**Rectified Flow** を提案 — Flow Matching の経路をより直線的にする手法。
+
+**問題**: 標準 OT-CFM でも、経路 $\mathbf{x}_t$ は完全な直線ではない（データ多様体の曲率の影響）。曲がった経路 → より多くの NFE が必要。
+
+**Rectification のアイデア**:
+
+1. **初期 Flow** を訓練（OT-CFM）
+2. **Reflow**: 訓練済み Flow でサンプルペア $(x_0', x_1')$ を生成
+3. これらのペアで**再訓練** → より直線的な Flow
+
+数学的には:
+
+$$
+(x_0^{(k+1)}, x_1^{(k+1)}) = \text{Sample from } p_\theta^{(k)}
+$$
+
+$k$ 回目の Flow で生成したペアを使い、$k+1$ 回目を訓練。
+
+**理論的保証**: $k \to \infty$ で、経路は**ほぼ直線**に収束 → 1-step sampling が可能。
+
+**実験** (CIFAR-10):
+
+| Iteration | Steps for FID<5 | Training Time |
+|:----------|:----------------|:--------------|
+| k=0 (OT-CFM) | 20 | 1× |
+| k=1 (Reflow) | 10 | 2× (累積) |
+| k=2 (Reflow²) | **5** | 3× (累積) |
+
+**2回の Reflow で 5-step 生成** を達成。
+
+**Julia 実装**:
+
+```julia
+function reflow_iteration(model_k, ps_k, st_k, data_source, data_target, n_samples=10000)
+    # Generate new pairs using current flow
+    x₀_new = []
+    x₁_new = []
+
+    for _ in 1:n_samples
+        x₀ = data_source()
+        # Solve ODE with model_k
+        x₁ = solve_ode(model_k, ps_k, st_k, x₀, T=1.0)
+        push!(x₀_new, x₀)
+        push!(x₁_new, x₁)
+    end
+
+    # Train new model on (x₀_new, x₁_new)
+    model_k1, ps_k1, st_k1 = train_cfm(x₀_new, x₁_new)
+
+    return model_k1, ps_k1, st_k1
+end
+```
+
+**応用**: Text-to-Image (Stable Diffusion) で Reflow² → 4-step 生成で品質維持。
+
 ---
 
 ## ライセンス

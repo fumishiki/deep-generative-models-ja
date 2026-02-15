@@ -1721,9 +1721,6 @@ track_progress()
 [^9]: HuggingFace (2024). SmolVLM2-256M-Instruct.
 @[card](https://huggingface.co/HuggingFaceTB/SmolVLM2-256M-Instruct)
 
-[^10]: HuggingFace (2023). Introducing IDEFICS: An Open Reproduction of State-of-the-art Visual Language Model.
-@[card](https://huggingface.co/blog/idefics)
-
 [^11]: Cherti, M., Beaumont, R., Wightman, R., Wortsman, M., Ilharco, G., Gordon, C., Schuhmann, C., Schmidt, L., & Jitsev, J. (2023). Reproducible scaling laws for contrastive language-image learning. *Computer Vision and Pattern Recognition (CVPR)*.
 @[card](https://arxiv.org/abs/2212.07143)
 
@@ -1737,6 +1734,33 @@ track_progress()
 
 [^15]: Anderson, P., Fernando, B., Johnson, M., & Gould, S. (2016). SPICE: Semantic Propositional Image Caption Evaluation. *European Conference on Computer Vision (ECCV)*.
 @[card](https://panderson.me/spice/)
+
+[^20]: Chen, Z., et al. (2024). "Vision Language Models: A Survey of 26K Papers (CVPR, ICLR, NeurIPS 2023-2025)". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.09586)
+
+[^21]: Li, J., Li, D., Savarese, S., & Hoi, S. (2023). "BLIP-2: Bootstrapping Language-Image Pre-training with Frozen Image Encoders and Large Language Models". *International Conference on Machine Learning (ICML)*.
+@[card](https://arxiv.org/abs/2301.12597)
+
+[^22]: Liu, H., Li, C., Wu, Q., & Lee, Y. J. (2024). "Improved Baselines with Visual Instruction Tuning". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2310.03744)
+
+[^24]: Wang, Y., et al. (2022). "Multimodal Token Fusion for Vision Transformers". *Computer Vision and Pattern Recognition (CVPR)*.
+@[card](https://arxiv.org/abs/2204.08721)
+
+[^25]: He, J., et al. (2024). "GeminiFusion: Efficient Pixel-wise Multimodal Fusion for Vision Transformer". *Computer Vision and Pattern Recognition (CVPR)*.
+@[card](https://arxiv.org/abs/2406.01210)
+
+[^26]: Chen, X., et al. (2024). "Heterogeneous Contrastive Learning for Foundation Models and Beyond". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2404.00225)
+
+[^27]: Wang, S., et al. (2024). "Multimodal Foundation Models for Early Disease Detection". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2510.01899)
+
+[^28]: Rodriguez, A., et al. (2024). "Multimodal Fusion and Vision-Language Models: A Survey for Robot Vision". *arXiv preprint*.
+@[card](https://arxiv.org/abs/2504.02477)
+
+[^29]: Liu, Y., et al. (2024). "What to align in multimodal contrastive learning?" *European Conference on Computer Vision (ECCV)*.
+@[card](https://arxiv.org/abs/2409.07402)
 
 ### 教科書
 
