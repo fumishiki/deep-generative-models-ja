@@ -465,7 +465,7 @@ OTP Supervisor: プロセスが死んでも自動復旧。深夜3時に落ちて
 
 ### Route B: 理解して作る（エンジニア・研究者向け）
 
-→ [本編: 深層生成モデル（全50回）](https://zenn.dev/fumi_shiki/articles/ml-lecture-01)
+→ [本編: 深層生成モデル（全50回）](https://zenn.dev/fumi_shiki/articles/ml-lecture-01-part1)
 
 | コース | 回 | テーマ | 松尾研との対比 |
 |:------|:---|:------|:-------------|
@@ -504,7 +504,7 @@ arXiv の論文を週20本以上読み、必ず実装する。論文の主張が
 arXiv とGitHub がある今、個人が大学を超えることは可能だ。本シリーズは、あなたをその個人にするための挑戦状だ。
 
 → [非エンジニア向けスピンオフ（全8回）](https://zenn.dev/fumi_shiki/articles/ml-spinoff-01)
-→ [AIエンジニア向け本編（全50回）](https://zenn.dev/fumi_shiki/articles/ml-lecture-01)
+→ [AIエンジニア向け本編（全50回）](https://zenn.dev/fumi_shiki/articles/ml-lecture-01-part1)
 
 ---
 
