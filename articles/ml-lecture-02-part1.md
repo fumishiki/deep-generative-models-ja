@@ -4,6 +4,7 @@ emoji: "📐"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "linearalgebra", "python"]
 published: true
+slug: "ml-lecture-02-part1"
 difficulty: "intermediate"
 time_estimate: "90 minutes"
 languages: ["Python"]

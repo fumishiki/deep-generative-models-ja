@@ -4,7 +4,8 @@ emoji: "🔬"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "linearalgebra", "python"]
 published: true
-difficulty: "★★★★★"
+slug: "ml-lecture-03-part1"
+difficulty: "advanced"
 time_estimate: "90 minutes"
 languages: ["Python"]
 keywords: ["SVD", "特異値分解", "行列微分", "テンソル演算", "自動微分", "逆伝播", "Jacobian", "Hessian", "Eckart-Young"]

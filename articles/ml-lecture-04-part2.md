@@ -4,7 +4,8 @@ emoji: "🎲"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "probability", "python"]
 published: true
-difficulty: "★★★☆☆"
+slug: "ml-lecture-04-part2"
+difficulty: "intermediate"
 time_estimate: "90 minutes"
 languages: ["Python"]
 keywords: ["確率分布実装", "MLE実装", "ベイズ推論", "SciPy", "NumPy", "統計的推定"]

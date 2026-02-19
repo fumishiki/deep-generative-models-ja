@@ -4,7 +4,8 @@ emoji: "🔬"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "linearalgebra", "python"]
 published: true
-difficulty: "★★★★☆"
+slug: "ml-lecture-03-part2"
+difficulty: "advanced"
 time_estimate: "90 minutes"
 languages: ["Python"]
 keywords: ["SVD", "低ランク近似", "Randomized SVD", "行列微分", "数値微分", "einsum", "自動微分", "Dual Numbers", "LoRA", "AdaLoRA", "Tikhonov正則化", "Attention", "LayerNorm", "FlashAttention"]

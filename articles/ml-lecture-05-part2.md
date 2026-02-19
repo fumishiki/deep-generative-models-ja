@@ -4,10 +4,11 @@ emoji: "📏"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "measuretheory", "python"]
 published: true
-difficulty: advanced
+slug: "ml-lecture-05-part2"
+difficulty: "advanced"
 time_estimate: "90 minutes"
-languages: [Python]
-keywords: [Monte Carlo, MCMC, importance sampling, kernel density estimation, Brownian motion, SDE, Ornstein-Uhlenbeck, Euler-Maruyama, Langevin dynamics, Fokker-Planck equation]
+languages: ["Python"]
+keywords: ["Monte Carlo", "MCMC", "importance sampling", "kernel density estimation", "Brownian motion", "SDE", "Ornstein-Uhlenbeck", "Euler-Maruyama", "Langevin dynamics", "Fokker-Planck equation"]
 ---
 
 > **📘 本記事は後編（実装編）です**: [前編（理論編）はこちら](/articles/ml-lecture-05-part1)

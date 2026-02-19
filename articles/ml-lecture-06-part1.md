@@ -5,6 +5,10 @@ type: "tech"
 topics: ["machinelearning", "deeplearning", "informationtheory", "python"]
 published: true
 time_estimate: "90 minutes"
+slug: "ml-lecture-06-part1"
+difficulty: "intermediate"
+languages: ["Python"]
+keywords: ["エントロピー", "KLダイバージェンス", "相互情報量", "最適化", "SGD", "Adam", "学習率スケジューラ"]
 ---
 
 

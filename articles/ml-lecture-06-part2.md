@@ -5,6 +5,10 @@ type: "tech"
 topics: ["machinelearning", "deeplearning", "informationtheory", "python"]
 published: true
 time_estimate: "90 minutes"
+slug: "ml-lecture-06-part2"
+difficulty: "intermediate"
+languages: ["Python"]
+keywords: ["クロスエントロピー", "KLダイバージェンス", "SGD", "Adam", "学習率", "勾配降下法", "情報理論"]
 ---
 
 > **Note:** **📘 本記事は後編（実装編）です**: [前編（理論編）はこちら](/articles/ml-lecture-06-part1)
