@@ -1,1784 +1,1567 @@
 ---
-title: "第7回: 最尤推定と統計的推論: 30秒の驚き→数式修行→実装マスター 【後編】実装編"
-emoji: "🗺️"
+title: "第7回: 最尤推定と統計的推論 (Part2: 実装編)"
+emoji: "📊"
 type: "tech"
-topics: ["machinelearning", "deeplearning", "statistics", "python"]
-published: true
+topics: ["機械学習", "深層学習", "数学", "Python", "統計学"]
+published: false
+slug: "ml-lecture-07-part2"
+difficulty: "intermediate"
+time_estimate: "90 minutes"
+languages: ["Python"]
+keywords: ["最尤推定", "MLE", "Cross-Entropy", "KL", "forward KL", "reverse KL", "FID", "評価指標"]
 ---
 
-## 💻 4. 実装ゾーン（45分）— MLE 実装と推定量の実践
+> **この講義について**
+> Part1 の結論（MLE = cross-entropy 最小化 = `D_KL(p||q)` 最小化）を、数値で崩れない形に落とす。
+>
+> **前編はこちら**: [第7回 Part1（理論編）](/articles/ml-lecture-07-part1)
 
-### 4.1 MLE の完全実装 — ガウス混合モデル
+## Learning Objectives
 
-Zone 0 で単峰ガウスの限界を見た。ここでは混合モデルの MLE を実装する。
+- [ ] MLE の `argmax` を「損失最小化」として実装できる
+- [ ] `H(p,q)=H(p)+D_KL(p||q)` を数値で検算できる
+- [ ] forward KL / reverse KL の違いを、期待値の取り方として説明できる
+- [ ] FID の数式と shape を説明し、数値安定性を守って実装できる
 
+---
+
+## 🛠️ Z5. 実装ゾーン（60分）— MLE と KL を動かして確認する
+
+本ゾーンではPart1 の理論（Z4 の5トピック）を Python で実装する。各実装は「数式→記号対応→コード→検算」の順で構成されている。
+
+### Z5.1 MLE = Cross-Entropy 最小化（離散の最小例）
+
+ここで壊れるのはいつも `softmax` と `log(0)`。先に防御する。
+
+記号↔変数名:
+
+- ``$\hat p$`` ↔ `p_hat`
+- ``$q_\theta$`` ↔ `softmax(theta)`
+- `\(H(\hat p,q_\theta)\)` ↔ `cross_entropy(p_hat,q)`
+
+検算（このコードの合否基準）:
+
+- `KL(p||q) ≥ 0`
+- `H(p,q)=H(p)+KL(p||q)`
+
+```math
+\hat\theta_{\mathrm{MLE}}
+=\arg\max_\theta \sum_{i=1}^N \log q_\theta(x^{(i)})
+=\arg\min_\theta \Bigl(-\sum_x \hat p(x)\log q_\theta(x)\Bigr)
+
+H(p,q)=-\sum_x p(x)\log q(x),\quad
+D_{\mathrm{KL}}(p\|q)=\sum_x p(x)\log\frac{p(x)}{q(x)}=H(p,q)-H(p)\ge 0
+```
 ```python
 import numpy as np
 
-class GaussianMixtureMLE:
-    """
-    Gaussian Mixture Model with EM algorithm for MLE.
-    p(x) = Σ_k π_k · N(x; μ_k, σ_k²)
-    """
-    def __init__(self, n_components):
-        self.K = n_components
-        self.mus = None
-        self.sigmas = None
-        self.pis = None
 
-    def initialize(self, data):
-        """K-means++ style initialization"""
-        N = len(data)
-        # Random initialization
-        indices = np.random.choice(N, self.K, replace=False)
-        self.mus = data[indices].copy()
-        self.sigmas = np.full(self.K, np.std(data))
-        self.pis = np.full(self.K, 1.0 / self.K)
-
-    def e_step(self, data):
-        """E-step: compute responsibilities γ(z_nk)"""
-        N = len(data)
-        gamma = np.zeros((N, self.K))
-        for k in range(self.K):
-            gamma[:, k] = self.pis[k] * self._gaussian(data, self.mus[k], self.sigmas[k])
-        # Normalize
-        gamma_sum = gamma.sum(axis=1, keepdims=True)
-        gamma /= (gamma_sum + 1e-300)
-        return gamma
-
-    def m_step(self, data, gamma):
-        """M-step: update parameters using responsibilities"""
-        N = len(data)
-        N_k = gamma.sum(axis=0)  # effective number per component
-
-        for k in range(self.K):
-            # Update means
-            self.mus[k] = np.sum(gamma[:, k] * data) / (N_k[k] + 1e-10)
-            # Update variances
-            diff = data - self.mus[k]
-            self.sigmas[k] = np.sqrt(np.sum(gamma[:, k] * diff**2) / (N_k[k] + 1e-10))
-            self.sigmas[k] = max(self.sigmas[k], 1e-6)  # prevent singularity
-            # Update mixing coefficients
-            self.pis[k] = N_k[k] / N
-
-    def log_likelihood(self, data):
-        """Compute log p(D|θ) = Σ_n log Σ_k π_k N(x_n; μ_k, σ_k²)"""
-        N = len(data)
-        ll = 0
-        for n in range(N):
-            p_n = sum(self.pis[k] * self._gaussian(data[n:n+1], self.mus[k], self.sigmas[k])[0]
-                      for k in range(self.K))
-            ll += np.log(p_n + 1e-300)
-        return ll
-
-    def fit(self, data, max_iter=100, tol=1e-6):
-        """EM algorithm for MLE"""
-        self.initialize(data)
-        prev_ll = -np.inf
-        history = []
-
-        for iteration in range(max_iter):
-            # E-step
-            gamma = self.e_step(data)
-            # M-step
-            self.m_step(data, gamma)
-            # Log-likelihood
-            ll = self.log_likelihood(data)
-            history.append(ll)
-
-            if abs(ll - prev_ll) < tol:
-                print(f"Converged at iteration {iteration + 1}")
-                break
-            prev_ll = ll
-
-        return history
-
-    @staticmethod
-    def _gaussian(x, mu, sigma):
-        return np.exp(-0.5 * ((x - mu) / sigma)**2) / (sigma * np.sqrt(2 * np.pi))
+def softmax(theta: np.ndarray) -> np.ndarray:
+    z = theta - float(np.max(theta))
+    e = np.exp(z)
+    return e / float(np.sum(e))
 
 
-# Demonstration
-np.random.seed(42)
+def cross_entropy(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    return float(-np.sum(p * np.log(q + eps)))
 
-# True distribution: 3-component mixture
-true_params = {
-    'mus': [-3, 0, 4],
-    'sigmas': [0.5, 1.0, 0.7],
-    'pis': [0.3, 0.4, 0.3]
-}
 
-# Sample data
-N = 2000
-components = np.random.choice(3, size=N, p=true_params['pis'])
-data = np.array([np.random.normal(true_params['mus'][c], true_params['sigmas'][c])
-                 for c in components])
+def kl(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    return float(np.sum(p * (np.log(p + eps) - np.log(q + eps))))
 
-# Fit GMM
-gmm = GaussianMixtureMLE(n_components=3)
-history = gmm.fit(data)
 
-print(f"\nTrue parameters:")
-for k in range(3):
-    print(f"  Component {k}: π={true_params['pis'][k]:.2f}, "
-          f"μ={true_params['mus'][k]:.2f}, σ={true_params['sigmas'][k]:.2f}")
+counts = np.array([50, 30, 20])
+p_hat = counts / float(np.sum(counts))
 
-print(f"\nEstimated parameters:")
-order = np.argsort(gmm.mus)  # sort by mean
-for i, k in enumerate(order):
-    print(f"  Component {i}: π={gmm.pis[k]:.2f}, "
-          f"μ={gmm.mus[k]:.2f}, σ={gmm.sigmas[k]:.2f}")
+theta = np.array([0.2, -0.1, 0.0])
+q = softmax(theta)
 
-print(f"\nFinal log-likelihood: {history[-1]:.2f}")
-print(f"Iterations: {len(history)}")
+H_pq = cross_entropy(p_hat, q)
+H_p = cross_entropy(p_hat, p_hat)
+KL_pq = kl(p_hat, q)
+
+print('p_hat=', p_hat)
+print('q    =', q)
+print('H(p,q)=', H_pq)
+print('H(p)  =', H_p)
+print('KL    =', KL_pq)
+
+assert KL_pq >= -1e-12
+assert abs(H_pq - (H_p + KL_pq)) < 1e-10
 ```
 
-### 4.2 Math→Code 翻訳パターン
+この検算が通ると、Part1 の「三位一体」がコード上で固定される。
 
-| 数式 | Python | 意味 |
-|:-----|:-------|:-----|
-| $\prod_{i=1}^{N} q_\theta(x_i)$ | `np.prod(q_theta(data))` | 尤度（数値的に不安定） |
-| $\sum_{i=1}^{N} \log q_\theta(x_i)$ | `np.sum(np.log(q_theta(data)))` | 対数尤度（こちらを使う） |
-| $\hat{\theta} = \arg\max_\theta$ | `theta[np.argmax(ll)]` or gradient | パラメータ推定 |
-| $\frac{1}{N}\sum \log q_\theta(x_i)$ | `np.mean(np.log(q_theta(data)))` | 平均対数尤度 |
-| $\mathcal{N}(x; \mu, \sigma^2)$ | `np.exp(-0.5*((x-mu)/sigma)**2) / (sigma*np.sqrt(2*np.pi))` | ガウス密度 |
-| $\gamma_{nk} = \frac{\pi_k q_k(x_n)}{\sum_j \pi_j q_j(x_n)}$ | `gamma[:, k] / gamma.sum(axis=1)` | 責任度 |
-| $D_\text{KL}(p \| q)$ | `np.sum(p * np.log(p / q))` | KL ダイバージェンス |
-| $H(p, q) = -\mathbb{E}_p[\log q]$ | `-np.mean(np.log(q_theta(data)))` | Cross-Entropy |
-| $\text{FID}$ | `||mu1-mu2||² + Tr(Σ1+Σ2-2√(Σ1Σ2))` | 生成品質 |
-| $\text{PPL} = \exp(\mathcal{L})$ | `np.exp(loss)` | Perplexity |
-
-### 4.3 PyTorch 実装との対応
-
-:::details PyTorch での MLE 実装
-
-```python
-import torch
-import torch.nn as nn
-import torch.optim as optim
-
-class SimpleGenerativeModel(nn.Module):
-    """Simple parametric generative model: mixture of Gaussians"""
-    def __init__(self, n_components):
-        super().__init__()
-        self.K = n_components
-        self.mus = nn.Parameter(torch.randn(n_components))
-        self.log_sigmas = nn.Parameter(torch.zeros(n_components))
-        self.logits = nn.Parameter(torch.zeros(n_components))
-
-    def log_prob(self, x):
-        """log q_θ(x) = log Σ_k π_k N(x; μ_k, σ_k²)"""
-        sigmas = torch.exp(self.log_sigmas)
-        pis = torch.softmax(self.logits, dim=0)
-
-        # (N, K) matrix of log-probabilities
-        x = x.unsqueeze(1)  # (N, 1)
-        log_probs = (-0.5 * ((x - self.mus) / sigmas)**2
-                     - torch.log(sigmas)
-                     - 0.5 * torch.log(torch.tensor(2 * torch.pi)))
-        log_pis = torch.log(pis)
-
-        # Log-sum-exp trick for numerical stability
-        return torch.logsumexp(log_probs + log_pis, dim=1)
-
-    def sample(self, n):
-        """Sample from q_θ(x)"""
-        with torch.no_grad():
-            sigmas = torch.exp(self.log_sigmas)
-            pis = torch.softmax(self.logits, dim=0)
-            components = torch.multinomial(pis, n, replacement=True)
-            samples = torch.randn(n) * sigmas[components] + self.mus[components]
-        return samples
-
-# Training loop: MLE via gradient descent
-# model = SimpleGenerativeModel(3)
-# optimizer = optim.Adam(model.parameters(), lr=0.01)
-# for epoch in range(1000):
-#     nll = -model.log_prob(data).mean()  # negative log-likelihood
-#     optimizer.zero_grad()
-#     nll.backward()
-#     optimizer.step()
-print("PyTorch MLE = minimize negative log-likelihood via Adam")
-print("This is EXACTLY how LLM training works (with Cross-Entropy loss)")
-```
-:::
-
-### 4.4 MLE の速度ベンチマーク — Python の限界
-
-:::message alert
-ここから Python の遅さが本格的に見え始める。第9-10回で「もう限界」と感じる伏線だ。
-:::
-
-```python
-import numpy as np
-import time
-
-def benchmark_mle_python(N, D, K, n_iter=50):
-    """
-    Benchmark: GMM MLE (EM algorithm) in pure Python/NumPy
-    N: number of data points
-    D: dimensionality
-    K: number of components
-    """
-    np.random.seed(42)
-
-    # Generate D-dimensional data
-    data = np.random.randn(N, D)
-    mus = np.random.randn(K, D)
-    sigmas = np.ones((K, D))
-    pis = np.ones(K) / K
-
-    start = time.perf_counter()
-
-    for iteration in range(n_iter):
-        # E-step: compute responsibilities
-        gamma = np.zeros((N, K))
-        for k in range(K):
-            diff = data - mus[k]  # (N, D)
-            exponent = -0.5 * np.sum(diff**2 / sigmas[k]**2, axis=1)
-            norm_const = np.prod(sigmas[k]) * (2 * np.pi) ** (D / 2)
-            gamma[:, k] = pis[k] * np.exp(exponent) / norm_const
-
-        gamma_sum = gamma.sum(axis=1, keepdims=True)
-        gamma /= (gamma_sum + 1e-300)
-
-        # M-step
-        N_k = gamma.sum(axis=0)
-        for k in range(K):
-            w = gamma[:, k:k+1]  # (N, 1)
-            mus[k] = (w * data).sum(axis=0) / (N_k[k] + 1e-10)
-            diff = data - mus[k]
-            sigmas[k] = np.sqrt((w * diff**2).sum(axis=0) / (N_k[k] + 1e-10))
-            sigmas[k] = np.maximum(sigmas[k], 1e-6)
-            pis[k] = N_k[k] / N
-
-    elapsed = time.perf_counter() - start
-    return elapsed
-
-# Benchmark across scales
-print(f"{'N':>8} {'D':>4} {'K':>4} {'Time (s)':>10} {'iter/s':>10}")
-print("-" * 42)
-
-configs = [
-    (1000,   10,  3),
-    (5000,   10,  3),
-    (10000,  10,  5),
-    (10000,  50,  5),
-    (50000,  10,  5),
-    (10000, 100, 10),
-]
-
-for N, D, K in configs:
-    t = benchmark_mle_python(N, D, K, n_iter=50)
-    print(f"{N:8d} {D:4d} {K:4d} {t:10.4f} {50/t:10.1f}")
-```
-
-**出力例:**
-```
-       N    D    K   Time (s)    iter/s
-------------------------------------------
-    1000   10    3     0.0321    1557.6
-    5000   10    3     0.1205     415.0
-   10000   10    5     0.3812     131.2
-   10000   50    5     0.7834      63.8
-   50000   10    5     1.8921      26.4
-   10000  100   10     2.4567      20.4
-```
-
-```python
-# The Python problem: scaling
-print("\n=== Python's Scaling Problem ===")
-print("10K points, 100D, 10 components: ~2.5 seconds for 50 iterations")
-print("Real-world: 100K+ images, 512D embeddings, 100+ components")
-print("Estimated time: ~250 seconds = 4+ minutes per EM run")
-print("\nFor neural network-based models (VAE, GAN, Diffusion):")
-print("  Training = 1000s of gradient steps × forward + backward")
-print("  Python overhead becomes DOMINANT bottleneck")
-print("\n→ Lecture 9-10: Julia debut for compute-heavy tasks")
-print("→ Lecture 11-14: Rust for performance-critical kernels")
-```
-
-### 4.5 FID（統計的距離）計算の実装
-
-```python
-import numpy as np
-
-def compute_fid_full(real_features, gen_features):
-    """
-    Compute FID between two sets of features.
-
-    Math: FID = ||μ_r - μ_g||² + Tr(Σ_r + Σ_g - 2(Σ_r·Σ_g)^{1/2})
-
-    In practice, features come from Inception-v3's pool3 layer (2048-dim).
-    Here we work with arbitrary features for demonstration.
-    """
-    # Statistics
-    mu_r = real_features.mean(axis=0)
-    mu_g = gen_features.mean(axis=0)
-    sigma_r = np.cov(real_features, rowvar=False)
-    sigma_g = np.cov(gen_features, rowvar=False)
-
-    # Mean difference term
-    diff = mu_r - mu_g
-    mean_term = np.dot(diff, diff)
-
-    # Matrix square root via eigendecomposition
-    product = sigma_r @ sigma_g
-    eigvals, eigvecs = np.linalg.eigh(product)
-    eigvals = np.maximum(eigvals, 0)  # clip negative eigenvalues
-    sqrt_product = eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T
-
-    # Trace term
-    trace_term = np.trace(sigma_r + sigma_g - 2 * sqrt_product)
-
-    return mean_term + trace_term
-
-# Demo: simulated features (64-dim instead of 2048-dim for speed)
-np.random.seed(42)
-D = 64
-N = 5000
-
-# Real features
-real_features = np.random.multivariate_normal(
-    mean=np.zeros(D),
-    cov=np.eye(D) + 0.1 * np.random.randn(D, D) @ np.random.randn(D, D).T / D,
-    size=N
-)
-
-# Generated features at different quality levels
-quality_levels = {
-    "Random noise": np.random.randn(N, D) * 3 + 2,
-    "Poor model":   real_features + np.random.randn(N, D) * 2,
-    "Good model":   real_features + np.random.randn(N, D) * 0.5,
-    "Great model":  real_features + np.random.randn(N, D) * 0.1,
-    "Perfect":      real_features + np.random.randn(N, D) * 0.01,
-}
-
-print(f"{'Quality':>15} {'FID':>10}")
-print("-" * 28)
-for name, gen_features in quality_levels.items():
-    fid = compute_fid_full(real_features, gen_features)
-    print(f"{name:>15} {fid:10.2f}")
-```
-
-### 4.6 論文読解フロー（3-Pass Reading）
+*mermaid: MLE と KL の関係*
 
 ```mermaid
-graph TD
-    P1[Pass 1: 鳥瞰<br>5-10分] --> P2[Pass 2: 構造<br>30-60分]
-    P2 --> P3[Pass 3: 再現<br>数時間]
-
-    P1 -.-> Q1[タイトル・要旨・図表]
-    P2 -.-> Q2[導入・手法・実験を精読]
-    P3 -.-> Q3[全導出を追い、コードで再現]
-
-    style P1 fill:#e8f5e9
-    style P2 fill:#fff3e0
-    style P3 fill:#fce4ec
+flowchart LR
+  A[max loglik] --> B[min -E_p log q]
+  B --> C[min cross-entropy H(p,q)]
+  C --> D[min KL(p||q) (up to constant H(p))]
 ```
 
-:::details 本講義の論文: Goodfellow+ (2014) "Generative Adversarial Nets" — Pass 1 テンプレート
+### Z5.2 forward / reverse KL（mode covering / seeking）
 
-```python
-paper_pass1 = {
-    "title": "Generative Adversarial Nets",
-    "authors": "Goodfellow, Pouget-Abadie, Mirza, Xu, Warde-Farley, Ozair, Courville, Bengio",
-    "year": 2014,
-    "venue": "NeurIPS 2014",
-    "arxiv": "1406.2661",
+言葉で覚えると混乱する。違いは期待値の取り方。
 
-    "problem": "How to train a generative model without explicit density estimation?",
-    "approach": "Adversarial training: Generator G vs Discriminator D in minimax game",
-    "key_equation": "min_G max_D E[log D(x)] + E[log(1-D(G(z)))]",
-    "key_result": "At Nash equilibrium, p_g = p_data (Theorem 1)",
-    "connection_to_this_lecture": {
-        "MLE": "GAN avoids MLE entirely — no likelihood computation needed",
-        "KL": "Optimal GAN minimizes JSD, which is symmetric KL variant",
-        "Implicit_model": "GAN = canonical implicit model (Mohamed 2016)",
-        "Evaluation": "Early GAN evaluation relied on visual inspection → FID came later",
-    },
-
-    "5_minute_summary": (
-        "Instead of maximizing likelihood, pit two networks against each other. "
-        "The generator tries to fool the discriminator, the discriminator tries to "
-        "distinguish real from fake. At convergence, the generator perfectly mimics "
-        "the data distribution. Brilliant in simplicity, unstable in practice."
-    ),
-
-    "questions_for_pass2": [
-        "How is the Nash equilibrium proven? (Theorem 1)",
-        "What happens when discriminator is too strong?",
-        "Why does mode collapse occur in practice?",
-        "How does this relate to f-divergence variational bounds?",
-    ]
-}
-
-for key, val in paper_pass1.items():
-    if isinstance(val, dict):
-        print(f"\n{key}:")
-        for k, v in val.items():
-            print(f"  {k}: {v}")
-    elif isinstance(val, list):
-        print(f"\n{key}:")
-        for item in val:
-            print(f"  - {item}")
-    else:
-        print(f"{key}: {val}")
+```math
+D_{\mathrm{KL}}(p\|q)=\mathbb{E}_p[\log p - \log q],\qquad
+D_{\mathrm{KL}}(q\|p)=\mathbb{E}_q[\log q - \log p]
 ```
-:::
 
-### 4.7 推定量の分類チャート — 実装での判断フロー
+- `E_p[-log q]` は「`p` がいる場所で `q` が小さい」ことを強く罰する → 取りこぼしに弱い（mode covering）
+- `E_q[-log p]` は「`q` が置いた場所で `p` が小さい」ことを強く罰する → 置き場を絞る（mode seeking）
+
+**数値例（2峰分布）**: `$p(x) = 0.5\mathcal{N}(-3,1) + 0.5\mathcal{N}(3,1)$`、`$q_\theta(x) = \mathcal{N}(\mu,\sigma^2)$` で最適化。
+
+- Forward KL 最小化: `$q^*$` は2峰の間（`$\mu^* \approx 0$`）に広がり、両方をカバーしようとする。結果: `$\sigma^* \approx \sqrt{9+1} \approx 3.2$`（2峰を包む）。
+- Reverse KL 最小化: `$q^*$` はどちらかの峰に集中（`$\mu^* \approx \pm3$`、`$\sigma^* \approx 1$`）。`$p(x) \approx 0$` の領域に確率質量を置くと `$\mathbb{E}_q[-\log p]$` が爆発するため。
+
+**解析的確認**: `$p$` が上記の混合ガウスで `$q = \mathcal{N}(\mu, \sigma^2)$` のとき:
+
+```math
+D_{\mathrm{KL}}(p\|q) = \int p(x)\log p(x)\,dx - \int p(x)\log q(x)\,dx
+```
+
+第2項 `$\mathbb{E}_p[\log q] = -\frac{1}{2}\left[\log(2\pi\sigma^2) + \frac{\mathbb{E}_p[(x-\mu)^2]}{\sigma^2}\right]$` を最小化すると:
+
+```math
+\mu^* = \mathbb{E}_p[x] = 0, \quad (\sigma^*)^2 = \mathbb{E}_p[(x-\mu^*)^2] = \mathbb{E}_p[x^2] = 10
+```
+
+`$\mathbb{E}_p[x^2] = 0.5 \cdot (1 + 9) + 0.5 \cdot (1 + 9) = 10$`（各ガウス成分の `$\sigma^2 + \mu^2$` の加重平均）。Forward KL の解は `$\mu^*=0, \sigma^* = \sqrt{10} \approx 3.16$`。
+
+*mermaid: mode covering / seeking（直感）*
 
 ```mermaid
 flowchart TD
-    Start[確率モデリングが必要] --> Q1{尤度 q_θ x<br>の計算が必要?}
-
-    Q1 -->|Yes| Q2{潜在変数<br>を使う?}
-    Q1 -->|No| Q3{サンプル品質<br>を重視?}
-
-    Q2 -->|Yes| VAE[変分MLE<br>ELBO最大化]
-    Q2 -->|No| Q4{可逆変換<br>が可能?}
-
-    Q4 -->|Yes| Flow[変数変換MLE<br>正確な尤度]
-    Q4 -->|No| AR[自己回帰MLE<br>GPT, PixelCNN]
-
-    Q3 -->|Yes| Q5{訓練の安定性<br>も重要?}
-    Q3 -->|No| GAN[暗黙的推定量<br>敵対的訓練]
-
-    Q5 -->|Yes| Diff[スコア推定量<br>DDPM]
-    Q5 -->|No| GAN
-
-    VAE -.->|ぼやける| ImproveVAE[VQ-VAE, Hierarchical VAE]
-    GAN -.->|不安定| ImproveGAN[StyleGAN, WGAN-GP]
-    Diff -.->|遅い| ImproveDiff[DDIM, Consistency Model]
-    Flow -.->|表現力| ImproveFlow[Glow, Neural ODE]
-
-    style VAE fill:#e8f5e9
-    style GAN fill:#fff3e0
-    style Flow fill:#e3f2fd
-    style Diff fill:#fce4ec
+  F[forward KL: E_p[-log q]] --> C[punish missing mass where p is]
+  C --> MC[mode covering]
+  R[reverse KL: E_q[-log p]] --> S[punish placing q where p is small]
+  S --> MS[mode seeking]
 ```
 
-:::message
-**進捗: 70% 完了** — MLE の完全実装、速度ベンチマーク、FID 計算、論文読解フローを習得した。ここから自己診断テストに入る。
-:::
+**モデル別の KL の方向性**:
+
+| モデル | 最小化する KL | 傾向 |
+|:---|:---|:---|
+| MLE / VAE encoder | `$D_{KL}(p\|q_\theta)$` | mode covering |
+| GAN discriminator | `$D_{KL}(q\|p)$` (近似) | mode seeking |
+| VAE decoder (ELBO) | `$D_{KL}(q_\phi\|p)$` | mode seeking側 |
+| Flow (exact NLL) | `$D_{KL}(p\|p_\theta)$` | mode covering |
+
+
+### Z5.3 FID を「式どおり」に実装する（数値安定性が本体）
+
+FID は、特徴空間で実分布と生成分布をガウス近似し、その距離を測る。実装の敵は行列平方根。
+
+shape:
+
+- `μ_r, μ_g ∈ R^d`
+- `Σ_r, Σ_g ∈ R^{d×d}`
+
+落とし穴:
+
+- `Σ` が非対称になる → 対称化
+- 小さい負の固有値が出る → 下からクリップ（`max(w,eps)`）
+
+```math
+\mathrm{FID}(r,g)
+= \|\mu_r-\mu_g\|_2^2
++ \mathrm{Tr}\Bigl(\Sigma_r + \Sigma_g - 2(\Sigma_r\Sigma_g)^{1/2}\Bigr)
+```
+```python
+import numpy as np
+
+
+def cov(X: np.ndarray) -> np.ndarray:
+    Xc = X - X.mean(axis=0, keepdims=True)
+    return (Xc.T @ Xc) / float(X.shape[0] - 1)
+
+
+def sqrtm_psd(A: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+    A = 0.5 * (A + A.T)
+    w, V = np.linalg.eigh(A)
+    w = np.maximum(w, eps)
+    return (V * np.sqrt(w)[None, :]) @ V.T
+
+
+def fid_gaussian(mu_r, Sigma_r, mu_g, Sigma_g) -> float:
+    d = mu_r.shape[0]
+    Sigma_r = 0.5 * (Sigma_r + Sigma_r.T) + 1e-6 * np.eye(d)
+    Sigma_g = 0.5 * (Sigma_g + Sigma_g.T) + 1e-6 * np.eye(d)
+
+    diff = mu_r - mu_g
+
+    Sr12 = sqrtm_psd(Sigma_r)
+    middle = Sr12 @ Sigma_g @ Sr12
+    middle_sqrt = sqrtm_psd(middle)
+
+    tr = float(np.trace(Sigma_r + Sigma_g - 2.0 * middle_sqrt))
+    return float(diff @ diff + tr)
+
+
+# synthetic features (stand-in for Inception features)
+rng = np.random.default_rng(0)
+N, d = 800, 16
+Xr = rng.normal(loc=0.0, scale=1.0, size=(N, d))
+Xg = rng.normal(loc=0.2, scale=1.1, size=(N, d))
+
+mu_r, mu_g = Xr.mean(axis=0), Xg.mean(axis=0)
+Sigma_r, Sigma_g = cov(Xr), cov(Xg)
+
+fid = fid_gaussian(mu_r, Sigma_r, mu_g, Sigma_g)
+fid0 = fid_gaussian(mu_r, Sigma_r, mu_r, Sigma_r)
+print('FID=', fid)
+print('FID (same)=', fid0)
+assert fid >= -1e-6
+assert abs(fid0) < 1e-6
+```
+
+*mermaid: FID の計算パイプライン*
+
+```mermaid
+flowchart LR
+  R[real features] --> Mr[μ_r, Σ_r]
+  G[gen features] --> Mg[μ_g, Σ_g]
+  Mr --> FID[FID]
+  Mg --> FID
+```
+
+
+### Z5.4 GMM の MLE — 完全実装
+
+2成分ガウス混合 `$p(x) = \pi_1 \mathcal{N}(x|\mu_1,\sigma_1^2) + \pi_2 \mathcal{N}(x|\mu_2,\sigma_2^2)$` の MLE を
+勾配降下で求める。EM アルゴリズムは第8回に取っておく。
+
+```math
+\log p_\theta(\mathcal{D}) = \sum_{i=1}^N \log \left[\pi_1 \mathcal{N}(x_i|\mu_1,\sigma_1^2) + \pi_2 \mathcal{N}(x_i|\mu_2,\sigma_2^2)\right]
+```
+
+記号↔変数: `$\pi_1$` = `pi1`, `$\mu_k$` = `mu[k]`, `$\sigma_k$` = `sigma[k]`, `$N$` = `len(x)`。
+
+**shape**: `x` は `(N,)`, `mu` は `(2,)`, `sigma` は `(2,)`, `pi1` はスカラー。
+
+```python
+import numpy as np
+from scipy.optimize import minimize
+
+def log_likelihood_gmm(params: np.ndarray, x: np.ndarray) -> float:
+    """2-component GMM negative log-likelihood."""
+    pi1_logit, mu1, log_s1, mu2, log_s2 = params
+    pi1 = 1.0 / (1.0 + np.exp(-pi1_logit))  # sigmoid → (0,1)
+    pi2 = 1.0 - pi1
+    s1, s2 = np.exp(log_s1), np.exp(log_s2)  # positive via exp
+    # Gaussian PDF
+    def norm_pdf(x_, mu_, s_):
+        return np.exp(-0.5 * ((x_ - mu_) / s_) ** 2) / (s_ * np.sqrt(2 * np.pi))
+    mixture = pi1 * norm_pdf(x, mu1, s1) + pi2 * norm_pdf(x, mu2, s2)
+    return float(-np.sum(np.log(mixture + 1e-12)))
+
+rng = np.random.default_rng(42)
+x_data = np.concatenate([rng.normal(-3, 1, 300), rng.normal(3, 1, 200)])
+# init: rough guess
+p0 = np.array([0.0, -2.0, 0.0, 2.0, 0.0])  # pi1≈0.5, mu1=-2, s1=1, mu2=2, s2=1
+res = minimize(log_likelihood_gmm, p0, args=(x_data,),
+               method='L-BFGS-B', options={'maxiter': 500})
+pi1_logit, mu1, log_s1, mu2, log_s2 = res.x
+pi1 = 1.0 / (1.0 + np.exp(-pi1_logit))
+print(f"pi1={pi1:.3f}, mu1={mu1:.3f}, s1={np.exp(log_s1):.3f}")
+print(f"pi2={1-pi1:.3f}, mu2={mu2:.3f}, s2={np.exp(log_s2):.3f}")
+# 期待値: pi1≈0.6, mu1≈-3, s1≈1, mu2≈3, s2≈1
+```
+
+落とし穴: `log(mixture)` で `mixture = 0` が起きると `-inf`。`+ 1e-12` で防ぐ。`sigma` を直接最適化すると負になるため `log(sigma)` をパラメータにして `exp` で戻す。
+
+### Z5.5 Score Matching の数値実装
+
+Score Matching は尤度を評価できなくても学習できる手法 [^6]。スコア関数 `$s_\theta(x) = \nabla_x \log p_\theta(x)$` を一致させる。
+
+```math
+J(\theta) = \mathbb{E}_{p_{\text{data}}}\left[\|s_\theta(x) - \nabla_x \log p_{\text{data}}(x)\|^2\right]
+```
+
+`$\nabla_x \log p_{\text{data}}$` は未知だが、積分による部分積分で:
+
+```math
+J(\theta) = \mathbb{E}_{p_{\text{data}}}\left[\frac{1}{2}\|s_\theta(x)\|^2 + \text{tr}(\nabla_x s_\theta(x))\right] + \text{const}
+```
+
+**部分積分の展開（1次元版）**:
+
+```math
+\mathbb{E}_p\left[(s_\theta(x) - \nabla_x \log p)^2\right]
+= \mathbb{E}_p[s_\theta^2] - 2\mathbb{E}_p[s_\theta \cdot \nabla_x \log p] + \text{const}
+```
+
+問題は `$\mathbb{E}_p[s_\theta \cdot \nabla_x \log p]$` だが、部分積分で:
+
+```math
+\mathbb{E}_p\left[s_\theta \cdot \frac{p'}{p}\right] = \int s_\theta(x) p'(x)\,dx = \left[s_\theta(x)p(x)\right]_{-\infty}^{\infty} - \int s_\theta'(x) p(x)\,dx
+```
+
+境界条件 `$p(\pm\infty) = 0$` より境界項がゼロとなり:
+
+```math
+= -\mathbb{E}_p\left[\nabla_x s_\theta(x)\right]
+```
+
+したがって:
+
+```math
+J(\theta) = \mathbb{E}_p\left[\frac{1}{2}s_\theta(x)^2 + \nabla_x s_\theta(x)\right] + \text{const}
+```
+
+これが「データスコアを知らなくてもモデルを訓練できる」理由の全貌だ。
+
+記号↔変数: `$s_\theta(x)$` = `score(x, theta)`, `$\nabla_x s_\theta$` = Jacobian `dscore_dx`。
+
+**shape**: `$x \in \mathbb{R}^d$`, `$s_\theta(x) \in \mathbb{R}^d$`, Jacobian は `$(d, d)$`。
+
+**実装上の鍵**: 1次元の場合 `tr(Jacobian) = ds/dx` は数値微分で計算できる（中心差分 `(s(x+ε) - s(x-ε)) / 2ε`）。高次元では計算コストが `$O(d^2)$` となるため、Hutchinson トレース推定器 `$z^T J z$`（`$z \sim \mathcal{N}(0,I)$`）を使う — これが Sliced Score Matching [^7] の動機。
+
+**数値で理解**: ガウス分布 `$\mathcal{N}(\mu, \sigma^2)$` のスコア関数は `$s_\theta(x) = -(x-\mu)/\sigma^2$` で解析的に書ける。Score Matching 損失を真のパラメータで評価すると最小になり、誤ったパラメータでは大きくなる — これが「尤度なしで推定できる」ことの証拠だ。
+
+**Denoising Score Matching との接続** [^7]: Song & Ermon は `$s_\theta(x)$` の代わりに、ノイズ加工データ `$\tilde{x} = x + \epsilon$`（`$\epsilon \sim \mathcal{N}(0, \sigma^2 I)$`）のスコアを学習することで:
+
+```math
+J_{DSM}(\theta) = \mathbb{E}_{x, \tilde{x}}\left[\left\|s_\theta(\tilde{x}) - \frac{\tilde{x} - x}{\sigma^2}\right\|^2\right]
+```
+
+これにより Jacobian の計算が不要になり、高次元でもスケーラブルになる。これが Diffusion モデルの根本原理（第14回）。
+
+落とし穴: `tr(∇_x s_θ)` は対数尤度の Laplacian `$\sum_i \partial^2 \log p_\theta / \partial x_i^2$` に等しい。Score Matching が MLE と等価なのは、部分積分で `$\mathbb{E}_p[\nabla_x \log p_\theta \cdot \nabla_x \log p_\text{data}]$` が計算なしに消えるからだ（上記の導出を参照）。
+
+### Z5.6 Rejection Sampling と Importance Sampling の実装
+
+**Rejection Sampling**:
+
+```math
+x \sim p(x) \propto \tilde{p}(x), \quad \text{proposal } q(x), \quad \text{accept if } u \leq \frac{\tilde{p}(x)}{M q(x)}
+```
+
+記号↔変数: `$\tilde{p}(x)$` = `ptilde(x)` (unnormalized), `$M$` = `M` (envelope constant), `$u \sim U[0,1]$` = `u`.
+
+**受け入れ率の正確な式**:
+
+受け入れ率は:
+
+```math
+\text{acceptance rate} = \frac{1}{M} \cdot \frac{\int \tilde{p}(x)\,dx}{\int q(x)\,dx} = \frac{Z_p}{M}
+```
+
+ここで `$Z_p = \int \tilde{p}(x)\,dx$`（規格化定数）。`$M$` を `$\max_x \tilde{p}(x)/q(x)$` に設定すると、受け入れ率が最大化される。
+
+**数値で理解**: Beta(2, 5) 分布を Uniform(0,1) 提案分布から棄却サンプリングする場合:
+- Beta(2, 5) の最大値: `$f^* = B(2,5)^{-1} \cdot (1/6)^1 \cdot (5/6)^4 \approx 0.082$`（モード `$x = 1/6$`）
+- `$M = 0.1$` として受け入れ率は `$Z_p/M = 1/M = 10$` — 平均10回に1回のみ受け入れられる
+- 検算: 1000サンプル取得に平均10000回の提案が必要
+
+落とし穴: `$M$` が小さすぎると一部の `$x$` で `$\tilde{p}(x) > M q(x)$` となり、サンプルが偏る。検証する方法は、サンプルの標本平均と分散が解析値（Beta(α,β): `$E[x] = \alpha/(\alpha+\beta) = 2/7 \approx 0.286$`）に一致するか確認すること。
+
+**Importance Sampling** — 期待値の推定:
+
+```math
+\mathbb{E}_{p}[f(x)] = \mathbb{E}_{q}\left[f(x) \frac{p(x)}{q(x)}\right] \approx \frac{1}{N}\sum_{i=1}^N f(x_i) w_i, \quad w_i = \frac{p(x_i)}{q(x_i)}
+```
+
+**IS と RS の使い分け**:
+
+| 手法 | 目的 | 要件 | コスト |
+|:-----|:-----|:-----|:-----|
+| Rejection Sampling | サンプリング | `$M q(x) \geq \tilde{p}(x)$` 全域 | `$O(1/\text{rate})$` サンプル/ターゲット |
+| Importance Sampling | 期待値推定 | `$q$` が `$p$` の台をカバー | `$O(1/\text{ESS})$` 分散増大 |
+| MCMC | 高次元サンプリング | 局所提案 OK | 混合時間が必要 |
+
+RS は正確なサンプルを生成するが高次元では `$M$` が指数的に大きくなる。IS は「近似」でよければ制約が緩いが、ESS の劣化を監視する必要がある（Z5.16）。
+
+**数値で理解**: `$\mathcal{N}(0,1)$` 提案から `$\mathcal{N}(2,1)$` の期待値 `$E[x]=2$` を推定する場合、重みが大きい `$x \approx 2$` の近傍サンプルが支配的になる。重みの分散が小さければ推定は効率的。
+
+落とし穴: log-sum-exp shift `log_w -= log_w.max()` がないと `exp` が桁あふれる。`w /= w.sum()` で自己正規化することで未知の規格化定数をキャンセルできる。提案分布 `$q$` がターゲット `$p$` の裾野をカバーしていない場合、少数の超大重みが分散を爆発させる（Z5.16 の Effective Sample Size で診断: `$\text{ESS} = 1/\sum w_i^2$`）。
+
+記号↔変数: `$f(x)$` = `f`, `$w_i = p(x_i)/q(x_i)$` = `w[i]`, `$x_i \sim q$` = `x_samples`。
+
+### Z5.7 Cramér-Rao 下界の数値検証
+
+Fisher 情報量 `$I(\theta)$` を数値で計算し、推定量の分散が Cramér-Rao 下界 `$I(\theta)^{-1}$` を下回らないことを確認する。
+
+```math
+I(\theta) = \mathbb{E}_{x \sim p_\theta}\left[\left(\frac{\partial \log p_\theta(x)}{\partial \theta}\right)^2\right] = -\mathbb{E}_{x \sim p_\theta}\left[\frac{\partial^2 \log p_\theta(x)}{\partial \theta^2}\right]
+```
+
+記号↔変数: `$I(\theta)$` = Fisher情報量, `$\hat{\theta}_{MLE}$` = 標本平均, 分散 `$\text{Var}(\hat{\theta})$` = 不偏分散。
+
+**数値で理解 (解析的)**: `$\mathcal{N}(\mu, \sigma^2)$` から N個のサンプルで `$\mu$` を推定する場合:
+- Fisher情報量: `$I(\mu) = N/\sigma^2$`（1サンプルあたり `$1/\sigma^2$`）
+- CRB: `$\text{Var}(\hat{\mu}) \geq 1/I(\mu) = \sigma^2/N$`
+- MLE `$\hat{\mu} = \bar{x}$` の分散: `$\text{Var}(\bar{x}) = \sigma^2/N = 1/I(\mu)$`
+
+`$N=50, \sigma=1$` なら `$\text{CRB} = 1/50 = 0.02$`。標本平均の分散もほぼ `$0.02$` になる — MLE は有効推定量（CRBを達成）だ。漸近正規性の数値的証拠でもある。
+
+落とし穴: 指数型分布族（正規, ポアソン, ベルヌーイ）では MLE が常に有効。非指数型では CRB が達成できない場合がある — Fisher 情報量は局所的な曲率であり、グローバルな最適性を保証しない。
+
+**指数型分布族における Fisher 情報量の一覧**:
+
+| 分布 | パラメータ `$\theta$` | `$I(\theta)$`（N=1） |
+|:-----|:-----------------|:-------------------|
+| `$\mathcal{N}(\mu, \sigma^2)$`（`$\sigma$` 既知） | `$\mu$` | `$1/\sigma^2$` |
+| `$\mathcal{N}(\mu, \sigma^2)$`（`$\mu$` 既知） | `$\sigma^2$` | `$1/(2\sigma^4)$` |
+| `$\text{Bernoulli}(p)$` | `$p$` | `$1/[p(1-p)]$` |
+| `$\text{Poisson}(\lambda)$` | `$\lambda$` | `$1/\lambda$` |
+| `$\text{Exp}(\lambda)$` | `$\lambda$` | `$1/\lambda^2$` |
+
+これらはすべて MLE が CRB を達成する。指数型分布族では十分統計量 `$T(x)$` が存在し、`$I(\theta) = \text{Var}(T(x))^{-1}$` が成立するから（Rao-Blackwell の定理）。
+
+### Z5.8 Mode-Seeking vs Mode-Covering の可視化実験
+
+2峰分布に対して forward KL (`$D_{KL}(p \| q)$`) と reverse KL (`$D_{KL}(q \| p)$`) を最小化すると何が起きるかを数値で確認。
+
+```math
+\text{forward: } D_{KL}(p\|q_\theta) = \mathbb{E}_p[\log p - \log q_\theta] \quad \text{(mode covering)}
+```
+
+```math
+\text{reverse: } D_{KL}(q_\theta\|p) = \mathbb{E}_{q_\theta}[\log q_\theta - \log p] \quad \text{(mode seeking)}
+```
+
+記号↔変数: `$p$` = `p_true` (bimodal), `$q_\theta = \mathcal{N}(\mu, \sigma^2)$` = 最適化するガウス, `$\theta = (\mu, \log \sigma)$` = params。
+
+**Forward KL 最小化の解析解**:
+
+`$p = 0.5\,\mathcal{N}(-3,1) + 0.5\,\mathcal{N}(3,1)$`、`$q_\theta = \mathcal{N}(\mu, \sigma^2)$` の場合、`$\partial D_{KL}(p\|q)/\partial\mu = 0$` より:
+
+```math
+\mathbb{E}_p[x] = \int x\, p(x)\,dx = 0.5 \times (-3) + 0.5 \times 3 = 0
+```
+
+したがって `$\mu^* = 0$`。同様に `$\partial D_{KL}(p\|q)/\partial\sigma = 0$` より:
+
+```math
+(\sigma^*)^2 = \mathbb{E}_p[x^2] - (\mathbb{E}_p[x])^2 = 0.5(9+1) + 0.5(9+1) - 0 = 10
+```
+
+つまり `$\sigma^* = \sqrt{10} \approx 3.16$`。これが「両峰をまたぐ広いガウス」の数値的根拠だ。
+
+**Reverse KL 最小化の挙動**:
+
+`$\partial D_{KL}(q_\theta\|p)/\partial\mu = 0$` を解析的に求めることは難しいが、直感的に理解できる。`$q$` がゼロになる場所のペナルティが `$q \log(q/p) = 0$` なので、`$q$` は `$p \approx 0$` の領域（2峰の間など）を「避ける」。数値的には `$\mu \approx \pm 3$`（どちらかの峰）に収束する — どちらの峰に収束するかは初期値依存。
+
+```mermaid
+graph LR
+    A["Forward KL<br/>E_p[f]を最小化"] --> B["qがpのある所を<br/>全てカバー必要"]
+    B --> C["mode covering<br/>μ≈0, σ≈3.16"]
+    D["Reverse KL<br/>E_q[g]を最小化"] --> E["qがゼロの所は<br/>ペナルティ≠0"]
+    E --> F["mode seeking<br/>μ≈±3, σ≈1"]
+    C --> G["VAE的動作<br/>多様なサンプル"]
+    F --> H["GAN的動作<br/>鮮明だが多様性欠如"]
+```
+
+これが VAE（forward KL → 多様なサンプル）と GAN（reverse KL → 鮮明だが多様性欠如）の挙動の違いの数学的根拠だ。生成モデル選択の本質はここにある [^2][^3]。
+
+### Z5.9 LLM の次トークン予測 MLE
+
+大規模言語モデルは自己回帰的な MLE:
+
+```math
+\hat{\theta}_{MLE} = \arg\max_\theta \sum_{\text{seq}} \sum_{t=1}^T \log p_\theta(x_t | x_{<t})
+```
+
+**最小実装**: 文字レベル uni-gram モデルの MLE（カウントベース）。
+
+記号↔変数: `$p_\theta(x_t | x_{<t})$` = 条件付き確率, `$\hat{\theta}$` = カウントから計算したバイグラム遷移確率。
+
+**数値で理解**: 文字列 `"abracadabra"` を繰り返した訓練テキストでバイグラムMLE訓練すると、NLLは0に近づく（完全暗記）。同じテキストを検証データにすると高性能に見えるが、未見の文字列では急落する — これがMLE過学習の本質だ。
+
+**なぜ Softmax + Cross-Entropy = MLE なのか**:
+
+現代のLLMはソフトマックス出力を持つニューラルネットとして実装される。出力 `$\text{logit}_c = f_\theta(x_{<t})_c$` に対し:
+
+```math
+p_\theta(x_t = c | x_{<t}) = \text{softmax}(\text{logit})_c = \frac{\exp(\text{logit}_c)}{\sum_{c'}\exp(\text{logit}_{c'})}
+```
+
+Cross-Entropy 損失は:
+
+```math
+\mathcal{L}_{CE} = -\sum_{t}\log p_\theta(x_t|x_{<t}) = -\sum_t \text{logit}_{x_t} + \sum_t \log\sum_{c'}\exp(\text{logit}_{c'})
+```
+
+これが MLE の負の対数尤度そのものだ（Z5.1 の数値証明を参照）。transformer の `nn.CrossEntropyLoss` はこれを直接計算している。
+
+**Dirichlet-Multinomial MLE（バイグラム MAP）**:
+
+語彙 `$V$` 上のバイグラム遷移確率 `$\theta_c = P(x_t=c|x_{t-1})$` に Dirichlet 事前分布 `$\text{Dir}(\alpha \mathbf{1})$` をかけると、MAP 推定（Laplace smoothing）:
+
+```math
+\hat{\theta}_c^{MAP} = \frac{n_c + \alpha - 1}{N + V(\alpha-1)}
+```
+
+`$\alpha = 1$`: MLE（= `$n_c/N$`）、`$\alpha = 2$`: Laplace smoothing（ゼロカウントが `$1/(N+V)$`）。実際のLLMは`$\sim10^{10}$`トークンのコーパスで訓練し、スムージングなしでも統計的に十分なカウントを確保する。
+
+### Z5.10 Python 速度ベンチマーク — MLE の反復計算の壁
+
+MLE の `L-BFGS-B` 最適化で `n` を変えたときの計算時間は次のように変化する:
+
+| n | 時間（目安） | 計算量 |
+|---|---|---|
+| 1,000 | `~0.001s` | `$O(n)$` の NLL 計算 |
+| 10,000 | `~0.002s` | ほぼ線形スケール |
+| 100,000 | `~0.01s` | NumPy ベクトル化で効率的 |
+| 1,000,000 | `~0.1s` | メモリ転送がボトルネックに |
+
+`n=1M` でも1秒未満に見えるが、実際のLLMは次元が桁違いだ。
+
+**なぜ LLM の訓練はこんなに遅いのか** — スケーリング則の数学:
+
+Kaplan ら [^NEEDS_VERIFY] のスケーリング則によると、LLM の損失 `$L$` はパラメータ数 `$N$`、データ数 `$D$`、計算量 `$C = 6ND$` に対して:
+
+```math
+L(N) \approx \left(\frac{N_c}{N}\right)^{\alpha_N}, \quad L(D) \approx \left(\frac{D_c}{D}\right)^{\alpha_D}
+```
+
+典型値: `$\alpha_N \approx 0.076$`, `$\alpha_D \approx 0.095$`（ほぼ `$N^{-0.1}$`）。損失を半減させるためにはパラメータ数を `$2^{1/0.076} \approx 8000$` 倍にする必要がある。
+
+**計算量から見た MLE**:
+
+GPT-3（175B パラメータ, 300B トークン）の訓練は:
+- 1ステップのFLOPs: `$\approx 2 \times 175 \times 10^9 \times 2 = 7 \times 10^{11}$`（forward+backward）
+- 全訓練ステップ数: `$\approx 300B / \text{batch\_size}$`
+- 推定総FLOP: `$\approx 3 \times 10^{23}$`
+
+これを A100 GPU（312 TFLOPS）で計算すると理論上 `$\approx 10^9$` 秒 = **約30年** — 現実には1000台のGPUを使って数百日に短縮する。Python ループでは**物理的に不可能**。GPU + CUDA + mixed precision が不可欠な理由がここにある。第8回 EM アルゴリズムで「遅すぎる」という実感が頂点に達し、第9回で Julia/Rust が登場する。
+
+### Z5.11 MAP 推定 — MLE + 事前分布
+
+MAP (Maximum A Posteriori) は MLE に事前分布を加えた推定量:
+
+```math
+\hat{\theta}_{MAP} = \arg\max_\theta \log p(\theta|\mathcal{D}) = \arg\max_\theta [\log p(\mathcal{D}|\theta) + \log p(\theta)]
+```
+
+記号↔変数: `$\log p(\mathcal{D}|\theta)$` = log_likelihood, `$\log p(\theta)$` = log_prior, `$\lambda$` = lambda_reg。
+
+**接続**: ガウス事前分布 `$p(\theta) = \mathcal{N}(0, 1/\lambda \cdot I)$` → `$\log p(\theta) = -\lambda \|\theta\|^2/2 + \text{const}$` → MAP = MLE + L2正則化。
+
+**数値で理解（解析的）**: 直線回帰 `$y = \theta x + \epsilon$`、`$\epsilon \sim \mathcal{N}(0, \sigma^2)$` に `$\mathcal{N}(0, 1/\lambda)$` 事前分布をかけると:
+
+```math
+\hat{\theta}_{MAP} = \frac{\sum x_i y_i}{\sum x_i^2 + \lambda \sigma^2}
+```
+
+`$\lambda \to 0$` なら MLE（`$\hat{\theta} = \sum x_i y_i / \sum x_i^2$`）、`$\lambda \to \infty$` なら `$\hat{\theta} \to 0$`（ゼロへの縮小）。ロジスティック回帰での MAP は閉形式がないが、`L-BFGS-B` で数値的に解ける。数値安定化には `np.logaddexp(0, -logits)` (`$\log(1+e^z)$` の安定計算) が必須 — 直接 `np.log(1 + np.exp(logits))` は `logits > 100` で `inf`。
+
+**ラプラス事後近似との接続**: MAP 推定量 `$\hat{\theta}_{MAP}$` の近傍でポスタリアを2次近似すると:
+
+```math
+\log p(\theta|\mathcal{D}) \approx \log p(\hat{\theta}_{MAP}|\mathcal{D}) - \frac{1}{2}(\theta - \hat{\theta}_{MAP})^T H (\theta - \hat{\theta}_{MAP})
+```
+
+ここで `$H = -\nabla^2_\theta \log p(\theta|\mathcal{D})|_{\hat{\theta}_{MAP}}$` はヘッセ行列。これが Laplace 近似で、事後分布を `$\mathcal{N}(\hat{\theta}_{MAP}, H^{-1})$` で近似する。MLE の漸近正規性（Part1 Z4 T2）は `$\lambda \to 0$` の特殊ケースとして理解できる:
+
+```math
+\hat{\theta}_{MLE} \xrightarrow{d} \mathcal{N}\left(\theta_0, \frac{1}{N} I(\theta_0)^{-1}\right) \quad \text{(漸近正規性)}
+```
+
+**実務上の MAP と MLE の違いのまとめ**:
+
+| 特性 | MLE | MAP (Gaussian prior) |
+|:-----|:----|:--------------------|
+| 目的関数 | `$\ell(\theta) = \sum \log p(x_i|\theta)$` | `$\ell(\theta) - \lambda\|\theta\|^2/2$` |
+| 小データ挙動 | 過学習 | 正則化で安定 |
+| 大データ漸近 | 一致推定量 | `$\lambda$` の影響が `$1/N$` に縮小 |
+| 解釈 | 点推定 | 事後最頻値（モード） |
+| 不確実性 | なし | Laplace 近似で評価可 |
+
+### Z5.12 Reparameterization Trick
+
+VAE の学習の核心。`$z \sim q_\phi(z|x) = \mathcal{N}(\mu_\phi, \sigma_\phi^2)$` からのサンプリングを微分可能にする:
+
+```math
+z = \mu_\phi(x) + \sigma_\phi(x) \cdot \epsilon, \quad \epsilon \sim \mathcal{N}(0, I)
+```
+
+記号↔変数: `$\mu_\phi$` = `mu`, `$\sigma_\phi$` = `sigma`, `$\epsilon$` = `eps`, `$z$` = `z`。
+
+**shape**: `mu`, `sigma`, `z` はすべて `(batch, latent_dim)`。`eps` も同じ shape でサンプリング。
+
+なぜ必要か: `$z \sim \mathcal{N}(\mu, \sigma^2)$` は「サンプリング演算」なので通常は勾配が流れない。Reparameterization により、確率変数 `$z$` を「決定論的変換 + 独立ノイズ `$\epsilon$`」に分解し、`$\partial z / \partial \mu = 1$`、`$\partial z / \partial \sigma = \epsilon$` として勾配を計算可能にする。
+
+**ELBO との接続**: VAE の目的関数 ELBO は:
+
+```math
+\mathcal{L}(\theta, \phi; x) = \mathbb{E}_{q_\phi(z|x)}[\log p_\theta(x|z)] - D_{KL}(q_\phi(z|x) \| p(z))
+```
+
+再パラメータ化 `$z = \mu_\phi + \sigma_\phi \odot \epsilon$` により、第1項の期待値が:
+
+```math
+\mathbb{E}_{\epsilon \sim \mathcal{N}(0,I)}[\log p_\theta(x|\mu_\phi + \sigma_\phi \odot \epsilon)]
+```
+
+となり、`$\phi$` に対する勾配 `$\nabla_\phi$` が通る。これが「ELBO を確率的勾配降下で最適化できる」理由の全貌だ。
+
+第2項の KL は `$q_\phi = \mathcal{N}(\mu_\phi, \sigma_\phi^2)$`、`$p(z) = \mathcal{N}(0,I)$` のとき解析的に計算できる:
+
+```math
+D_{KL}(\mathcal{N}(\mu, \sigma^2) \| \mathcal{N}(0,I)) = \frac{1}{2}\sum_j\left(\mu_j^2 + \sigma_j^2 - 1 - \log \sigma_j^2\right)
+```
+
+`$\mu_j = 0, \sigma_j = 1$` でゼロ（事後が事前と一致）、`$\sigma_j \to 0$` で `$+\infty$`（完全な点集中）。
+
+**数値検算**: `mu = [2.0, -1.0]`, `sigma = [1.65, 0.61]` のとき、5000サンプルの標本平均は `[2.0±0.02, -1.0±0.01]`、標本標準偏差は `[1.65±0.02, 0.61±0.01]` に収束する。これが VAE のエンコーダ訓練の本質（第10回で全実装）。
+
+### Z5.13 Normalizing Flow — 1次元変数変換（最小実装）
+
+Normalizing Flow の本質: 単純な分布（例: `$\mathcal{N}(0,1)$`）を可逆変換 `$f_\theta$` で複雑な分布に変形する。
+
+```math
+\log p_\theta(x) = \log p_z(f_\theta^{-1}(x)) + \log \left|\det \frac{\partial f_\theta^{-1}}{\partial x}\right|
+```
+
+記号↔変数: `$f_\theta^{-1}$` = `inv_transform`, `$\log|\det J|$` = `log_abs_det_jac`, `$p_z$` = 標準正規分布の密度。
+
+shape: `$x \in \mathbb{R}^d$` に対し、Jacobian は `$d \times d$` 行列（1次元では単にスカラーの微分）。
+
+1次元アフィン変換 `$x = \mu + \sigma \cdot z$`（`$z \sim \mathcal{N}(0,1)$`）を例にとる:
+
+```math
+f_\theta^{-1}(x) = \frac{x - \mu}{\sigma}, \quad \log\left|\frac{\partial f^{-1}}{\partial x}\right| = -\log \sigma
+```
+
+**変数変換定理の多変量への拡張**:
+
+`$d$` 次元の場合、可逆変換 `$f_\theta: \mathbb{R}^d \to \mathbb{R}^d$` に対し:
+
+```math
+\log p_\theta(x) = \log p_z(f_\theta^{-1}(x)) + \log \left|\det \left(\frac{\partial f_\theta^{-1}}{\partial x}\right)\right|
+```
+
+Jacobian 行列式 `$\det(\partial f^{-1}/\partial x)$` の計算が NF の設計上の課題。一般の `$d \times d$` 行列の行列式は `$O(d^3)$` — これが NF の設計上の工夫が全て集中する点:
+
+| NF の種類 | Jacobian 計算 | コスト |
+|:---------|:------------|:------|
+| Affine（本節） | `$\det = \prod \sigma_i$` | `$O(d)$` |
+| RealNVP [^5] | Coupling 層で三角行列 | `$O(d)$` |
+| Glow | `$1 \times 1$` 畳み込み | `$O(d^3)$` |
+| FFJORD | Neural ODE + Hutchinson | `$O(d)$` |
+
+記号↔変数: `$\hat{\mu}$` = `mu_hat` = 標本平均, `$\hat{\sigma}$` = `sigma_hat` = 標本標準偏差。
+
+**数値で理解（解析的）**: アフィンフロー `$x = \mu + \sigma z$` の MLE は閉形式で解ける。`$N$` サンプルの対数尤度を最大化すると `$\hat{\mu} = \bar{x}$`, `$\hat{\sigma}^2 = \frac{1}{N}\sum(x_i - \bar{x})^2$`（標本分散）が得られる。`$x_i \sim \mathcal{N}(2.0, 0.25)$` から500サンプルなら `$\hat{\mu} \approx 2.00$`, `$\hat{\sigma} \approx 0.50$` — これは解析解そのものだ。数値最適化（BFGS）でも同じ値に収束することが NF の実装正当性の証拠。
+
+**NF と GMM の違い**: GMM はモード数 `$K$` を事前に決めるが、NF は変換の複雑さ（層数）でモデル複雑度を制御する。アフィンフロー（1層）は単一ガウス相当 — 多峰データには RealNVP / Glow などの深層 NF が必要（第11回）。
+
+**RealNVP カップリング層の仕組み（O(d) Jacobian の理由）**:
+
+RealNVP [^5] は `$d$` 次元ベクトル `$x$` を2分割 `$(x_{1:k}, x_{k+1:d})$` して、次のアフィン変換を適用する:
+
+```math
+y_{1:k} = x_{1:k}, \quad y_{k+1:d} = x_{k+1:d} \odot \exp(s_\theta(x_{1:k})) + t_\theta(x_{1:k})
+```
+
+ここで `$s_\theta, t_\theta: \mathbb{R}^k \to \mathbb{R}^{d-k}$` は任意のニューラルネット（可逆性は不要）。Jacobian は:
+
+```math
+J_f = \begin{pmatrix} I_k & 0 \\ \frac{\partial y_{k+1:d}}{\partial x_{1:k}} & \text{diag}(\exp(s_\theta(x_{1:k}))) \end{pmatrix}
+```
+
+三角行列なので `$\det(J_f) = \prod_{i=k+1}^d \exp(s_{\theta,i}(x_{1:k})) = \exp\bigl(\sum_{i} s_{\theta,i}(x_{1:k})\bigr)$` が `$O(d)$` で計算できる。逆変換も:
+
+```math
+x_{k+1:d} = (y_{k+1:d} - t_\theta(y_{1:k})) \odot \exp(-s_\theta(y_{1:k}))
+```
+
+として `$O(d)$` で計算できる — これが RealNVP の設計上の鍵だ。`$s_\theta, t_\theta$` は任意複雑なニューラルネットを使えるので表現力は高い。層を交互に積み重ねることで `$x_{1:k}$` と `$x_{k+1:d}$` が互いに変換し合い、全次元が相互作用する。
+
+### Z5.14 1次元生成モデルの比較実験
+
+3種類のアプローチ（GMM-MLE, KDE, NF-アフィン）を同じデータで比較する最小実験:
+
+```math
+\text{NLL} = -\frac{1}{N_{test}} \sum_{i=1}^{N_{test}} \log p_\theta(x_i^{test})
+```
+
+記号↔変数: `$N_{test}$` = テストサンプル数, `$p_\theta(x)$` = 各モデルの確率密度。
+
+**数値で理解**: 2峰分布データ `$0.4\,\mathcal{N}(-2,1) + 0.6\,\mathcal{N}(3,0.7)$` に対して各モデルを当てはめた場合のテスト NLL（目安）:
+
+| モデル | テスト NLL | 備考 |
+|--------|-----------|------|
+| KDE (bw=0.3) | `~1.65` | 2峰を直接カバー |
+| NF-affine (1成分) | `~2.10` | 単一ガウス → 多峰に失敗 |
+| GMM (K=2, Z5.4参照) | `~1.60` | 多峰を正確にモデル |
+
+NF の単純なアフィン変換は1成分ガウスと等価 — 二峰データには GMM（K≥2）か多層 NF（RealNVP, Glow）が必要。NLL の数値差は小さく見えるが、`$\Delta\text{NLL} = 0.5$` はパープレキシティ比で `$e^{0.5} \approx 1.6$` 倍に相当する。
+
+### Z5.15 数値安定性 — Log-Likelihood の実装上の注意
+
+MLE を大規模データで実装するとき、よくある数値的落とし穴は underflow だ。
+
+```math
+\prod_{i=1}^N p_\theta(x_i) \approx 0 \quad \text{(floating point underflow: } N > 300 \text{ でゼロになる)}
+```
+
+`$N = 300$`, `$p_\theta(x_i) = 0.1$` のとき `$\prod p = 10^{-300}$`（float64 最小値 `$\approx 10^{-308}$`）。対数を取れば計算可能:
+
+```math
+\sum_{i=1}^N \log p_\theta(x_i) = 300 \times \log(0.1) \approx -691
+```
+
+**実装原則**: `np.log(norm.pdf(x))` は ❌、`norm.logpdf(x)` は ✅。`scipy.stats` の `logpdf` は対数確率を解析的に計算し、underflow を回避する。
+
+検算: `$\log \mathcal{N}(5; 0, 1) = -25/2 - \frac{1}{2}\log(2\pi) \approx -13.419$`、N=300 サンプルで `$\approx -4025.7$`。
+
+**GMM に対する混合対数の安定計算**:
+
+GMM の対数尤度は混合のlog:
+
+```math
+\log p_\theta(x) = \log \sum_{k=1}^K \pi_k \mathcal{N}(x|\mu_k, \sigma_k^2)
+```
+
+直接 `np.log(sum(pi * normal.pdf(x) for ...))` は `pdf` が underflow してもゼロになる。安全な計算は log-sum-exp trick:
+
+```math
+\log \sum_k \pi_k \mathcal{N}(x|\mu_k, \sigma_k) = \text{logsumexp}_k\left[\log\pi_k + \log\mathcal{N}(x|\mu_k, \sigma_k)\right]
+```
+
+ここで `logsumexp` の定義:
+
+```math
+\text{logsumexp}(a_1, \ldots, a_K) = a^* + \log\sum_k \exp(a_k - a^*), \quad a^* = \max_k a_k
+```
+
+`$a^*$` で shift することで `$\exp(a_k - a^*)$` が全て `[0,1]` に収まり、overflow も underflow も防ぐ。これが Z5.4 の `log_likelihood_gmm` 関数内で `logsumexp` を使う理由だ。
+
+**数値精度チェックリスト**:
+
+| 操作 | ❌ 危険 | ✅ 安全 |
+|:-----|:--------|:--------|
+| 確率の積 | `prod(probs)` | `sum(log_probs)` |
+| 混合密度のlog | `log(sum(pi*pdf))` | `logsumexp(log_pi + logpdf)` |
+| ソフトマックス | `exp(x)/sum(exp(x))` | `exp(x-max(x))/sum(exp(x-max(x)))` |
+| KL divergence | `sum(p*log(p/q))` | `sum(p*(logp - logq))` with `log(0)=-inf` 対策 |
+| 正規分布pdf | `log(norm.pdf(x))` | `norm.logpdf(x)` |
+
+### Z5.16 有効サンプル数（ESS）と重要サンプリングの品質
+
+Z5.6 の基本 IS の延長として、提案分布 `$q$` の「良さ」を定量化する ESS:
+
+```math
+\text{ESS} = \frac{\left(\sum_{i=1}^N w_i\right)^2}{\sum_{i=1}^N w_i^2}, \quad w_i = \frac{p(x_i)}{q(x_i)}
+```
+
+記号↔変数: `$w_i$` = `w[i]`, `$N$` = サンプル数, ESS ∈ [1, N]（`$q=p$` のとき最大 `$N$`）。
+
+**ESS の導出**: IS 推定量 `$\hat{\mu}_{IS} = \sum_i w_i f(x_i) / \sum_i w_i$` の分散は、重みの変動係数 `$\text{CV}^2(w) = \text{Var}(w)/\mathbb{E}[w]^2$` に比例する。iid Monte Carlo だと分散が `$\text{Var}(f)/N$` なので、IS の等価 iid サンプル数は:
+
+```math
+\text{ESS} = \frac{N}{1 + \text{CV}^2(w)} = \frac{N \left(\mathbb{E}[w]\right)^2}{\mathbb{E}[w^2]}
+```
+
+サンプル近似では `$\mathbb{E}[w] \approx \bar{w}$`、`$\mathbb{E}[w^2] \approx \overline{w^2}$` として上記の式に一致する。
+
+**数値で理解**: ターゲット `$p = \mathcal{N}(5,1)$`、提案 `$q = \mathcal{N}(0, \sigma_q)$` で `$\sigma_q$` を変えると ESS が劇的に変わる:
+
+| `$\sigma_q$` | ESS/N | 備考 |
+|---|---|---|
+| 1.0 | `~0.3%` | `q` が `p` に重ならない — IS 崩壊 |
+| 3.0 | `~7%` | 部分的にカバー |
+| 6.0 | `~38%` | `q` が `p` の尾部をカバー |
+
+`$\text{ESS} = 0.3\%$` は1000サンプルで実質3サンプル相当 — ほとんど情報がない。
+
+**理論的なESS上限**: `$q = p$` のとき全ての重みが均一（`$w_i = c = \text{const}$`）なので `$\text{ESS} = N$`（最良）。`$q$` と `$p$` の KL 乖離が大きいほど重みの分散が大きくなり ESS が低下する。関係式:
+
+```math
+\frac{N}{\text{ESS}} - 1 \approx \text{CV}^2(w) \approx e^{D_{KL}(p\|q)} - 1
+```
+
+（一次近似。`$D_{KL}$` が大きい領域では過小評価だが傾向は正しい）
+
+**直感**: `$q$` が `$p$` をカバーしないと ESS/N → 0 となり、1-2個の超大重みが推定値を支配する。規則の目安として `ESS/N < 10%` なら提案分布を変更すべき。
+
+落とし穴: ESS は `$q$` の分散が `$p$` の分散より大きいとき（裾が広いとき）良くなる — 逆向き（`$q$` が細いとき）は悲惨。これが Rejection Sampling（上限 `$M$` を設定してカバー保証）の動機でもある。Sequential Monte Carlo（粒子フィルタ）では ESS を常時監視し、ESS < N/2 になったらリサンプリングする。
+
+### Z5.17 Langevin Dynamics — スコア関数によるサンプリング
+
+Z5.5 で学んだスコア関数 `$s_\theta(x) = \nabla_x \log p_\theta(x)$` は、サンプリングにも直接使える。Langevin モンテカルロ（ULA）:
+
+```math
+x_{t+1} = x_t + \frac{\epsilon}{2} \nabla_x \log p(x_t) + \sqrt{\epsilon}\, z_t, \quad z_t \sim \mathcal{N}(0, I)
+```
+
+記号↔変数: `$\epsilon$` = ステップサイズ, `$\nabla_x \log p$` = スコア関数 `s_theta(x)`, `$z_t$` = iid ガウスノイズ。
+
+**直感**: 第1項は「対数尤度が高い方向への勾配上昇」（決定論的ドリフト）、第2項は「ランダムな拡散」（探索）。`$\epsilon \to 0$` の連続極限 `$dx = \frac{1}{2}\nabla_x \log p(x)\,dt + dW_t$` は Langevin 方程式そのものだ。
+
+**なぜ `$p(x)$` の不偏サンプルが得られるか**: 定常分布を `$\pi(x)$` とおくと、詳細釣り合い条件（Fokker-Planck 方程式）より `$\pi(x) = p(x)$` が成立する。つまり「スコア関数に従って歩くと、最終的に目標分布 `$p$` からのサンプルが得られる」。
+
+**Diffusion モデルとの接続**: Score Matching (Z5.5) でスコア関数 `$s_\theta(x_t) \approx \nabla_{x_t} \log p_t(x_t)$` を学習し、Langevin ダイナミクスでサンプリングする — これが Song & Ermon (2019) [^7] の核心だ。DDPM [^12] の逆拡散ステップも Langevin の離散化として解釈できる。
+
+### Z5 Quick Check
+
+**チェック 1**: 2峰分布 `$p(x) = 0.5\mathcal{N}(-3,1) + 0.5\mathcal{N}(3,1)$` に対して forward KL を最小化したガウス `$q^*$` の平均 `$\mu^*$` はいくらか？
+
+<details><summary>答え</summary>
+
+```math
+\mathbb{E}_p[x] = 0.5 \cdot (-3) + 0.5 \cdot 3 = 0
+```
+
+Forward KL の最小化解 `$\mu^* = \mathbb{E}_p[x] = 0$`。これは両峰の中間点。直感: `$p$` がいる場所（両峰）を全てカバーしようとした結果、どちらの峰にも属さない中点に落ちる。Z5.8 の数値実験で確認できる。
+</details>
+
+**チェック 2**: MLE は `$\sum_i \log p_\theta(x_i)$` を最大化する。これを `$-D_{KL}(\hat{p}_{\text{data}} \| p_\theta)$` の最大化として書けることを示せ。
+
+<details><summary>答え</summary>
+
+経験分布 `$\hat{p}(x) = \frac{1}{N}\sum_i \delta(x - x_i)$` を使うと:
+
+```math
+D_{KL}(\hat{p} \| p_\theta) = \sum_x \hat{p}(x) \log \frac{\hat{p}(x)}{p_\theta(x)} = \underbrace{H(\hat{p})}_{\text{定数}} - \mathbb{E}_{\hat{p}}[\log p_\theta(x)]
+```
+
+したがって `$\max_\theta \frac{1}{N}\sum_i \log p_\theta(x_i) \iff \min_\theta D_{KL}(\hat{p} \| p_\theta)$`。
+</details>
+
+**チェック 3**: Fisher 情報量 `$I(\theta) = -\mathbb{E}[\partial^2 \log p_\theta / \partial \theta^2]$` について、`$\mathcal{N}(\mu, \sigma^2)$` での `$I(\mu)$` を求めよ（`$\sigma^2$` は既知）。
+
+<details><summary>答え</summary>
+
+```math
+\log p(x|\mu) = -\frac{(x-\mu)^2}{2\sigma^2} + \text{const}
+```
+
+```math
+\frac{\partial \log p}{\partial \mu} = \frac{x-\mu}{\sigma^2}, \quad \frac{\partial^2 \log p}{\partial \mu^2} = -\frac{1}{\sigma^2}
+```
+
+```math
+I(\mu) = -\mathbb{E}\left[-\frac{1}{\sigma^2}\right] = \frac{1}{\sigma^2}
+```
+
+Cramér-Rao 下界: `$\text{Var}(\hat{\mu}) \geq \sigma^2/N$`（`$N$` サンプルの場合）。標本平均がこれを達成することが Z5.7 の数値実験で確認できる。
+</details>
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 自己診断と実験
+> Progress: 85%
 
-### 5.1 記号読解テスト
+## 🔬 Z5b. 実験ゾーン（30分）— 自己診断テスト
 
-:::details Q1: $\hat{\theta}_\text{MLE} = \arg\max_\theta \sum_{i=1}^{N} \log q_\theta(x_i)$ を日本語で読み上げてください
-「シータハット MLE は、シータについて、$i = 1$ から $N$ までの $\log q_\theta(x_i)$ の総和を最大化する引数。」
-意味: データの対数尤度を最大化するパラメータ値が MLE。Fisher (1922) [^1] が体系化した推定法。
-:::
+Z5b の目標: (a) 数式を「読める」（記号の意味と構造を日本語で説明できる）、(b) 数式を「書ける」（LaTeX で正確に再現できる）、(c) 数式を「実装できる」（コードと1:1対応できる）。この3層が揃ってはじめて「理解した」と言える。
 
-:::details Q2: $p_\theta(x_1, \ldots, x_T) = \prod_{t=1}^{T} p_\theta(x_t | x_{<t})$ は何を表す？
-自己回帰分解。同時分布を、各時刻の条件付き分布の積に分解する。GPT の言語モデルはこの形式で定義される。$x_t$ は $t$ 番目のトークン、$x_{<t}$ はそれ以前の全トークン。
-:::
+### Z5b.1 記号読解テスト
 
-:::details Q3: $D^*_G(x) = \frac{p_\text{data}(x)}{p_\text{data}(x) + p_g(x)}$ はどういう意味？
-GAN の最適判別器。$p_\text{data}(x)$ と $p_g(x)$ の比率に基づいて、入力が本物か偽物かを判定する。$p_g = p_\text{data}$ のとき $D^* = 0.5$（区別不能）。Goodfellow+ (2014) [^2] の定理1。
-:::
+<details><summary>Q1: `$\hat{\theta}_{MLE} = \arg\max_\theta \prod_{i=1}^N p_\theta(x_i)$`</summary>
 
-:::details Q4: $\text{FID} = \|\mu_r - \mu_g\|^2 + \text{Tr}(\Sigma_r + \Sigma_g - 2(\Sigma_r\Sigma_g)^{1/2})$ の各項は？
-第1項 $\|\mu_r - \mu_g\|^2$: 平均の差（特徴空間での「位置ずれ」）。第2項: 共分散の差（「形状の違い」）。$\text{Tr}$ はトレース（対角要素の和）。Heusel+ (2017) [^4] が提案。低いほど良い。
-:::
+**読み方**: シータハット サブ エムエルイー イコール アーグマックス シータ プロダクト アイ イコール1 トゥー N ピーサブシータ エックスアイ
 
-:::details Q5: $\nabla_x \log p(x)$ はなぜ正規化定数に依存しない？
-$\log p(x) = \log \tilde{p}(x) - \log Z$。$\nabla_x$ で微分すると $\log Z$ は定数なので消える: $\nabla_x \log p(x) = \nabla_x \log \tilde{p}(x)$。スコアベースモデル [^10] の核心。
-:::
+**意味**: 最尤推定量の定義。データ `$\mathcal{D}$` が与えられたとき、その生起確率（尤度）を最大にするパラメータ `$\theta$`。積は計算上対数和に変換（log-likelihood）。
+</details>
 
-:::details Q6: $\mathcal{L}_\text{simple} = \mathbb{E}_{t, x_0, \epsilon}[\|\epsilon - \epsilon_\theta(x_t, t)\|^2]$ はどんな損失？
-DDPM [^5] の simple loss。時刻 $t$ でノイズ $\epsilon$ を加えた $x_t$ から、ネットワーク $\epsilon_\theta$ がノイズを予測する。予測と真のノイズの MSE を最小化。denoising score matching と等価。
-:::
+<details><summary>Q2: `$I(\theta) = \mathbb{E}_{p_\theta}\left[\left(\frac{\partial \log p_\theta(x)}{\partial \theta}\right)^2\right]$`</summary>
 
-:::details Q7: $\text{IS} = \exp(\mathbb{E}_{x \sim p_g}[D_\text{KL}(p(y|x) \| p(y))])$ の直感は？
-各生成画像の分類確率 $p(y|x)$ が鋭く（品質が高い）、かつ全体の周辺分布 $p(y)$ が一様に近い（多様性が高い）とき、KL が大きくなり IS が高くなる。Salimans+ (2016) [^8]。最大値はクラス数。
-:::
+**読み方**: アイ シータ イコール エクスペクテーション ピーサブシータ ブラケット パーシャル ログ ピーサブシータ エックス パーシャル シータ スクエアード
 
-:::details Q8: 明示的推定量と暗黙的推定量の違いを一言で
-明示的推定量（Prescribed）: 尤度 $q_\theta(x)$ の値が計算可能。暗黙的推定量（Implicit）: 尤度は計算不能だがサンプリングは可能。Mohamed & Lakshminarayanan (2016) [^6] の分類。
-:::
+**意味**: Fisher 情報量。スコア関数（対数尤度の勾配）の分散。`$I(\theta)$` が大きいほど `$\theta$` 付近の尤度の「鋭さ」が高く、推定精度の上限が高い。Cramér-Rao 下界 `$\text{Var}(\hat{\theta}) \geq 1/I(\theta)$` を与える。
+</details>
 
-:::details Q9: $\log q_\theta(x) = \log p(f^{-1}(x)) + \log |\det \frac{\partial f^{-1}}{\partial x}|$ は何の式？
-Normalizing Flow [^7] の対数尤度。変数変換公式。$f$ は可逆変換、$p(z)$ は基底分布。ヤコビアンの行列式が体積変化を補正する。
-:::
+<details><summary>Q3: `$\sqrt{N}(\hat{\theta}_{MLE} - \theta_0) \xrightarrow{d} \mathcal{N}(0, I(\theta_0)^{-1})$`</summary>
 
-:::details Q10: $H(\hat{p}, q_\theta) = H(\hat{p}) + D_\text{KL}(\hat{p} \| q_\theta)$ がMLE に重要な理由は？
-CE 最小化 = KL 最小化の証明の核心。$H(\hat{p})$ はデータのエントロピーで $\theta$ に依存しないから、CE を最小化するパラメータは KL を最小化するパラメータと一致する。第6回の定理 3.4 と本講義の定理 3.2-3.3 を接続する式。
-:::
+**意味**: MLE の漸近正規性。真のパラメータ `$\theta_0$` 周りで、`$\sqrt{N}$` でスケールした MLE は漸近的にガウス分布に収束。共分散は `$I(\theta_0)^{-1}$` = Cramér-Rao 下界を達成（漸近有効性）。
+</details>
 
-### 5.2 LaTeX 記述テスト
+<details><summary>Q4: `$D_{KL}(p_{\text{data}} \| p_\theta) = H(p_{\text{data}}, p_\theta) - H(p_{\text{data}})$`</summary>
 
-:::details L1: MLE の定義を LaTeX で書いてください
-```latex
-\hat{\theta}_{\text{MLE}} = \arg\max_{\theta} \frac{1}{N} \sum_{i=1}^{N} \log q_{\theta}(x_i)
+**意味**: KL = Cross-Entropy - エントロピー。`$H(p_{\text{data}})$` は定数なので、KL 最小化 ⟺ Cross-Entropy 最小化 ⟺ MLE。三位一体の核心。
+</details>
+
+<details><summary>Q5: `$s_\theta(x) = \nabla_x \log p_\theta(x)$`</summary>
+
+**読み方**: スコア サブシータ エックス イコール グラジェント サブエックス ログ ピーサブシータ エックス
+
+**意味**: スコア関数（score function）。対数尤度の入力 `$x$` に関する勾配。`$p_\theta(x)$` の正規化定数が不要なため、計算できない分布でもスコア関数は推定できる。Score Matching の核心的アイデア。
+</details>
+
+<details><summary>Q6: `$z = f_\theta^{-1}(x),\; \log p_\theta(x) = \log p_z(z) + \log|\det J_{f^{-1}}(x)|$`</summary>
+
+**意味**: Normalizing Flow の変数変換公式。`$f_\theta$` が可逆変換（flow）のとき、`$x$` での密度は基底分布での密度＋Jacobian の対数行列式で計算できる。Jacobian が「体積変化率」を補正する。
+</details>
+
+<details><summary>Q7: `$\hat{p}_{data}(x) = \frac{1}{N}\sum_{i=1}^N \delta(x - x_i)$`</summary>
+
+**意味**: 経験分布（empirical distribution）。観測データ `$N$` 点を等重みのデルタ関数で表した分布。`$N \to \infty$` で真の `$p_{data}(x)$` に弱収束する。MLE は `$KL(\hat{p}_{data} \| p_\theta)$` を最小化することと等価。
+</details>
+
+### Z5b.2 LaTeX ライティングテスト
+
+<details><summary>Q1: MLE の三位一体（3つの等価な目的関数）</summary>
+
+```math
+\hat{\theta}_{MLE} = \arg\max_\theta \sum_{i=1}^N \log p_\theta(x_i)
+= \arg\min_\theta H(p_{\text{data}}, p_\theta)
+= \arg\min_\theta D_{KL}(p_{\text{data}} \| p_\theta)
 ```
-:::
+</details>
 
-:::details L2: GAN の目的関数を LaTeX で書いてください
-```latex
-\min_G \max_D \mathbb{E}_{x \sim p_{\text{data}}}[\log D(x)] + \mathbb{E}_{z \sim p(z)}[\log(1 - D(G(z)))]
+<details><summary>Q2: Cramér-Rao 下界（スカラー版）</summary>
+
+```math
+\text{Var}(\hat{\theta}) \geq \frac{1}{I(\theta)} = \left(\mathbb{E}\left[\left(\frac{\partial \log p_\theta}{\partial \theta}\right)^2\right]\right)^{-1}
 ```
-:::
+</details>
 
-:::details L3: FID の定義を LaTeX で書いてください
-```latex
-\text{FID} = \|\mu_r - \mu_g\|^2 + \text{Tr}\left(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2}\right)
+<details><summary>Q3: Score Matching 目的関数（積分by parts後）</summary>
+
+```math
+J(\theta) = \mathbb{E}_{p_{\text{data}}}\left[\frac{1}{2}\|s_\theta(x)\|^2 + \text{tr}(\nabla_x s_\theta(x))\right]
 ```
-:::
+</details>
 
-:::details L4: 変数変換公式（Flow）を LaTeX で書いてください
-```latex
-\log q_{\theta}(x) = \log p(f^{-1}(x)) + \log \left|\det \frac{\partial f^{-1}}{\partial x}\right|
+<details><summary>Q4: FID の定義（ガウス近似）</summary>
+
+```math
+\text{FID}(p_r, p_g) = \|\mu_r - \mu_g\|_2^2 + \text{Tr}\left(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2}\right)
 ```
-:::
+</details>
 
-:::details L5: DDPM の損失関数を LaTeX で書いてください
-```latex
-\mathcal{L}_{\text{simple}} = \mathbb{E}_{t, x_0, \epsilon}\left[\|\epsilon - \epsilon_{\theta}(x_t, t)\|^2\right]
-```
-:::
+<details><summary>Q5: MAP 推定の目的関数（ガウス事前分布）</summary>
 
-### 5.3 コード翻訳テスト
-
-:::details C1: $\hat{\mu}_\text{MLE} = \frac{1}{N}\sum_{i=1}^{N} x_i$ を Python で
-```python
-mu_mle = np.mean(data)
-# or explicitly: mu_mle = np.sum(data) / len(data)
-```
-:::
-
-:::details C2: $D_\text{KL}(p \| q) = \sum_x p(x) \log \frac{p(x)}{q(x)}$ を Python で
-```python
-kl = np.sum(p * np.log(p / (q + 1e-10)))
-# with numerical stability: kl = np.sum(p * (np.log(p + 1e-10) - np.log(q + 1e-10)))
-```
-:::
-
-:::details C3: Softmax $p_i = \frac{e^{z_i}}{\sum_j e^{z_j}}$ を数値安定に Python で
-```python
-def softmax(z):
-    z_shifted = z - np.max(z)  # numerical stability
-    exp_z = np.exp(z_shifted)
-    return exp_z / exp_z.sum()
-```
-:::
-
-:::details C4: Cross-Entropy Loss $\mathcal{L} = -\frac{1}{N}\sum_{i=1}^{N} \log q_\theta(x_i)$ を Python で
-```python
-ce_loss = -np.mean(np.log(q_theta(data) + 1e-10))
-```
-:::
-
-:::details C5: Reparameterization trick $z = \mu + \sigma \odot \epsilon, \quad \epsilon \sim \mathcal{N}(0, I)$ を Python で
-```python
-epsilon = np.random.normal(0, 1, size=mu.shape)
-z = mu + sigma * epsilon  # gradient flows through mu and sigma
-```
-:::
-
-### 5.4 MLE 実験: 分布フィッティング比較
-
-```python
-import numpy as np
-from scipy import stats
-
-np.random.seed(42)
-
-# True distributions to fit
-distributions = {
-    "Normal(3, 2)": np.random.normal(3, 2, 5000),
-    "Exponential(2)": np.random.exponential(2, 5000),
-    "Bimodal": np.concatenate([np.random.normal(-2, 0.5, 2500),
-                                np.random.normal(3, 1, 2500)]),
-    "Uniform(0,5)": np.random.uniform(0, 5, 5000),
-    "Heavy-tailed (t, df=3)": np.random.standard_t(3, 5000),
-}
-
-# Fit single Gaussian via MLE to each
-print(f"{'Distribution':>25} {'μ̂':>8} {'σ̂':>8} {'KL approx':>12}")
-print("-" * 56)
-
-for name, data in distributions.items():
-    mu_hat = np.mean(data)
-    sigma_hat = np.std(data)
-
-    # Approximate KL via histogram
-    bins = np.linspace(data.min() - 1, data.max() + 1, 200)
-    hist, bin_edges = np.histogram(data, bins=bins, density=True)
-    centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    q_model = stats.norm.pdf(centers, mu_hat, sigma_hat)
-
-    mask = (hist > 1e-10) & (q_model > 1e-10)
-    dx = centers[1] - centers[0]
-    kl = np.sum(hist[mask] * np.log(hist[mask] / q_model[mask]) * dx)
-
-    print(f"{name:>25} {mu_hat:8.3f} {sigma_hat:8.3f} {kl:12.4f}")
-
-print("\n→ Gaussian MLE works well for Normal data, poorly for Bimodal/Heavy-tailed")
-print("→ Model family MATTERS. MLE finds the best within the family, not the best overall.")
+```math
+\hat{\theta}_{MAP} = \arg\max_\theta \left[\sum_{i=1}^N \log p_\theta(x_i) - \frac{\|\theta\|^2}{2\tau^2}\right]
+= \arg\min_\theta \left[-\sum_{i=1}^N \log p_\theta(x_i) + \frac{\lambda}{2}\|\theta\|^2\right]
 ```
 
-### 5.5 推定量の分類チャート作成
+ここで `$\lambda = 1/\tau^2$` は L2 正則化係数。
+</details>
 
-```python
-# Create comprehensive estimator taxonomy (by likelihood access)
-taxonomy = {
-    "Explicit Estimators (Prescribed)": {
-        "Autoregressive": {
-            "examples": ["GPT", "PixelCNN", "WaveNet"],
-            "density": "exact (product of conditionals)",
-            "sampling": "sequential (slow)",
-            "papers": ["van den Oord+ 2016"],
-        },
-        "VAE": {
-            "examples": ["VAE", "β-VAE", "VQ-VAE", "Hierarchical VAE"],
-            "density": "lower bound (ELBO)",
-            "sampling": "one-shot (fast)",
-            "papers": ["Kingma & Welling 2013"],
-        },
-        "Normalizing Flow": {
-            "examples": ["NICE", "Real NVP", "Glow", "Neural ODE"],
-            "density": "exact (change of variables)",
-            "sampling": "one-shot (fast)",
-            "papers": ["Dinh+ 2014", "Rezende & Mohamed 2015"],
-        },
-    },
-    "Implicit Estimators": {
-        "GAN": {
-            "examples": ["GAN", "DCGAN", "StyleGAN", "BigGAN"],
-            "density": "not available",
-            "sampling": "one-shot (fast)",
-            "papers": ["Goodfellow+ 2014"],
-        },
-    },
-    "Score Estimators": {
-        "Score Matching": {
-            "examples": ["NCSN", "Sliced Score Matching"],
-            "density": "not directly (score only)",
-            "sampling": "Langevin dynamics (slow)",
-            "papers": ["Song & Ermon 2019"],
-        },
-        "Diffusion": {
-            "examples": ["DDPM", "DDIM", "Stable Diffusion", "DALL-E 2"],
-            "density": "lower bound (variational)",
-            "sampling": "iterative denoising (slow, improving)",
-            "papers": ["Sohl-Dickstein+ 2015", "Ho+ 2020"],
-        },
-    },
-}
+<details><summary>Q6: Rejection Sampling の受理確率</summary>
 
-for category, subcategories in taxonomy.items():
-    print(f"\n{'='*60}")
-    print(f"  {category}")
-    print(f"{'='*60}")
-    for name, info in subcategories.items():
-        print(f"\n  {name}")
-        for key, val in info.items():
-            if isinstance(val, list):
-                print(f"    {key}: {', '.join(val)}")
-            else:
-                print(f"    {key}: {val}")
+```math
+\Pr(\text{accept}) = \frac{p(x)}{M q(x)}, \quad \mathbb{E}[\text{accept}] = \frac{1}{M}
 ```
 
-### 5.6 ミニプロジェクト: 1D 推定量比較
+より正確に: `$\int \frac{p(x)}{Mq(x)} q(x)dx = \frac{1}{M}\int p(x)dx = \frac{1}{M}$`
+</details>
 
-```python
-import numpy as np
-from scipy import stats
+<details><summary>Q7: Importance Sampling 推定量</summary>
 
-np.random.seed(42)
-
-# ========================================
-# Mini-project: Compare generative approaches on 1D data
-# ========================================
-
-# True distribution: mixture of 3 Gaussians
-def sample_true(n):
-    components = np.random.choice(3, size=n, p=[0.3, 0.4, 0.3])
-    mus = [-3, 1, 5]
-    sigmas = [0.6, 0.8, 0.5]
-    return np.array([np.random.normal(mus[c], sigmas[c]) for c in components])
-
-def true_density(x):
-    return (0.3 * stats.norm.pdf(x, -3, 0.6) +
-            0.4 * stats.norm.pdf(x, 1, 0.8) +
-            0.3 * stats.norm.pdf(x, 5, 0.5))
-
-data = sample_true(5000)
-
-# === Approach 1: MLE with single Gaussian ===
-mu1 = np.mean(data)
-sig1 = np.std(data)
-model1_density = lambda x: stats.norm.pdf(x, mu1, sig1)
-
-# === Approach 2: MLE with Gaussian Mixture (3 components, simple EM) ===
-# Initialize
-mus = np.array([-2.0, 0.0, 4.0])
-sigs = np.array([1.0, 1.0, 1.0])
-pis = np.array([1/3, 1/3, 1/3])
-
-for _ in range(100):  # EM iterations
-    # E-step
-    resp = np.zeros((len(data), 3))
-    for k in range(3):
-        resp[:, k] = pis[k] * stats.norm.pdf(data, mus[k], sigs[k])
-    resp /= resp.sum(axis=1, keepdims=True) + 1e-300
-
-    # M-step
-    Nk = resp.sum(axis=0)
-    for k in range(3):
-        mus[k] = np.sum(resp[:, k] * data) / (Nk[k] + 1e-10)
-        sigs[k] = np.sqrt(np.sum(resp[:, k] * (data - mus[k])**2) / (Nk[k] + 1e-10))
-        sigs[k] = max(sigs[k], 0.01)
-        pis[k] = Nk[k] / len(data)
-
-order = np.argsort(mus)
-model2_density = lambda x: sum(pis[k] * stats.norm.pdf(x, mus[k], sigs[k]) for k in range(3))
-
-# === Approach 3: KDE (Nonparametric) ===
-bandwidth = 0.3
-model3_density = lambda x: sum(stats.norm.pdf(x, xi, bandwidth) for xi in data) / len(data)
-
-# === Evaluate: KL divergence approximation ===
-x_eval = np.linspace(-6, 8, 2000)
-p_true = true_density(x_eval)
-dx = x_eval[1] - x_eval[0]
-
-def approx_kl(p, q_fn, x_grid, dx):
-    q = np.array([q_fn(xi) for xi in x_grid]) if callable(q_fn) else q_fn
-    mask = (p > 1e-10) & (q > 1e-10)
-    return np.sum(p[mask] * np.log(p[mask] / q[mask]) * dx)
-
-# Model 1 evaluation
-q1 = model1_density(x_eval)
-kl1 = approx_kl(p_true, q1, x_eval, dx)
-
-# Model 2 evaluation
-q2 = np.array([model2_density(xi) for xi in x_eval])
-kl2 = approx_kl(p_true, q2, x_eval, dx)
-
-# Model 3 evaluation (vectorized for speed)
-q3 = np.zeros_like(x_eval)
-for xi in data[:500]:  # subsample for speed
-    q3 += stats.norm.pdf(x_eval, xi, bandwidth)
-q3 /= 500
-kl3 = approx_kl(p_true, q3, x_eval, dx)
-
-print("=== 1D Generative Model Comparison ===")
-print(f"{'Model':>20} {'KL(p||q)':>12} {'Verdict':>20}")
-print("-" * 55)
-print(f"{'Single Gaussian':>20} {kl1:12.4f} {'Underfitting':>20}")
-print(f"{'GMM (K=3)':>20} {kl2:12.4f} {'Good fit':>20}")
-print(f"{'KDE (h=0.3)':>20} {kl3:12.4f} {'Nonparametric fit':>20}")
-
-print(f"\nGMM recovered parameters (sorted by μ):")
-for i, k in enumerate(order):
-    print(f"  Component {i}: π={pis[k]:.3f}, μ={mus[k]:.3f}, σ={sigs[k]:.3f}")
-print(f"True:          π=[0.30, 0.40, 0.30], μ=[-3, 1, 5], σ=[0.6, 0.8, 0.5]")
+```math
+\mathbb{E}_{p(x)}[f(x)] = \int f(x) p(x) dx = \int f(x) \frac{p(x)}{q(x)} q(x) dx \approx \frac{1}{N} \sum_{i=1}^N f(x_i) w_i
 ```
 
-### 5.7 ミニプロジェクト: Langevin Dynamics サンプリング
+`$w_i = p(x_i) / q(x_i)$` は重み（importance weight）。
+</details>
 
-```python
-import numpy as np
+<details><summary>Q8: Normalizing Flow の変数変換公式</summary>
 
-def langevin_sampling_2d(score_fn, n_samples=500, step_size=0.01, n_steps=1000):
-    """
-    Langevin dynamics in 2D:
-    x_{t+1} = x_t + η · ∇ log p(x_t) + √(2η) · noise
-    """
-    # Initialize from broad distribution
-    x = np.random.randn(n_samples, 2) * 5
-    trajectory = [x.copy()]
-
-    for t in range(n_steps):
-        score = score_fn(x)
-        noise = np.random.randn(*x.shape)
-        x = x + step_size * score + np.sqrt(2 * step_size) * noise
-        if t % 100 == 0:
-            trajectory.append(x.copy())
-
-    return x, trajectory
-
-# Target: mixture of 4 Gaussians in 2D
-means = np.array([[-3, -3], [-3, 3], [3, -3], [3, 3]])
-sigma = 0.7
-
-def score_gmm(x):
-    """Score function ∇_x log p(x) for 2D GMM"""
-    # p(x) = (1/4) Σ N(x; μ_k, σ²I)
-    # ∇ log p(x) = Σ w_k(x) · (-(x - μ_k)/σ²)
-    # where w_k(x) = N(x;μ_k,σ²I) / Σ_j N(x;μ_j,σ²I)
-    densities = np.zeros((x.shape[0], 4))
-    for k in range(4):
-        diff = x - means[k]
-        densities[:, k] = np.exp(-0.5 * np.sum(diff**2, axis=1) / sigma**2)
-
-    weights = densities / (densities.sum(axis=1, keepdims=True) + 1e-300)
-
-    score = np.zeros_like(x)
-    for k in range(4):
-        score += weights[:, k:k+1] * (-(x - means[k]) / sigma**2)
-
-    return score
-
-# Run Langevin dynamics
-np.random.seed(42)
-final_samples, trajectory = langevin_sampling_2d(score_gmm, n_samples=500,
-                                                  step_size=0.005, n_steps=2000)
-
-# Analyze results
-print("=== Langevin Dynamics Sampling (2D GMM) ===")
-print(f"Target: 4 Gaussians at {means.tolist()}, σ={sigma}")
-print(f"\nFinal sample statistics:")
-print(f"  Mean: [{final_samples[:, 0].mean():.2f}, {final_samples[:, 1].mean():.2f}]")
-print(f"  Std:  [{final_samples[:, 0].std():.2f}, {final_samples[:, 1].std():.2f}]")
-
-# Check if samples are near the modes
-for k, mu in enumerate(means):
-    near_mode = np.sum(np.linalg.norm(final_samples - mu, axis=1) < 2 * sigma)
-    print(f"  Near mode {k} ({mu}): {near_mode} samples ({near_mode/500*100:.1f}%)")
-
-print(f"\nTrajectory: {len(trajectory)} snapshots over 2000 steps")
-print(f"→ Score-based sampling works! Samples converge to modes.")
-print(f"→ This is how NCSN [Song & Ermon 2019] generates images.")
+```math
+\log p_\theta(x) = \log p_z(f_\theta^{-1}(x)) + \log \left|\det \frac{\partial f_\theta^{-1}}{\partial x}\right|
 ```
 
-### 5.8 ミニプロジェクト: MLE vs MAP 推定の比較
+1次元アフィン変換 `$x = \mu + \sigma z$` の場合: `$\log p_\theta(x) = \log \mathcal{N}\left(\frac{x-\mu}{\sigma}; 0, 1\right) - \log \sigma$`
+</details>
 
-```python
-import numpy as np
-from scipy import stats
+### Z5b.3 数式翻訳テスト
 
-np.random.seed(42)
+<details><summary>Q1: MLE の最適化問題を数式で書け</summary>
 
-# Small sample MLE vs MAP comparison
-# True: μ = 5.0, σ = 1.0
-true_mu = 5.0
-true_sigma = 1.0
-
-# Prior for MAP: μ ~ N(0, τ²) with τ = 3
-prior_mu = 0.0
-prior_tau = 3.0
-
-print(f"True μ = {true_mu}, True σ = {true_sigma}")
-print(f"Prior: μ ~ N({prior_mu}, {prior_tau}²)")
-print()
-print(f"{'N':>5} {'MLE μ̂':>10} {'MAP μ̂':>10} {'MLE err':>10} {'MAP err':>10} {'Better':>8}")
-print("-" * 58)
-
-for N in [2, 5, 10, 20, 50, 100, 1000]:
-    mle_errors = []
-    map_errors = []
-    n_trials = 2000
-
-    for _ in range(n_trials):
-        data = np.random.normal(true_mu, true_sigma, N)
-
-        # MLE
-        mu_mle = np.mean(data)
-
-        # MAP with Gaussian prior
-        # Posterior: N(μ_MAP, σ_MAP²)
-        # μ_MAP = (N/σ² · x̄ + 1/τ² · μ_0) / (N/σ² + 1/τ²)
-        precision_lik = N / true_sigma**2
-        precision_prior = 1.0 / prior_tau**2
-        mu_map = (precision_lik * mu_mle + precision_prior * prior_mu) / \
-                 (precision_lik + precision_prior)
-
-        mle_errors.append((mu_mle - true_mu)**2)
-        map_errors.append((mu_map - true_mu)**2)
-
-    mle_mse = np.mean(mle_errors)
-    map_mse = np.mean(map_errors)
-    better = "MAP" if map_mse < mle_mse else "MLE"
-
-    print(f"{N:5d} {np.mean([np.random.normal(true_mu, true_sigma, N).mean() for _ in range(100)]):10.3f} "
-          f"{'—':>10} {mle_mse:10.4f} {map_mse:10.4f} {better:>8}")
-
-print("\n→ MAP wins with small N (prior helps), MLE wins with large N (data dominates)")
-print("→ MAP = MLE + regularization. This is why weight decay works in deep learning.")
+```math
+\hat{\theta}_{MLE} = \arg\max_{\theta} \sum_{i=1}^N \log p_\theta(x_i)
+                   = \arg\min_{\theta} \underbrace{-\frac{1}{N}\sum_{i=1}^N \log p_\theta(x_i)}_{\text{NLL}(\theta)}
 ```
 
-### 5.9 自己チェックリスト
+`$\log$` の単調性により `$\arg\max$` は `$\arg\min \mathrm{NLL}$` と等価。`$\mathrm{NLL} \geq 0$`（確率密度なので `$p_\theta(x) \leq 1$` とは限らないが、連続分布の場合は自然にNLLが正になることが多い）。
 
-```
-- [ ] MLE の定義を式と言葉の両方で説明できる
-- [ ] MLE = CE 最小化 = KL 最小化の等価性を導出できる
-- [ ] Fisher の漸近3性質（一致性・漸近正規性・有効性）を説明できる
-- [ ] Prescribed model と Implicit model の違いを説明できる
-- [ ] MLE の4変形（変分/暗黙的/変数変換/スコア）の損失関数を書ける
-- [ ] FID の計算式と直感的意味を説明できる
-- [ ] IS と CMMD の違いを説明できる
-- [ ] Mode-covering と mode-seeking の違いを図で説明できる
-- [ ] GAN の最適判別器を導出できる
-- [ ] スコア関数が正規化定数に依存しない理由を説明できる
-- [ ] LLM 訓練が MLE であることを式で示せる
-- [ ] 次元の呪いが密度推定に与える影響を説明できる
+</details>
+
+<details><summary>Q2: Fisher 情報量の定義と解釈</summary>
+
+```math
+I(\theta) = \mathbb{E}_{p_\theta(x)}\!\left[\left(\frac{\partial \log p_\theta(x)}{\partial \theta}\right)^2\right]
+           = -\mathbb{E}_{p_\theta(x)}\!\left[\frac{\partial^2 \log p_\theta(x)}{\partial \theta^2}\right]
 ```
 
-:::message
-**進捗: 85% 完了** — 自己診断テスト完了。ここから発展ゾーンへ。
-:::
+スコア `$s(\theta; x) = \partial_\theta \log p_\theta(x)$` の分散 = `$I(\theta)$`。スコアの期待値はゼロ（`$\mathbb{E}[s] = 0$`）なので、Fisher 情報量は「スコアのバラつき」そのもの。CRB: `$\mathrm{Var}[\hat{\theta}] \geq 1/I(\theta)$`。
+
+</details>
+
+<details><summary>Q3: Forward KL を積分形式で書け</summary>
+
+```math
+D_{KL}(p \| q_\theta) = \int p(x) \log\frac{p(x)}{q_\theta(x)}\,dx
+                       = \underbrace{\mathbb{E}_{p}[\log p(x)]}_{\text{定数（}\theta\text{によらない）}} - \mathbb{E}_{p}[\log q_\theta(x)]
+```
+
+`$\theta$` に関する最小化では定数項を無視できるので、`$\min_\theta D_{KL}(p\|q_\theta) \Leftrightarrow \max_\theta \mathbb{E}_p[\log q_\theta(x)]$` = MLE（`$p$` のサンプルを観測データと見なせば）。
+
+</details>
+
+<details><summary>Q4: MAP 推定の目的関数（ガウス事前分布の場合）</summary>
+
+```math
+\hat{\theta}_{MAP} = \arg\max_\theta \underbrace{\sum_{i=1}^N \log p_\theta(x_i)}_{\text{対数尤度}} + \underbrace{\log p(\theta)}_{\text{対数事前分布}}
+```
+
+ガウス事前分布 `$p(\theta) = \mathcal{N}(0, \tau^2 I)$` のとき:
+
+```math
+\log p(\theta) = -\frac{1}{2\tau^2}\|\theta\|^2 + \mathrm{const}
+```
+
+よって MAP = NLL + L2 正則化(`$\lambda = 1/\tau^2$`)。`$\tau^2 \to \infty$`（事前分布が無情報）なら MAP → MLE。
+
+</details>
+
+<details><summary>Q5: Reparameterization Trick の数式</summary>
+
+```math
+z \sim q_\phi(z|x) = \mathcal{N}(\mu_\phi(x),\, \sigma_\phi^2(x) I)
+\quad\Rightarrow\quad
+z = \mu_\phi(x) + \sigma_\phi(x) \odot \epsilon, \quad \epsilon \sim \mathcal{N}(0, I)
+```
+
+記号↔変数: `$\mu_\phi$` = `mu`, `$\sigma_\phi = \exp(\texttt{log\_sigma})$`, `$\epsilon$` = `eps`。Shape: `(batch, latent_dim)`。勾配は `$\mu_\phi, \sigma_\phi$` を通じて流れる; `$\epsilon$` はランダムノードなので切断。
+
+</details>
+
+<details><summary>Q6: Normalizing Flow の変数変換公式</summary>
+
+```math
+\log p_\theta(x) = \log p_z(f_\theta^{-1}(x)) + \log\left|\det \frac{\partial f_\theta^{-1}}{\partial x}\right|
+```
+
+1次元アフィン `$f: z \mapsto \mu + \sigma z$` なら `$f^{-1}(x) = (x-\mu)/\sigma$`、Jacobian = `$1/\sigma$`、よって:
+
+```math
+\log p_\theta(x) = \log \mathcal{N}\!\left(\frac{x-\mu}{\sigma}; 0, 1\right) - \log \sigma
+```
+
+d次元への一般化は `$\log|\det J|$` の効率的計算（RealNVP なら `$O(d)$`、一般行列なら `$O(d^3)$`）が鍵。
+
+</details>
+
+### Z5b.4 自己チェックリスト
+
+**理論チェック（Part1 内容）**
+- [ ] MLE の定義（最尤推定量の式）を書ける
+- [ ] `$\log \prod p_\theta(x_i) = \sum \log p_\theta(x_i)$` の変換理由を説明できる
+- [ ] MLE = Cross-Entropy 最小化の等価性証明を再現できる
+- [ ] MLE = KL 最小化の等価性証明を再現できる
+- [ ] Fisher 情報量の定義を書ける
+- [ ] Cramér-Rao 下界を Fisher 情報量で表現できる
+- [ ] 漸近正規性（`$\sqrt{N}(\hat{\theta} - \theta_0) \to \mathcal{N}(0, I^{-1})$`）を説明できる
+- [ ] Forward KL と Reverse KL の違いを期待値の観点から説明できる
+- [ ] Mode-Covering (VAE) と Mode-Seeking (GAN) の数値的挙動の違いを説明できる
+- [ ] Score Matching が尤度不要な理由（積分 by parts）を説明できる
+- [ ] Rejection Sampling の受理率が `$1/M$` に比例することを説明できる
+- [ ] FID の「行列平方根」が必要な理由を説明できる
+
+**実装チェック（Part2 内容）**
+- [ ] `log_prob` 関数が `sum(log p_theta(x_i))` を正しく返すことを検算できる
+- [ ] Forward KL と Reverse KL を同じデータで数値最適化して差を確認できる
+- [ ] Z5.7 の Cramér-Rao 検証で Fisher 情報量の逆数 ≤ 標本分散を確認できる
+- [ ] Z5.11 の MAP 推定で `tau2 → ∞` のとき MLE に収束することを確認できる
+- [ ] Z5.12 の Reparameterization で shape `(batch, latent_dim)` を正しくトレースできる
+- [ ] Z5.13 のアフィン NF で MLE の解析解と数値解が一致することを確認できる
+- [ ] Z5.14 の比較実験で NF-affine が二峰データで失敗する理由を説明できる
+
+**高度なチェック（余裕がある人向け）**
+- [ ] `$p(x) = \int p(x|z)p(z)dz$` が解析不可能な例を3つ挙げられる
+- [ ] MLE が「ガウス族」ではない分布（例: Cauchy）に対して何が起きるかを説明できる
+- [ ] FID の sampling bias `$O(1/n_g)$` と その補正方法を説明できる
+
+**採点基準**: 17問以上 ✅ 完全習得 | 12-16問 ⚡ 苦手分野を再実装 | 11問未満 📚 Z5 全体を再実施
+
+### Z5b.5 実装チャレンジ — GMM MLE vs EM の収束比較
+
+Z5.4 の gradient-based MLE と第8回のEM アルゴリズムを比較するための準備実験。
+
+**タスク**: `n=500` の2峰データ（`N(-3,1)` と `N(3,1)` の等重み混合）で GMM MLE を実行し:
+1. 初期値 `p0 = [0, 0, 0, 0, 0]` からの収束を確認
+2. `optimize.minimize` の反復回数 (`res.nit`) を記録
+3. 「潜在変数なしで gradient descent はなぜ難しいか」を考察
+
+**考察の指針**: GMM の対数尤度関数:
+
+```math
+\ell(\theta) = \sum_{i=1}^N \log\left[\pi_1 \mathcal{N}(x_i|\mu_1, \sigma_1^2) + \pi_2 \mathcal{N}(x_i|\mu_2, \sigma_2^2)\right]
+```
+
+は `$(\mu_1, \mu_2)$` の入れ替えに対して対称なため、`$\hat{\mu}_1 = -3, \hat{\mu}_2 = 3$` と `$\hat{\mu}_1 = 3, \hat{\mu}_2 = -3$` の2つのグローバル最大値がある。さらに、`$\sigma_k \to 0$` のとき「1点に集中した成分」が尤度を `$+\infty$` にできる縮退解（degenerate solution）が存在する。
+
+**初期値依存性の数値証拠**: 初期値を変えると異なる解に収束する:
+
+| 初期 `$(\mu_1, \mu_2)$` | 収束先 `$(\hat{\mu}_1, \hat{\mu}_2)$` |
+|:---|:---|
+| `(0, 0)` | `(-3, 3)` or `(3, -3)` どちらか（不定） |
+| `(-1, 1)` | `(-3, 3)` になりやすい |
+| `(1, -1)` | `(3, -3)` になりやすい |
+| `(-4, 4)` | `(-3, 3)` 安定 |
+
+**EM アルゴリズムとの差異**: EM の E-step は「各データ点が各成分に属する確率（責任度）」を計算し、M-step はその確率に重み付けして各成分を独立に最適化する。これにより、対称性の罠を避けやすくなる。さらに EM の M-step では `$\sigma_k \to 0$` の縮退が起きないよう、各成分が少なくとも1点を担当することを保証できる。
+
+**期待される結論**: GMM の尤度は多峰的なため、勾配法は初期値依存。EM は各ステップで単調増加が保証される（Jensen 不等式）— これが第8回の動機。
+
+### Z5b.6 実装チャレンジ — KDE (Kernel Density Estimation) との比較
+
+MLE のパラメトリックアプローチの代替であるノンパラメトリック KDE の数学的本質を理解する。
+
+```math
+\hat{p}_{KDE}(x) = \frac{1}{Nh} \sum_{i=1}^N K\left(\frac{x - x_i}{h}\right), \quad K(u) = \frac{1}{\sqrt{2\pi}} e^{-u^2/2}
+```
+
+記号↔変数: `$h$` = bandwidth, `$K$` = Gaussian kernel, `$N$` = データ数, `$\hat{p}_{KDE}$` = 推定密度。
+
+**bandwidth の影響**:
+- `$h \to 0$`: 各データ点にデルタ関数（過学習 — 訓練データでは完璧、未見データでは失敗）
+- `$h \to \infty$`: 均一分布（過平滑化）
+- 最適 `$h$`（Silverman則）: `$h^* = \left(\frac{4\hat{\sigma}^5}{3N}\right)^{1/5} \approx 1.06\hat{\sigma}N^{-1/5}$`
+
+`$N=400$` データ、`$\hat{\sigma} = 3$` なら `$h^* \approx 1.06 \times 3 \times 400^{-0.2} \approx 0.97$`。
+
+**数値確認**: 任意の `$h > 0$` に対して `$\int \hat{p}_{KDE}(x)\,dx = 1$` が成立する（各カーネルの積分が1なので総和も1）。h=0.2, 0.5, 2.0 のいずれでも積分は `≈ 1.000`。
+
+KDE の根本的な限界: 評価時のコストが `$O(N)$`（N点全てとの距離計算）、密度推定が `$O(N^2)$` メモリ（差分行列）。高次元では「次元の呪い」で有効なバンド幅が指数的に縮小 — `$d=100$` なら `$h \propto N^{-1/104}$` と収束が極めて遅い。これが暗黙的生成モデル（GAN）の動機だ。
+
+### Z5b.7 進捗トラッカー
+
+| 項目 | 完了 | メモ |
+|:-----|:----:|:-----|
+| Part1 Z1: GMM MLE限界の体感 | ☐ | |
+| Part1 Z2: 5トピック概観（比較表） | ☐ | |
+| Part1 Z3: 生成モデルの統一原理 | ☐ | |
+| Part1 Z4 T1: MLE 三位一体証明 | ☐ | |
+| Part1 Z4 T2: Fisher情報量・CRB | ☐ | |
+| Part1 Z4 T3: 明示的/暗黙的MLE | ☐ | |
+| Part1 Z4 T4: サンプリング理論 | ☐ | |
+| Part1 Z4 T5: Score Matching理論 | ☐ | |
+| Part2 Z5.1: CE最小化=MLE の実装 | ☐ | |
+| Part2 Z5.2: Forward/Reverse KL比較 | ☐ | |
+| Part2 Z5.3: FID 実装（行列平方根） | ☐ | |
+| Part2 Z5.4: GMM MLE 実装 | ☐ | |
+| Part2 Z5.5: Score Matching 実装 | ☐ | |
+| Part2 Z5.6: Rejection/IS サンプリング | ☐ | |
+| Part2 Z5.7: Cramér-Rao 数値検証 | ☐ | |
+| Part2 Z5.8: Mode-Seeking/Covering実験 | ☐ | |
+| Part2 Z5.11: MAP vs MLE 比較 | ☐ | |
+| Part2 Z5.12: Reparameterization Trick | ☐ | |
+| Part2 Z5 Quick Check 3問全正解 | ☐ | |
+| Part2 Z5b 自己チェック 11問以上 | ☐ | |
+| Part2 Z6 arXiv論文 3本読んだ | ☐ | |
+| Part2 Z7 FAQ 全読み | ☐ | |
+| PB: パラダイム転換の問いに自分の答え | ☐ | |
+
+**完了率**: `__/23 項目`
 
 ---
 
-## 🚀 6. 振り返りゾーン（30分）— まとめと次回予告
+> Progress: 85%
 
-### 6.3 統計的距離の問題点と最新動向 — MLE beyond i.i.d.
+## 🔬 Z6. 新たな冒険へ（20分）— 統計推論の研究フロンティア
 
-FID [^4] は事実上の標準的統計的距離だが、深刻な問題がある。
+本セクションの全引用は arXiv 論文のみ。
 
-```python
-# FID's problems
-problems = {
-    "Inception-v3 が古い": {
-        "issue": "2015年のモデル。CLIP/DINO が遥かに良い特徴量を抽出",
-        "impact": "テクスチャ偏重、セマンティクス軽視",
-        "alternative": "FD-DINOv2, CMMD (CLIP-based)"
-    },
-    "ガウス仮定": {
-        "issue": "特徴量がガウス分布に従う仮定は一般に不正確",
-        "impact": "多峰的な特徴分布で不正確",
-        "alternative": "CMMD (カーネル法、分布仮定なし)"
-    },
-    "サンプルバイアス": {
-        "issue": "FID は N に依存するバイアスを持つ",
-        "impact": "サンプル数が少ないと不当に高い FID",
-        "alternative": "CMMD (不偏推定量)"
-    },
-    "人間判断との不一致": {
-        "issue": "FID が低いのに人間には低品質に見える場合がある",
-        "impact": "評価指標の信頼性低下",
-        "alternative": "CMMD + 人間評価の組み合わせ"
-    },
-}
-
-for name, info in problems.items():
-    print(f"\n問題: {name}")
-    for key, val in info.items():
-        print(f"  {key}: {val}")
+```mermaid
+graph LR
+    A["Fisher 1922<br/>MLE誕生"] --> B["Cramér-Rao 1945<br/>推定理論完成"]
+    B --> C["Kullback-Leibler 1951<br/>KL=MLE接続"]
+    C --> D["Hyvärinen 2005<br/>Score Matching"]
+    D --> E["Ho+ 2020<br/>DDPM"]
+    C --> F["Goodfellow+ 2014<br/>GAN"]
+    C --> G["Kingma+ 2013<br/>VAE"]
+    E --> H["現在: Flow Matching<br/>Diffusion統一"]
 ```
 
-Jayasumana+ (2024) [^9] は CMMD を提案し、これらの問題の多くを解決した。CMMD は CLIP 特徴量 + ガウス RBF カーネルの MMD で、不偏推定量かつ分布仮定不要。
+### Z6.1 MLE を超える生成モデルの評価
 
-### 6.4 推定量の漸近比較
+**CMMD (Clean Maximum Mean Discrepancy)** [^10]: FID の問題点（Inception-V3の偏り・バッチサイズ依存・ランダム変動大）を改善する評価指標。
 
-| 推定量の特性 | 変分MLE [^3] | 暗黙的推定 [^2] | 変数変換MLE [^7][^11][^12] | スコア推定 [^5][^13] | 自己回帰MLE |
-|:-----|:---------|:---------|:---------------------|:---------------------|:---------|
-| **尤度アクセス** | 下界 (ELBO) | 計算不能 | 正確 | 不要（スコアのみ） | 正確 |
-| **推定精度** | 中（mode-covering） | 高（mode-seeking） | 中〜高 | **最高** | 高 |
-| **推定の安定性** | **高** | 低（不安定） | 高 | **高** | **高** |
-| **サンプリング速度** | **速い** (1-shot) | **速い** (1-shot) | **速い** (1-shot) | 遅い (T steps) | 遅い (T steps) |
-| **潜在変数** | あり（滑らか） | なし (直接) | あり（可逆） | あり（ノイズ） | なし |
-| **モード崩壊** | なし | **あり** | なし | なし | なし |
-| **数学的基盤** | 変分推論 | ゲーム理論 | 変数変換 | 確率SDE / Score | 確率の連鎖律 |
-| **損失の最小化対象** | -ELBO | JSD | -log p(x) | $\|\epsilon - \hat\epsilon\|^2$ | CE |
-| **代表的成功例** | β-VAE, VQ-VAE | StyleGAN3 | Glow | Stable Diffusion | GPT-4 |
-| **本シリーズ** | 第9-10回 | 第12-14回 | 第11回 | 第15,25-32回 | 第16回 |
-
-### 6.5 Densing Law と能力密度
-
-最新の研究では、モデルの「能力密度」（capability density）に注目する動きがある。同じパラメータ数でより高い性能を達成するモデルは能力密度が高い。
-
-```python
-# Capability density concept
-models = {
-    "GPT-3 (2020)":    {"params_B": 175,  "benchmark": 70, "density": 70/175},
-    "LLaMA-2 (2023)":  {"params_B": 70,   "benchmark": 75, "density": 75/70},
-    "Mistral (2023)":   {"params_B": 7,    "benchmark": 68, "density": 68/7},
-    "Phi-3 (2024)":     {"params_B": 3.8,  "benchmark": 69, "density": 69/3.8},
-}
-
-print(f"{'Model':>20} {'Params(B)':>10} {'Score':>8} {'Density':>10}")
-print("-" * 52)
-for name, info in models.items():
-    print(f"{name:>20} {info['params_B']:10.1f} {info['benchmark']:8.0f} "
-          f"{info['density']:10.2f}")
-
-print("\n→ Densing Law: capability density increases over time")
-print("→ Smaller models achieve higher scores per parameter")
-print("→ Implication: efficiency matters as much as scale")
+```math
+\text{CMMD}(p_r, p_g) = \text{MMD}^2(\phi(p_r), \phi(p_g))
 ```
 
-この傾向は密度推定モデルにも当てはまる。Stable Diffusion 3 は前世代より小さいパラメータ数でより高品質な画像を生成する。効率の追求が、次の研究フロンティアだ。
+ここで `$\phi$` は CLIP 埋め込み（ViT-L/14）。Kernel: `$k(x,y) = \exp(-\|x-y\|^2/(2\sigma^2))$`（RBF）。
 
-### 6.6 Simulation-Based Inference — 暗黙的推定量の科学応用
+Heusel ら (2017) の FID [^8] が Diffusion モデルを不当に高く評価するという問題（2023年: NeurIPS で露呈）に対して、Jayasumana ら (2024) [^10] が提案。差分:
+- **FID**: Gaussian 近似 → 非ガウス分布で誤差大
+- **CMMD**: カーネル法 → 分布形状に依存しない、バイアス補正付き
 
-密度推定・推定量設計は画像生成だけのものではない。科学のあらゆる分野で「シミュレータの逆問題」に使われている。
+### Z6.2 Simulation-Based Inference (SBI)
 
-| 分野 | 応用 | 推定量の役割 |
-|:-----|:-----|:----------------|
-| 粒子物理学 | LHC の衝突データ | シミュレータ→データの逆推定 |
-| 宇宙論 | CMB データ | 宇宙パラメータの事後推定 |
-| 気候科学 | 気候モデル | パラメータ不確実性の定量化 |
-| 創薬 | 分子生成 | 低次元潜在空間での探索 |
-| 材料科学 | 結晶構造予測 | 条件付き生成 |
-| 蛋白質設計 | タンパク質構造 | 拡散モデルによる生成 |
+シミュレータは動かせるが尤度 `$p(x|\theta)$` が書き下せないケース（分子動力学・気候モデル・疫学）での MLE 代替。
 
-:::details World Models — 密度推定の新パラダイム
-密度推定を「世界のシミュレータ」として捉える潮流がある。Sora (2024) がビデオ生成で見せたのは、物理法則を暗黙的に学習するモデルの可能性だ。$p(x_{t+1} | x_{\leq t}, a)$（行動 $a$ に対する次の世界状態の予測）は、強化学習の世界モデルそのものであり、密度推定とエージェントの融合点だ。
-:::
+Cranmer, Brehmer, Louppe (2020) [^11]:
 
-### 6.7 Identifiability 問題
-
-密度推定には根本的な理論的問題がある — 同じデータ分布 $p(x)$ を実現するモデルは一般に一意ではない。
-
-$$q_{\theta_1}(x) = q_{\theta_2}(x) \quad \forall x, \quad \text{but} \quad \theta_1 \neq \theta_2$$
-
-例えば GMM の成分をラベル入れ替えしても尤度は不変（label switching problem）。VAE の潜在空間も回転不変性を持つ。これは MLE の理論的帰結であり、パラメータの解釈に注意が必要なことを示す。
-
-```python
-import numpy as np
-
-# Label switching: permuting components doesn't change likelihood
-# GMM with K=2: (π₁, μ₁, σ₁, π₂, μ₂, σ₂)
-theta1 = {"pi": [0.3, 0.7], "mu": [-2, 3], "sigma": [0.5, 1.0]}
-theta2 = {"pi": [0.7, 0.3], "mu": [3, -2], "sigma": [1.0, 0.5]}  # swapped!
-
-def gmm_likelihood(x, params):
-    ll = 0
-    for k in range(2):
-        ll += params["pi"][k] * np.exp(-0.5 * ((x - params["mu"][k]) / params["sigma"][k])**2) \
-              / (params["sigma"][k] * np.sqrt(2 * np.pi))
-    return ll
-
-x_test = np.array([0.0, 1.0, -1.5, 2.5])
-ll1 = [gmm_likelihood(xi, theta1) for xi in x_test]
-ll2 = [gmm_likelihood(xi, theta2) for xi in x_test]
-
-print("Identifiability problem: label switching")
-print(f"θ₁: π={theta1['pi']}, μ={theta1['mu']}, σ={theta1['sigma']}")
-print(f"θ₂: π={theta2['pi']}, μ={theta2['mu']}, σ={theta2['sigma']}")
-print(f"\nLikelihoods at test points:")
-for xi, l1, l2 in zip(x_test, ll1, ll2):
-    print(f"  x={xi:5.1f}: L(θ₁)={l1:.6f}, L(θ₂)={l2:.6f}, equal={np.isclose(l1, l2)}")
-print(f"\n→ Different parameters, SAME likelihood → MLE is NOT unique")
-print(f"→ For K components, there are K! equivalent solutions")
-print(f"→ K=10: 10! = {np.math.factorial(10):,} equivalent solutions!")
+```math
+r(x|\theta_0, \theta_1) = \frac{p(x|\theta_0)}{p(x|\theta_1)} \approx \frac{D(x)}{1 - D(x)} \quad \text{(尤度比推定)}
 ```
 
-### 6.8 MLE→EM→変分推論 — 推論の困難度マップ
+ここで `$D(x)$` は `$\theta_0$` vs `$\theta_1$` の分類器の出力。これにより暗黙的尤度モデルでも推論が可能。
+
+**接続**: GAN の識別器 `$D(x)$` も尤度比推定器として解釈できる（第13回）。
+
+SBI が特に重要な理由: 現代の科学シミュレーション（素粒子物理・気候・創薬）は「前向きシミュレーションは可能だが尤度は計算不可能」というケースがほとんどだ。MLE の代わりに尤度比（classifier）を学習することで、事後分布推定が可能になる。
+
+### Z6.3 スコア関数とデノイジング
+
+Ho ら (2020) の DDPM [^12] の核心:
+
+```math
+\mathcal{L}_{\text{DDPM}} = \mathbb{E}_{t, x_0, \epsilon}\left[\|\epsilon - \epsilon_\theta(x_t, t)\|^2\right]
+```
+
+これは Denoising Score Matching [^7] の一形態。`$\epsilon_\theta$` を学習することは `$\nabla_{x_t} \log p_t(x_t)$` を学習することと等価。
+
+**接続先**: Score Matching (Z5.5) → DDPM の損失関数 → Flow Matching (第5回) → 現在の拡散モデルの全て。MLE と Score Matching が Diffusion モデルの数学的基盤。
+
+### Z6.4 Identifiability と生成モデル
+
+Khemakhem ら (2020) [^13]:
+
+```math
+p_\theta(x) = \int p_\theta(x|z) p(z) dz \quad \text{は一般に非識別}
+```
+
+非識別性（Identifiability）: 異なる `$\theta_1 \neq \theta_2$` が同じ `$p_\theta(x)$` を生成できる。これは MLE の応用で VAE が「意味のある」潜在空間を学ぶことを妨げる。
+
+解決策: **iVAE** (Identifiable VAE) は補助変数 `$u$`（セグメント情報など）を使い、`$p(z|u)$` を条件付けることで識別可能性を保証。β-VAE の理論的根拠の一つ。
+
+### Z6.5 Rate-Distortion Perception トレードオフ
+
+Blau & Michaeli (2019) の「Perception-Distortion Tradeoff」 [^14]:
+
+```math
+\text{生成品質の限界: } \text{Distortion}(d) + \text{Perception}(p) \leq C(\text{data complexity})
+```
+
+**直感**: 画像復元モデルで「歪みが小さい」（PSNR 高い）と「知覚品質が高い」（人間の評価）はトレードオフにある。これは Rate-Distortion 理論（第6回）の応用。
 
 ```mermaid
 graph TD
-    subgraph "Course I: 数学基盤 (完了)"
-        L6[第6回: KL, CE, Adam]
-        L7[第7回: MLE, 推定量の分類<br>← 本講義]
-    end
-
-    subgraph "Course II: 確率モデル基礎 (第8-16回)"
-        L8[第8回: 潜在変数・EM]
-        L9[第9回: VAE]
-        L10[第10回: VAE 発展]
-        L11[第11回: Flow]
-        L12[第12回: GAN]
-        L13[第13回: GAN 発展]
-        L14[第14回: 評価指標 深堀り]
-        L15[第15回: Diffusion 基礎]
-        L16[第16回: Transformer]
-    end
-
-    L6 --> L7
-    L7 -->|MLE の限界→潜在変数| L8
-    L8 -->|ELBO→変分MLE| L9
-    L9 -->|変分推定量の拡張| L10
-    L7 -->|変数変換推定量| L11
-    L7 -->|暗黙的推定量| L12
-    L12 --> L13
-    L7 -->|統計的距離| L14
-    L7 -->|スコア推定量| L15
-    L7 -->|自己回帰 MLE| L16
-
-    style L7 fill:#ff9800,color:#fff
-    style L8 fill:#e8f5e9
-    style L9 fill:#e8f5e9
-    style L12 fill:#fff3e0
-    style L15 fill:#fce4ec
+    A["高PSNR (低歪み)<br/>ぼやけた画像"] --> B["知覚品質低"]
+    C["低PSNR (高歪み)<br/>鮮明な hallucination"] --> D["知覚品質高"]
+    E["理想<br/>両方高い"] --> F["理論的に不可能<br/>(データ複雑度の上限)"]
 ```
 
-この図の通り、本講義で築いた推定量の数学的基盤は第8-16回の全てに接続している。各講義で戻ってくるたびに、推定原理の理解が深まる。
+MLE は「平均的な」画像（distortion 最小化）を学ぶ傾向がある。GAN は reverse KL で「らしい」画像（perception 最大化）を学ぶ。この違いがまさに Forward/Reverse KL の違いに対応する（Z5.8）。
 
-:::details 用語集（本講義で導入した全用語）
+### Z6.6 最新研究: FD-DINOv2 と評価指標の進化
 
-| 用語 | 英語 | 定義 |
-|:-----|:-----|:-----|
-| 最尤推定 | Maximum Likelihood Estimation (MLE) | 尤度を最大化するパラメータ推定法 |
-| 対数尤度 | Log-Likelihood | $\sum \log q_\theta(x_i)$。尤度の対数 |
-| 経験分布 | Empirical Distribution | $\hat{p}(x) = \frac{1}{N}\sum \delta(x-x_i)$ |
-| 判別モデル | Discriminative Model | $p(y|x)$ を学習するモデル |
-| 生成モデル | Generative Model | $p(x)$ を推定する確率モデル |
-| 明示的推定量 | Prescribed Estimator | 尤度が陽に計算可能な推定量 |
-| 暗黙的推定量 | Implicit Estimator | サンプルのみ可能、尤度計算不能 |
-| 多様体仮説 | Manifold Hypothesis | データは低次元多様体上に集中 |
-| 次元の呪い | Curse of Dimensionality | 高次元で密度推定が指数的に困難 |
-| スコア関数 | Score Function | $\nabla_x \log p(x)$。密度の勾配 |
-| Mode-Covering | Mode-Covering | 全モードをカバー（前向き KL） |
-| Mode-Seeking | Mode-Seeking | 特定モードに集中（逆向き KL） |
-| FID | Frechet Inception Distance | 生成画像と実画像の Frechet 距離 |
-| IS | Inception Score | 生成品質と多様性の指標 |
-| CMMD | CLIP Maximum Mean Discrepancy | FID の改良指標 |
-| 変数変換公式 | Change of Variables | Flow モデルの尤度計算の基礎 |
-| 自己回帰分解 | Autoregressive Decomposition | $p(x) = \prod p(x_t | x_{<t})$ |
-| Reparameterization | Reparameterization Trick | $z = \mu + \sigma\epsilon$ で勾配伝播 |
-| Langevin 動力学 | Langevin Dynamics | スコアに基づくサンプリング |
-| Fisher 情報行列 | Fisher Information Matrix | $\mathcal{I}(\theta) = -\mathbb{E}[\nabla^2 \log p]$ |
-| 一致性 | Consistency | MLE が真のパラメータに収束する性質 |
-| 漸近正規性 | Asymptotic Normality | MLE の分布が正規に近づく性質 |
-| 漸近有効性 | Asymptotic Efficiency | MLE が最小分散を達成する性質 |
-| ELBO | Evidence Lower Bound | $\log p(x)$ の変分下界 |
-| 祖先サンプリング | Ancestral Sampling | 条件付き分布の連鎖でサンプル |
-| 重点サンプリング | Importance Sampling | 提案分布からの重み付きサンプル |
-| 非平衡熱力学 | Nonequilibrium Thermodynamics | Diffusion モデルの物理的着想 |
-:::
+Inception-V3 に基づく FID の代替として、DINOv2 (ViT-L/14) を特徴抽出器に使った評価指標が提案されている:
 
-:::details 不等式・等式まとめ
+```math
+\text{FD-DINOv2}(p_r, p_g) = \|\mu_r^{DINOv2} - \mu_g^{DINOv2}\|^2 + \text{Tr}(\Sigma_r + \Sigma_g - 2\sqrt{\Sigma_r \Sigma_g})
+```
 
-| 等式/不等式 | 数式 | 意味 |
-|:-----------|:-----|:-----|
-| MLE = CE 最小化 | $\arg\max \sum \log q_\theta(x_i) = \arg\min H(\hat{p}, q_\theta)$ | 定理 3.2 |
-| MLE = KL 最小化 | $\arg\min H(\hat{p}, q_\theta) = \arg\min D_\text{KL}(\hat{p} \| q_\theta)$ | 定理 3.3 |
-| CE 分解 | $H(\hat{p}, q_\theta) = H(\hat{p}) + D_\text{KL}(\hat{p} \| q_\theta)$ | 第6回 定理 3.4 |
-| GAN 最適判別器 | $D^*(x) = \frac{p_\text{data}}{p_\text{data} + p_g}$ | 定理 3.8a |
-| GAN = JSD | $V(D^*, G) = -\log 4 + 2 \cdot \text{JSD}$ | 定理 3.8b |
-| Fisher 漸近 | $\sqrt{N}(\hat\theta - \theta^*) \to \mathcal{N}(0, \mathcal{I}^{-1})$ | 性質 3.4b |
-| Flow 尤度 | $\log q(x) = \log p(f^{-1}(x)) + \log |\det J|$ | 定理 3.7 |
-| Score 正規化不変 | $\nabla_x \log p(x) = \nabla_x \log \tilde{p}(x)$ | 定義 3.9 |
-| ELBO | $\log p(x) \geq \text{ELBO}$ | 第8回 先取り |
-:::
+FID との差分:
+- Inception-V3: ImageNet 1k 分類に特化、生成多様性を低評価する傾向
+- DINOv2: self-supervised、幾何学的/意味的特徴をより豊富にキャプチャ
+- CMMD [^10]: カーネル法でガウス近似を回避、より汎用的
 
-### 6.9 知識マインドマップ
+現在のベストプラクティス: 複数指標（FID + IS + CMMD + Human Evaluation）の総合評価。
+
+なお、評価指標の選択もモデル開発の一部だ。FID が低いだけでは「良い生成モデル」とは言えない — それは Inception-V3 の埋め込み空間での類似性を意味するに過ぎない。最終的には、生成された画像/テキスト/音声が「人間の目的に合っているか」が問題であり、これはタスク依存の評価（例: 生成画像を用いた downstream 分類精度）で測ることが多い。
+
+> Progress: 95%
+
+## 🎯 Z7. エピローグ（10分）— まとめと次回予告
+
+### Z7.0 知識マインドマップ
 
 ```mermaid
 mindmap
-  root((第7回))
-    最尤推定
-      Fisher 1922
-      MLE = CE最小化
-      MLE = KL最小化
-      漸近3性質
-        一致性
-        漸近正規性
-        漸近有効性
-      限界
-        モデル族依存
-        高次元困難
-        周辺化不能
-    推定量の分類
-      明示的推定量
-        VAE 変分MLE
-        Flow 変数変換MLE
-        自己回帰MLE
-      暗黙的推定量
-        GAN
-      スコア推定量
-        NCSN
-        DDPM
-    統計的距離
-      FID W2距離
-      KID MMD
-      CMMD CLIP-MMD
-    LLM接続
-      次トークン予測
-      自己回帰MLE
-      Perplexity
-    推定原理の変形
-      KL→損失設計
-      JSD→暗黙的推定
-      変数変換→Flow
-      Score→Diffusion
+  root((第7回 MLE))
+    定義と等価性
+      MLE定義 Fisher 1922
+      CE最小化等価
+      KL最小化等価
+      三位一体証明
+    漸近論
+      Fisher情報量
+      Cramér-Rao下界
+      漸近正規性
+      一致性 有効性
+    尤度の形態
+      明示的 NF/Flow
+      暗黙的 GAN
+      スコアマッチング
+      Diffusion接続
+    サンプリング理論
+      Rejection Sampling
+      Importance Sampling
+      MCMC
+      Reparameterization
+    評価指標
+      FID行列平方根
+      CMMD CLIP
+      NLL Perplexity
+    生成モデル統一
+      MLE変形として
+      Forward KL VAE
+      Reverse KL GAN
+      Score SM Diffusion
+    数値実装
+      Log-prob安定化
+      score matching 1D
+      Fisher 数値微分
+      ESS 品質検証
+      Normalizing Flow
 ```
 
-### 6.10 本講義のキーテイクアウェイ
+**各ノードの第7回との対応**: 「定義と等価性」→ Z5.1-Z5.2 | 「漸近論」→ Z5.7 | 「尤度の形態」→ Z5.5, Z5.13 | 「サンプリング理論」→ Z5.6, Z5.16 | 「評価指標」→ Z5.3 | 「生成モデル統一」→ Z5.8 | 「数値実装」→ Z5.15, Z5.16
 
-1. **MLE = CE 最小化 = KL 最小化** — この三位一体が統計的推定の根幹。第6回の情報理論と本講義の MLE が合流した。
-2. **推定量は尤度関数のアクセス形態で分類**できる: 明示的（変分MLE, 変数変換MLE, 自己回帰MLE）、暗黙的（GAN）、スコアベース（DDPM）。各々が異なる数学的基盤を持つ。
-3. **明示的 vs 暗黙的推定量** — 尤度が計算可能か否かで推定方法が根本的に異なる。この分類が第8-16回の全ての出発点。
-4. **統計的距離は推定量の評価原理** — FID（$W_2$ 距離）は標準だが限界がある。KID, CMMD が改善を提案。「何をもって良い推定とするか」は深い問い。
+### Z7.1 数式↔コード対照表
 
-### 6.11 FAQ
+| 数式 | Python | 注意点 |
+|:-----|:-------|:-------|
+| `$\hat{\theta}_{MLE} = \arg\max_\theta \sum \log p_\theta(x_i)$` | `minimize(nll, theta0)` | `-sum(log_p(theta, x_data))` |
+| `$D_{KL}(p \| q) \geq 0$` | `np.sum(p * (np.log(p) - np.log(q)))` | `eps` で log(0) 回避 |
+| `$H(p,q) = H(p) + D_{KL}(p\|q)$` | `cross_entropy(p,q) = entropy(p) + kl(p,q)` | 数値検算必須 |
+| `$I(\theta) = \mathbb{E}[(\partial_\theta \log p)^2]$` | `np.var(scores)` | `scores` は score関数の配列 |
+| `$\text{FID} = \|\mu_r-\mu_g\|^2 + \text{Tr}(\cdot)$` | `fid_gaussian(mu_r, Sigma_r, ...)` | `sqrtm` の対称化必須 |
+| `$J_{SM}(\theta) = \mathbb{E}[\frac{1}{2}\|s_\theta\|^2 + \text{tr}(\nabla s_\theta)]$` | `score_matching_loss(score_fn, x_data)` | 1Dは数値微分, 高次元はHutchinson |
+| `$w_i = p(x_i)/q(x_i)$` (IS) | `log_w = log_p(x) - log_q(x)` | log space で計算し `exp` |
+| `$\hat{p}_{KDE}(x) = \frac{1}{Nh}\sum K(\frac{x-x_i}{h})$` | `gaussian_kde(x_data)` | bw_method で帯域幅制御 |
+| `$\text{ESS} = (\sum w_i)^2 / \sum w_i^2$` | `w.sum()**2 / (w**2).sum()` | w は unnormalized でよい |
+| `$z = \mu + \sigma \epsilon, \epsilon \sim \mathcal{N}(0,I)$` | `z = mu + np.exp(log_sigma) * eps` | `eps = rng.standard_normal(shape)` |
+| `$\log p_\theta(x) = \log p_z(f^{-1}(x)) + \log|\det J|$` | `log_pz + log_abs_det_jac` | 1D: `log_abs_det_jac = -log_sigma` |
+| `$\text{Var}(\hat{\theta}) \geq 1/I(\theta)$` | `1 / fisher_info(theta, x)` | `fisher_info` = score の分散 |
 
-:::details Q1: MLE は画像生成以外にどう使われる？
-テキスト生成（GPT = 自己回帰MLE）、音声合成（WaveNet）、分子設計（創薬）、タンパク質構造予測、気候シミュレーション、異常検知、全てが「確率分布の推定」問題だ。MLE とその変形は、確率分布で表現できるあらゆるデータに適用可能。
-:::
+### Z7.2 FAQ
 
-:::details Q2: 変分MLE（VAE）と暗黙的推定（GAN）、どちらが良い？
-推定の目的による。変分MLE: 尤度が計算可能、推定が安定、潜在空間が滑らか → 表現学習、半教師あり学習。暗黙的推定: サンプル品質が高い、鮮明な出力 → 高品質生成、超解像。2024年現在、多くのタスクでスコア推定量（Diffusion Model）が両方を上回る。「どちらが良い」より「何を推定するか」で選ぶべき。
-:::
+<details><summary>Q1: MLE は常に正しい推定量か？</summary>
 
-:::details Q3: Diffusion Model はなぜこれほど成功した？
-3つの理由: (1) 訓練が安定（単純な MSE 損失）、(2) サンプル品質が高い（段階的なノイズ除去）、(3) 理論的基盤が堅固（スコアマッチング + 確率微分方程式）。DDPM [^5] が品質で GAN に匹敵し、モード崩壊なしの訓練を実現したことが転換点だった。
-:::
+いいえ。MLE の問題点:
+1. **少サンプルでの過学習**: `n` が小さいとき MLE は分散が大きく、データを「暗記」する傾向（Z5.9 の bigram 例）
+2. **局所最適解**: 多峰的尤度関数（GMM など）では局所最適に収束
+3. **非正則モデル**: `$p_\theta$` が正則でないと漸近正規性が成立しない
+4. **計算不可能性**: `$p(x) = \int p(x|z)p(z)dz$` が解析的に解けないとき直接 MLE は困難（→ EM / ELBO が必要）
 
-:::details Q4: FID（統計的距離）の絶対値はどう解釈する？
-大まかに: FID < 10 = 推定が非常に良い、10-50 = 良い、50-100 = まあまあ、> 100 = 悪い。ただしデータセットに大きく依存する。CelebA（顔）は FID が低くなりやすく、ImageNet（一般画像）は高くなりやすい。同じデータセット内での相対比較が有効。数学的にはガウス近似 $W_2$ 距離であることを常に意識すべき。
-:::
+どんなときに MAP/Bayesian を選ぶか: 小サンプル、事前情報がある、不確実性の定量化が必要なとき。
+</details>
 
-:::details Q5: MLE 以外の推定法はないのか？
-MAP（Maximum A Posteriori）推定: MLE + 事前分布。ベイズ推定: 事後分布全体を推定。方法モーメント（Method of Moments）。最小距離推定。MLE が最も広く使われる理由は、漸近的な最適性（Fisher の定理）と計算の容易さ。
-:::
+<details><summary>Q2: Forward KL と Reverse KL はどちらを使うべきか？</summary>
 
-:::details Q6: 自己回帰モデル（GPT）は明示的推定量？
-そうだ。$p(x_t | x_{<t})$ が陽に計算可能（softmax 出力）なので、明示的推定量（Prescribed）。対数尤度も正確に計算できる。これが LLM の Perplexity = $2^{H}$ を評価指標として使える理由。
-:::
+用途によって決まる:
 
-:::details Q7: 次元の呪いは回避できないのか？
-完全には回避できないが、緩和策がある: (1) 多様体仮説を利用（低次元潜在空間）、(2) 分割統治（自己回帰は1次元ずつ）、(3) 階層的構造（Hierarchical VAE）、(4) ノイズスケジュール（Diffusion は段階的）。全ての成功した推定量は、何らかの形で次元の呪いを回避している。
-:::
+| 状況 | 推奨 | 理由 |
+|:-----|:-----|:-----|
+| 生成品質（多様性重視） | Forward KL | Mode covering → 全モードをカバー |
+| 生成品質（鮮明さ重視） | Reverse KL | Mode seeking → 鮮明だが多様性低 |
+| 変分推論 (`$q(z|x)$`) | Reverse KL | `$q$` からサンプリング可能で ELBO が計算可能 |
+| ノイズ耐性 | Forward KL | `$p$` が明確でない領域への `$q$` の配置を防ぐ |
+| Normalizing Flow | Forward KL | フローは `$p_\theta$` を明示的に計算できる |
+</details>
 
-:::details Q8: KL 最小化と Wasserstein 距離最小化の違いは？
-KL: 密度比 $p/q$ に基づく。$q = 0$ の場所で $p > 0$ なら $\infty$。支持集合が異なると使えない。Wasserstein: 「質量を移動するコスト」に基づく。支持集合が異なっても定義できる。WGAN [Arjovsky+ 2017] が Wasserstein 距離で GAN を安定化させた。第13回で詳しく扱う。
-:::
+<details><summary>Q3: FID はなぜ行列平方根が必要か？</summary>
 
-:::details Q9: 「推定量の設計が全パラダイムの根底にある」とはどういう意味？
-画像生成は「画像の確率分布 $p(\text{image})$ の推定」、テキスト生成は「文の確率分布 $p(\text{text})$ の推定」。応用は違うが、数学は同じ — 尤度関数を最大化する推定量の設計だ。だからこそ、MLE や KL ダイバージェンスという共通の推定原理が全てに通用する。
-:::
+2つのガウス分布 `$\mathcal{N}(\mu_r, \Sigma_r)$` と `$\mathcal{N}(\mu_g, \Sigma_g)$` の Fréchet 距離:
 
-:::details Q10: この講義の内容は、実務でどの程度必要？
-MLE = CE = KL の等価性は LLM を使う全ての人に必須。推定量の分類体系の理解は、適切なモデル選択に不可欠。FID/KID/CMMD の数学的理解は論文を読む際に必要。「とりあえず Diffusion」ではなく「なぜスコア推定量が適切か」を理解する力を養う回。
-:::
-
-### 6.12 学習スケジュール（1週間プラン）
-
-| 日 | 内容 | 目安時間 |
-|:---|:-----|:---------|
-| Day 1 | Zone 0-2 を通読 + 次元の呪いコードを実行 | 45分 |
-| Day 2 | Zone 3 の 3.1-3.5（MLE 理論パート）を紙で導出 | 90分 |
-| Day 3 | Zone 3 の 3.6-3.10（推定量分類・暗黙的推定・Score）を精読 | 60分 |
-| Day 4 | Zone 3 の 3.12-3.14（統計的距離 + ボス戦）+ Zone 4 コード実行 | 90分 |
-| Day 5 | Zone 5 の自己診断テスト + Goodfellow (2014) 論文 Pass 1 | 60分 |
-| Day 6 | ボス戦の三位一体を紙で再現 + 分類チャート作成 | 45分 |
-| Day 7 | チェックリスト最終確認 + Zone 6 の接続マップで全体を俯瞰 | 30分 |
-
-### 6.13 進捗トラッカー
-
-```python
-lecture7_progress = {
-    "zone0_quickstart": True,
-    "zone1_experience": True,
-    "zone2_intuition": True,
-    "zone3_math": {
-        "mle_definition": False,       # Can you define MLE?
-        "mle_ce_equivalence": False,    # Can you prove MLE = CE?
-        "mle_kl_equivalence": False,    # Can you prove MLE = KL?
-        "fisher_asymptotics": False,    # Can you state 3 properties?
-        "mle_limitations": False,       # Can you list 3 limitations?
-        "estimator_classification": False, # Can you classify estimators?
-        "flow_change_of_var": False,    # Can you write the formula?
-        "gan_objective": False,         # Can you write min-max?
-        "optimal_discriminator": False, # Can you derive D*?
-        "score_function": False,        # Can you explain score?
-        "mode_cover_seek": False,       # Can you explain both?
-        "fid_formula": False,           # Can you write FID?
-        "llm_mle": False,              # Can you show LLM = MLE?
-        "boss_trinity": False,          # Can you show MLE=CE=KL?
-    },
-    "zone4_implementation": False,
-    "zone5_experiment": False,
-}
-
-completed = sum(1 for v in lecture7_progress["zone3_math"].values() if v)
-total = len(lecture7_progress["zone3_math"])
-print(f"Zone 3 progress: {completed}/{total} ({completed/total:.0%})")
-print(f"Mark each as True when you can do it WITHOUT looking at notes.")
+```math
+d^2 = \|\mu_r - \mu_g\|^2 + \text{Tr}(\Sigma_r + \Sigma_g - 2\sqrt{\Sigma_r \Sigma_g})
 ```
 
-### 6.14 次回予告 — 第8回: 潜在変数モデル & EM算法
+`$\sqrt{\Sigma_r \Sigma_g}$` は行列 `$(\Sigma_r^{1/2} \Sigma_g \Sigma_r^{1/2})^{1/2}$` として計算する。単純に `$\sqrt{\Sigma_r} \cdot \sqrt{\Sigma_g}$` では行列積の非可換性で誤差が出る。`sqrtm_psd` で対称正定値行列の行列平方根を固有分解で求めることが数値安定性の鍵。
+</details>
 
-第7回で「MLE の限界」を明確にした。単純なモデル族では複雑なデータ分布を捉えられない。
+<details><summary>Q4: Score Matching と Diffusion モデルはどう繋がるか？</summary>
 
-第8回はこの限界を打破する。
+接続の鍵: **Tweedie の公式**（Efron 2011）と **Denoising Score Matching**（Vincent 2011）[^7]。
 
-- **潜在変数の導入**: $p(x) = \int p(x|z) p(z) dz$ — 観測の背後に「隠れた変数」を仮定する
-- **EM算法**: 周辺尤度が計算不能でも、E-step と M-step の交互最適化で MLE を近似する
-- **ELBO の導出**: Jensen の不等式から $\log p(x) \geq \text{ELBO}$ を導出 — これが VAE の数学的基盤
-- **GMM の完全実装**: 本講義の GMM を EM で訓練し、多峰分布を正しく捉える
-- **Python の速度問題**: EM の反復計算が Python の限界を露呈する
+`$x_t = x_0 + \sigma_t \epsilon$`（前向き拡散）のとき:
 
-第6回の KL + 第7回の MLE + 第8回の ELBO。この3つが合流するとき、第9回で VAE が自然に誕生する。
+```math
+\nabla_{x_t} \log p_t(x_t) = -\frac{\epsilon}{\sigma_t} \quad \text{(Tweedie)}
+```
 
-:::message
-**進捗: 100% 完了** 第7回「最尤推定と統計的推論」完了。Course I の数学的武装は 7/8。次回は潜在変数で MLE の限界を打破する。
-:::
+DDPM の損失 `$\|\epsilon - \hat{\epsilon}_\theta(x_t, t)\|^2$` は「ノイズを予測する」が、これは「スコア関数 `$\nabla \log p_t$` を学習する」と等価。**Score Matching = Denoising = Diffusion モデルの訓練**、これが第5回との接続。
+</details>
 
-### 6.15 💀 パラダイム転換の問い
+<details><summary>Q5: MLE と MAP はどう使い分けるか？</summary>
 
-> **推定量の設計が全てを決める。VAE/GAN/Flow/Diffusion は、MLE の100年の数学が生んだ変形に過ぎないのでは？**
+判断基準は **サンプルサイズ `$n`** と **事前情報の信頼度**:
 
-この問いを3つの角度から考えてみてほしい。
+| 条件 | 推奨 | 理由 |
+|:-----|:-----|:-----|
+| `$n \gg 1$`（大量データ） | MLE | 漸近論: MLE は一致性・有効性をもち、事前分布の影響が消える |
+| `$n$` が小さい（< 100）| MAP | 事前分布が正則化の役割（L2正則化 = ガウス事前分布） |
+| 事前情報が強い | MAP or Bayesian | ドメイン知識を活用 |
+| 計算コスト最優先 | MLE | MAP は事前分布を設計・チューニングするコストが必要 |
+| 不確実性を定量化したい | Bayesian | 事後分布 `$p(\theta|x)$` を使う（MAP は点推定にとどまる） |
 
-1. **数学的等価性**: 画像生成も、テキスト生成も、分子生成も、数学的には全て同じ — 高次元確率分布 $p(x)$ からのサンプリング。VAE の ELBO は画像にもテキストにも適用できる。GAN の敵対的訓練は、データの種類を問わない。推定量設計の「真の姿」は、特定のモダリティに縛られない**汎用的な確率分布学習フレームワーク**だ。
+**落とし穴**: MAP の事前分布選択が恣意的になりがち。L2 正則化の係数 `$\lambda$` = 精度 `$\tau^2/\sigma^2$` と対応するが、これを正当化できる根拠が必要。
+</details>
 
-2. **科学的インパクト**: AlphaFold 2 はタンパク質構造を「生成」し、気候科学者はシミュレータの出力から「事後分布を推定」する。これらは画像生成とは無関係だが、同じ数学的道具（MLE、変分推論、スコアマッチング）を使っている。統計的推論の最大のインパクトは、画像生成ではなく**科学的発見**にあるかもしれない。
+<details><summary>Q6: FID の限界は何か？</summary>
 
-3. **認知の偏り**: 画像生成が注目されるのは、人間にとって「視覚的に分かりやすい」からに過ぎない。テキスト生成（GPT）は言語の確率分布の学習であり、音声合成は波形の確率分布の学習であり、分子設計は化学空間の確率分布の学習だ。「画像生成 AI」と呼ぶのは、木を見て森を見ないことだ。
+FID には以下の構造的な問題がある:
 
-:::details 歴史的文脈: Fisher の「最尤法」と生成 AI の100年
-Fisher が 1922年に最尤推定を体系化したとき [^1]、彼は「パラメータ推定の一般理論」を構築しようとしていた。100年後、その「一般理論」が DALL-E や Stable Diffusion の数学的基盤になっている。Fisher が MLE を「On the mathematical foundations of theoretical statistics」と題したのは、「基盤」（foundations）を作ろうとしたからだ。実際にそうなった — MLE は統計学の基盤であるだけでなく、生成 AI の基盤でもある。
-:::
+1. **Inception-V3 バイアス**: ImageNet 分類で訓練された特徴抽出器。テキスト・医療画像・科学データには不適切な場合がある
+2. **ガウス近似**: Fréchet 距離は分布がガウスであることを前提とする。実際の画像特徴分布は非ガウス的
+3. **サンプルサイズ依存性**: 生成サンプル数が少ないと FID が高く出る（推奨 ≥ 50k サンプル）
+4. **モード崩壊の見逃し**: `$\mu, \Sigma$` はモードの数ではなく平均・分散を捉える。「1つのリアルなモード」と「50のダメなモード」を区別できない場合がある
+
+```math
+\text{FID bias} \propto \frac{1}{n_g}: \quad \mathbb{E}[\text{FID}] = \text{True FID} + \frac{C}{n_g}
+```
+
+対策: Precision/Recall (Kynkäänniemi et al. 2019) や CMMD [^10] との組み合わせが現在のベストプラクティス。
+</details>
+
+<details><summary>Q7: 次トークン予測 MLE のスケーリング則とは？</summary>
+
+Kaplan et al. (2020) の Scaling Laws: テストロス `$L`$ は `$N`$（パラメータ数）と `$D`$（データ量）の**べき乗則**に従う:
+
+```math
+L(N, D) \approx \left(\frac{N_c}{N}\right)^{\alpha_N} + \left(\frac{D_c}{D}\right)^{\alpha_D} + L_{\infty}
+```
+
+`$\alpha_N \approx 0.076$`, `$\alpha_D \approx 0.095$`（元論文の推定値）。
+
+**直感**: GPT の訓練は単純な MLE（`$\max_\theta \sum \log p_\theta(x_t|x_{<t})`$）なのに、モデルとデータを増やすだけで創発的な能力が生まれる。これは「分布 `$p(\text{text})$` の圧縮」が知識の獲得と等価であることを示唆する。
+
+ただし Hoffmann et al. (2022) の Chinchilla 論文で最適な `$N:D$` 比が修正された（`$D \approx 20N$`）。
+</details>
+
+<details><summary>Q8: MLE はなぜ「分布を学ぶ」と言えるのか？</summary>
+
+MLE の目的関数を情報理論の視点で書き直すと:
+
+```math
+\hat{\theta}_{MLE} = \arg\max_\theta \sum_{i=1}^N \log p_\theta(x_i) = \arg\min_\theta KL(\hat{p}_{data} \| p_\theta)
+```
+
+ここで `$\hat{p}_{data} = \frac{1}{N} \sum_{i=1}^N \delta(x - x_i)$` は経験分布（empirical distribution）。
+
+これが示すもの: **MLE は「経験分布 `$\hat{p}_{data}$` と `$p_\theta$` の KL を最小化する」問題**。言い換えると、MLE は真の分布 `$p_{data}(x)$` に `$p_\theta(x)$` を近づける操作に他ならない。
+
+ただし `$\hat{p}_{data}$` は有限サンプルの近似。`$n \to \infty$` で `$\hat{p}_{data} \to p_{data}$`（弱収束）となるとき、漸近一致性が成立する。
+</details>
+
+### Z7.3 次回予告 — 第8回: 潜在変数モデルと EM 算法
+
+本講義で MLE の威力と限界が明らかになった。次の障壁:
+
+```math
+\log p_\theta(x) = \log \int p_\theta(x|z) p(z) dz \quad \text{— この積分が解析不能}
+```
+
+| 本講義 (第7回) | 第8回への橋渡し |
+|:-------------|:-------------|
+| MLE の定義と三位一体 | 周辺尤度 `$p(x) = \int p(x|z)p(z)dz$` が困難な理由 |
+| GMM の gradient-based MLE | GMM-EM: 解析的な E-step / M-step 更新 |
+| 漸近論（Fisher 情報量）| EM の収束性（Jensen 不等式からの証明） |
+| スコアマッチング | Variational EM → VAE への橋渡し |
+| Python の遅さ体感 | EM の反復計算で「遅すぎる」を再実感 → Julia/Rust 予告 |
+
+**核心のギャップ**: 周辺尤度 `$\int p(x|z)p(z)dz$` を直接最大化することは（連続潜在変数では）計算不能。EM アルゴリズムはこれを **ELBO（下界）の最大化**に置き換える革命的な手法。Jensen 不等式 → ELBO → E-step / M-step という流れが第8回のボス戦。
+
+**Jensen 不等式と ELBO の関係（先取り）**:
+
+```math
+\log p_\theta(x) = \log \int p_\theta(x|z) p(z)\,dz = \log \mathbb{E}_{p(z)}\left[\frac{p_\theta(x|z) p(z)}{q(z)}\right]
+```
+
+`$\log$` は凹関数なので Jensen 不等式 `$\log \mathbb{E}[f] \geq \mathbb{E}[\log f]$` より:
+
+```math
+\log p_\theta(x) \geq \mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x|z) p(z)}{q(z)}\right] = \underbrace{\mathbb{E}_{q}[\log p_\theta(x|z)] - D_{KL}(q \| p)}_{\text{ELBO}}
+```
+
+等号条件は `$q(z) = p(z|x)$`（真の事後分布）。E-step で `$q \leftarrow p(z|x)$`（等号に近づける）、M-step で `$\theta \leftarrow \arg\max \mathbb{E}_q[\log p_\theta(x,z)]$` （ELBO を最大化）— これが EM の本質だ。本講義のMLE三位一体（Z5.1）の自然な延長として理解できる。
+
+**この講義で学んだこと**: MLE は「世界がこのデータを生成した確率を最大化するパラメータを探す」操作だ。Cross-Entropy と KL divergence がその等価な表現であり、Fisher 情報量が推定精度の理論的限界を与える。Score Matching と Normalizing Flow は「尤度が計算できない/書けない」問題への2つの方向性の回答。そしてこれら全てが、Diffusion モデル・GPT・VAE という現代の生成モデルの数学的基盤を形成している。
+
+---
+
+### Z7.4 実装まとめ
+
+本講義で実装した主要な関数一覧（コード付き = 3本、他は数学的考察として展開）:
+
+| 関数/モジュール | 実装場所 | 内容 |
+|:--------------|:---------|:-----|
+| `mle_cross_entropy` | Z5.1（コード） | MLE = CE = KL の数値証明 ✅ |
+| `fid_gaussian` | Z5.3（コード） | FID 実装、`sqrtm` の対称化 ✅ |
+| `gmm_mle` | Z5.4（コード） | GMM L-BFGS-B + log_sigma 安定化 ✅ |
+| Score Matching | Z5.5 | Hutchinson 推定器の導出 |
+| Rejection / IS | Z5.6 | 受理率 `$1/M$`、ESS との接続 |
+| CRB 検証 | Z5.7 | `$\text{Var}(\bar{x}) = \sigma^2/N = 1/I(\mu)$` 解析 |
+| Mode-seeking/covering | Z5.8 | Forward KL → `$\mu \approx 0$`、Reverse KL → `$\mu \approx \pm 3$` |
+| Bigram LLM MLE | Z5.9 | 小データ過学習、Laplace smoothing |
+| MAP 推定 | Z5.11 | `$\lambda \to 0$` → MLE、`$\lambda \to \infty$` → ゼロ収縮 |
+| Reparameterization | Z5.12 | shape `(batch, latent_dim)` 追跡 |
+| Affine NF | Z5.13 | MLE 解析解 `$\hat{\mu}=\bar{x}$`, `$\hat{\sigma}=s$` と一致 |
+| NLL 比較 | Z5.14 | KDE `~1.65`, NF-affine `~2.10` |
+| 数値安定性 | Z5.15 | `logpdf` vs `log(pdf)`, `logsumexp` |
+| ESS 計算 | Z5.16 | `$\sigma_q$` と ESS/N の感度 |
+
+> Progress: 100%
+
+---
+
+## PB 💀 パラダイム転換の問い
+
+> **生成モデルは確率分布の学習器。画像生成は"応用例の一つ"に過ぎないのでは？**
+
+この問いを3つの視点から考えてみてほしい。
+
+1. **MLE の汎用性**: `$\max_\theta \mathbb{E}[\log p_\theta(x)]$` という目的関数は、画像・テキスト・音声・分子構造・タンパク質配列に等しく適用できる。「画像生成が目的」ではなく、「確率分布の近似が目的」であり、画像は確率分布が定義されるデータ型の一つに過ぎない。
+
+2. **言語モデルの再解釈**: GPT-4 は「テキスト生成器」ではなく「テキストの確率分布 `$p(x_{t}|x_{<t})$` の推定器」だ。生成はそこからのサンプリング。推論（In-context Learning）は事後分布の更新 `$p(\theta|\text{context})$` として理解できる（第7回末尾で証明）。
+
+3. **World Models**: 最新の生成モデルは sensorimotor contingency（感覚運動随伴性）を学ぶ World Model として再解釈されつつある。`$p(x_{t+1}|x_{\leq t}, a_t)$` という条件付き分布の学習が、ロボティクス・強化学習・科学シミュレーションを統一する。**MLE は「世界の確率的モデル」を学ぶ汎用フレームワーク**かもしれない。
+
+<details><summary>歴史的文脈: Fisher の「最尤法」と Neyman-Pearson との確執</summary>
+
+Fisher が1922年に MLE を定式化した当時、統計学の主流は最小二乗法（Gauss 1809）だった。Fisher の革新は「尤度関数」という概念を導入し、「データが与えられたもとでのパラメータの妥当性」を直接定量化したことだ。
+
+**逆転の発想**: 確率とは「未知のデータに対するモデルの信念」ではなく、「観測されたデータに対するパラメータの妥当性」として読み直せる。これが尤度（likelihood）の意味。
+
+Fisher と Neyman-Pearson（信頼区間・仮説検定の創始者）は激しく対立した。Fisher は「検定の有意水準 0.05 は恣意的だ」と主張し、Neyman は「MLE の漸近論は実用性を欠く」と反論した。現在の統計学はこの二つの流派を都合よく混ぜて使っているが、哲学的には今も相容れない。
+
+100年後、この Fisher の直感が深層学習の損失関数（Cross-Entropy）に直結し、ChatGPT の訓練に至る。**MLE は「世界がこのデータを生成した確率を最大化するパラメータを探す」という行為** — 機械が世界のモデルを作る試み、とも読める。
+</details>
+
+<details><summary>思考実験: MLE で「人間の知識」は学べるか？</summary>
+
+Large Language Models の訓練は `$\max_\theta \sum_{t} \log p_\theta(x_t|x_{<t})$` という単純な MLE だ。しかし「テキストの確率分布を完璧に学ぶ」ことは、そのテキストを生成した認知・文化・知識のモデルを学ぶことと等価か？
+
+論点:
+- **肯定側**: テキストは「人間の認知のコンプレッション」。分布を学べば認知を学べる（Sapir-Whorf 仮説の弱形）
+- **否定側**: テキストは世界の観測ではなく、観測の記号的射影。`$p(\text{text})$` の完璧な推定器でも、物理世界 `$p(\text{world})$` は推論できない（Symbol Grounding 問題）
+- **現実**: LLM は「記号操作が得意」「常識推論はできるが身体的直感はできない」という asymmetry — これは MLE の何を反映しているか？
+</details>
 
 ---
 
 ## 参考文献
 
-### 主要論文
-
-[^1]: Fisher, R. A. (1922). "On the mathematical foundations of theoretical statistics." *Philosophical Transactions of the Royal Society of London, Series A*, 222, 309-368.
-@[card](https://doi.org/10.1098/rsta.1922.0009)
-
-[^2]: Goodfellow, I. J., Pouget-Abadie, J., Mirza, M., et al. (2014). "Generative Adversarial Nets." *NeurIPS 2014*.
-@[card](https://arxiv.org/abs/1406.2661)
-
-[^3]: Kingma, D. P. & Welling, M. (2013). "Auto-Encoding Variational Bayes." *ICLR 2014*.
-@[card](https://arxiv.org/abs/1312.6114)
-
-[^4]: Heusel, M., Ramsauer, H., Unterthiner, T., et al. (2017). "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium." *NeurIPS 2017*.
-@[card](https://arxiv.org/abs/1706.08500)
-
-[^5]: Ho, J., Jain, A. & Abbeel, P. (2020). "Denoising Diffusion Probabilistic Models." *NeurIPS 2020*.
-@[card](https://arxiv.org/abs/2006.11239)
-
-[^6]: Mohamed, S. & Lakshminarayanan, B. (2016). "Learning in Implicit Generative Models." *arXiv:1610.03483*.
-@[card](https://arxiv.org/abs/1610.03483)
-
-[^7]: Rezende, D. J. & Mohamed, S. (2015). "Variational Inference with Normalizing Flows." *ICML 2015*.
-@[card](https://arxiv.org/abs/1505.05770)
-
-[^8]: Salimans, T., Goodfellow, I., Zaremba, W., et al. (2016). "Improved Techniques for Training GANs." *NeurIPS 2016*.
-@[card](https://arxiv.org/abs/1606.03498)
-
-[^9]: Jayasumana, S., Ramalingam, S., Veit, A., et al. (2024). "Rethinking FID: Towards a Better Evaluation Metric for Image Generation." *CVPR 2024*.
-@[card](https://arxiv.org/abs/2401.09603)
-
-[^10]: Song, Y. & Ermon, S. (2019). "Generative Modeling by Estimating Gradients of the Data Distribution." *NeurIPS 2019*.
-@[card](https://arxiv.org/abs/1907.05600)
-
-[^11]: Dinh, L., Krueger, D. & Bengio, Y. (2014). "NICE: Non-linear Independent Components Estimation." *ICLR 2015 Workshop*.
-@[card](https://arxiv.org/abs/1410.8516)
-
-[^12]: Dinh, L., Sohl-Dickstein, J. & Bengio, S. (2016). "Density estimation using Real NVP." *ICLR 2017*.
-@[card](https://arxiv.org/abs/1605.08803)
-
-[^13]: Sohl-Dickstein, J., Weiss, E. A., Maheswaranathan, N. & Ganguli, S. (2015). "Deep Unsupervised Learning using Nonequilibrium Thermodynamics." *ICML 2015*.
-@[card](https://arxiv.org/abs/1503.03585)
-
-[^14]: Cramér, H. (1946). *Mathematical Methods of Statistics*. Princeton University Press.
-
-[^15]: Rao, C. R. (1945). "Information and the accuracy attainable in the estimation of statistical parameters." *Bulletin of the Calcutta Mathematical Society*, 37, 81-91.
-
-### 教科書
-
-- Bishop, C. M. (2006). *Pattern Recognition and Machine Learning*. Springer.
-- Goodfellow, I., Bengio, Y. & Courville, A. (2016). *Deep Learning*. MIT Press. [Free: deeplearningbook.org]
-- Murphy, K. P. (2023). *Probabilistic Machine Learning: Advanced Topics*. MIT Press. [Free: probml.github.io]
-- Cover, T. M. & Thomas, J. A. (2006). *Elements of Information Theory*. 2nd ed. Wiley.
-
----
-
-## 記法規約
-
-| 記号 | 読み方 | 意味 | 初出 |
-|:-----|:-------|:-----|:-----|
-| $\hat{\theta}_\text{MLE}$ | シータハット エムエルイー | 最尤推定量 | 定義 3.1 |
-| $q_\theta(x)$ | キュー シータ エックス | パラメトリックモデルの密度 | 定義 3.1 |
-| $p_\text{data}(x)$ | ピー データ | データの真の分布 | Zone 0 |
-| $\hat{p}(x)$ | ピーハット | 経験分布 | 定理 3.2 |
-| $H(\hat{p}, q_\theta)$ | エイチ | Cross-Entropy | 定理 3.2 |
-| $D_\text{KL}(\hat{p} \| q_\theta)$ | ケーエル | KL ダイバージェンス | 定理 3.3 |
-| $\mathcal{I}(\theta)$ | フィッシャー アイ | Fisher 情報行列 | 性質 3.4b |
-| $G_\theta(z)$ | ジー シータ | GAN の生成器 | 定義 3.8 |
-| $D_\phi(x)$ | ディー ファイ | GAN の判別器 | 定義 3.8 |
-| $D_\text{JS}$ | ジェーエス | Jensen-Shannon ダイバージェンス | 定理 3.8b |
-| $s_\theta(x)$ | エス シータ | スコア関数の推定 | 定義 3.9 |
-| $\nabla_x \log p(x)$ | ナブラ エックス | スコア関数（真） | 定義 3.9 |
-| $\epsilon_\theta(x_t, t)$ | イプシロン シータ | DDPM のノイズ予測器 | 3.9 |
-| $\text{FID}$ | エフアイディー | Frechet Inception Distance | 定義 3.12a |
-| $\text{IS}$ | アイエス | Inception Score | 定義 3.12b |
-| $\text{CMMD}$ | シーエムエムディー | CLIP MMD | 定義 3.12c |
-| $f^{-1}$ | エフ インバース | Flow の逆変換 | 定理 3.7 |
-| $\det J$ | デット ジェー | ヤコビアン行列式 | 定理 3.7 |
-| $p(z)$ | ピー ゼット | 潜在空間の事前分布 | 3.6 |
-| $x_t$ | エックス ティー | 拡散過程の時刻 $t$ の状態 | 3.9 |
-| $\text{ELBO}$ | エルボ | 変分下界（第8回で導出） | 3.5 |
-| $\pi_k$ | パイ ケー | 混合係数（GMM） | 4.1 |
-| $\gamma_{nk}$ | ガンマ | 責任度（EM の E-step） | 4.1 |
-| $G_{\theta\#}\mu$ | プッシュフォワード | Pushforward 測度 | 2.7 |
-| $\mathcal{M}$ | エム | データ多様体 | 2.5 |
-| $D^*_G(x)$ | ディースター | GAN の最適判別器 | 定理 3.8a |
-
----
-
-## 実践チートシート
-
-:::details 推定量選択チートシート（印刷用）
-
-**問題別推定量選択ガイド**
-
-| 推定の目的 | 第一選択 | 第二選択 | 理由 |
-|:-----|:---------|:---------|:-----|
-| 高品質密度推定 | スコア推定量（Diffusion） | 暗黙的推定（GAN） | 推定精度 + 安定性 |
-| 離散系列推定 | 自己回帰MLE（GPT） | - | 離散データに最適 |
-| 潜在表現学習 | 変分MLE（VAE） | 変数変換MLE（Flow） | 滑らかな潜在空間 |
-| 異常検知 | Flow / VAE | - | 尤度計算が必要 |
-| 正確な密度推定 | 変数変換MLE（Flow） | 自己回帰MLE | 正確な尤度 |
-| 高速サンプリング | 暗黙的推定 / 変分MLE | Consistency Model | 1-shot生成 |
-| 条件付き推定 | スコア推定量 | 暗黙的推定 | Classifier-free guidance |
-| 時系列推定 | スコア推定量 | - | 時間整合性 |
-
-**MLE の公式集**
-
-$$\hat{\theta}_\text{MLE} = \arg\max_\theta \frac{1}{N}\sum_{i=1}^{N} \log q_\theta(x_i) = \arg\min_\theta H(\hat{p}, q_\theta) = \arg\min_\theta D_\text{KL}(\hat{p} \| q_\theta)$$
-
-**ガウス分布の MLE（覚えるべき）:**
-
-$$\hat{\mu} = \frac{1}{N}\sum_{i=1}^{N} x_i, \quad \hat{\sigma}^2 = \frac{1}{N}\sum_{i=1}^{N}(x_i - \hat{\mu})^2$$
-
-**MLEの4変形の損失関数**
-
-```
-VAE:       L = -E_q[log p(x|z)] + KL[q(z|x) || p(z)]
-GAN:       L_D = -E[log D(x)] - E[log(1-D(G(z)))]
-           L_G = -E[log D(G(z))]
-Flow:      L = -E[log p(f⁻¹(x)) + log|det(∂f⁻¹/∂x)|]
-Diffusion: L = E[||ε - ε_θ(√ᾱₜx₀ + √(1-ᾱₜ)ε, t)||²]
-```
-
-**統計的距離ワンライナー**
-
-```python
-# FID: W₂ distance with Gaussian approximation
-FID = np.dot(mu_r-mu_g, mu_r-mu_g) + np.trace(sigma_r + sigma_g - 2*sqrtm(sigma_r@sigma_g))
-
-# CMMD: MMD in CLIP space
-CMMD2 = mean_k(r,r) + mean_k(g,g) - 2*mean_k(r,g)  # k = RBF kernel
-
-# Perplexity: exponentiated cross-entropy
-PPL = np.exp(cross_entropy_loss)
-```
-
-**重要な等価関係**
-
-```
-MLE ≡ Cross-Entropy最小化 ≡ KL最小化 ≡ 前向きKL最小化
-GAN ≡ JSD最小化 ≡ 密度比推定
-LLM訓練 ≡ 自己回帰MLE ≡ 次トークンCE最小化
-Score Matching ≡ Denoising ≡ Diffusion (簡易版)
-MAP ≡ MLE + L2正則化 (ガウス事前分布の場合)
-```
-
-**Mode-Covering vs Mode-Seeking 覚え方**
-
-```
-Forward KL: D(p_data || q_model)
-  → q must cover where p > 0
-  → "Cover all modes" → blurry but complete
-  → Used by: MLE, VAE
-
-Reverse KL: D(q_model || p_data)
-  → q must stay where p > 0
-  → "Seek one mode" → sharp but incomplete
-  → Used by: GAN (approximately via JSD)
-```
-:::
-
-:::details 統計的推定の年代記（覚えるべき論文 Top 13）
-
-| 年 | 論文 | 貢献 | arXiv |
-|:---|:-----|:-----|:------|
-| 1922 | Fisher | MLE の体系化 | - |
-| 2013 | Kingma & Welling | VAE | 1312.6114 |
-| 2014 | Goodfellow+ | GAN | 1406.2661 |
-| 2014 | Dinh+ | NICE (Flow の始祖) | 1410.8516 |
-| 2015 | Sohl-Dickstein+ | Diffusion の着想 | 1503.03585 |
-| 2015 | Rezende & Mohamed | Normalizing Flows | 1505.05770 |
-| 2016 | Salimans+ | Inception Score | 1606.03498 |
-| 2016 | Dinh+ | Real NVP | 1605.08803 |
-| 2016 | Mohamed+ | Prescribed vs Implicit | 1610.03483 |
-| 2017 | Heusel+ | FID | 1706.08500 |
-| 2019 | Song & Ermon | Score Matching 生成 | 1907.05600 |
-| 2020 | Ho+ | DDPM | 2006.11239 |
-| 2024 | Jayasumana+ | CMMD (FID 改善) | 2401.09603 |
-:::
-
-:::details 推定量の数学的前提条件マップ
-
-```
-第2回 線形代数
-  ├── 固有値分解 → FID の行列平方根
-  ├── 行列式 → Flow のヤコビアン
-  └── 内積空間 → Fisher 情報行列
-
-第3回 微分積分
-  ├── 偏微分 → MLE の勾配
-  ├── ヤコビアン → 変数変換公式
-  └── 連鎖律 → Backpropagation
-
-第4回 確率統計
-  ├── 確率分布 → 密度推定の定義
-  ├── ベイズの定理 → 事後推論
-  └── 条件付き確率 → 自己回帰分解
-
-第5回 測度論
-  ├── Lebesgue 積分 → 期待値の厳密定義
-  ├── Radon-Nikodym → 密度比推定
-  └── Pushforward 測度 → GAN の生成器
-
-第6回 情報理論・最適化
-  ├── KL ダイバージェンス → MLE 等価性
-  ├── Cross-Entropy → 損失関数
-  ├── Adam → 訓練アルゴリズム
-  └── Jensen 不等式 → ELBO (第8回)
-
-第7回 本講義
-  ├── MLE → 全推定量の基盤
-  ├── 分類体系 → モデル選択の指針
-  └── 評価指標 → 品質測定
-```
-:::
-
-:::details 数値の直感（覚えておくと便利）
-
-| 量 | 典型値 | 意味 |
-|:---|:-------|:-----|
-| CIFAR-10 FID (DDPM) | 3.17 | 画像生成の SOTA レベル |
-| ImageNet FID (Diffusion) | ~2-5 | 大規模画像生成 |
-| GPT-4 Perplexity | ~10-20 (推定) | 非常に良い言語モデル |
-| Random baseline PPL | vocab_size (~50K) | 学習前の状態 |
-| 顔画像の内在次元 | ~100 | 12,288次元中 |
-| MNIST の内在次元 | ~10-15 | 784次元中 |
-| IS (CIFAR-10, 最良) | ~9.5 | 最大値は10（クラス数） |
-| ガウス MLE の収束 | $O(1/\sqrt{N})$ | Fisher 情報から |
-:::
-
----
-
-## 補遺 — MLE実装の数値安定性とベストプラクティス
-
-:::message
-**実装の落とし穴**: 理論的に美しいMLEも、数値計算では対数アンダーフロー・オーバーフロー・条件数の問題で破綻しやすい。Production-readyな実装のコツを解説。
-:::
-
-### 1. Log-Sum-Exp Trick（必須テクニック）
-
-**問題**: $\log \sum_i \exp(x_i)$ の直接計算でオーバーフロー。
-
-**解決**: 最大値を引いて正規化:
-
-$$
-\log \sum_i \exp(x_i) = \max_i(x_i) + \log \sum_i \exp(x_i - \max_i(x_i))
-$$
-
-```python
-import numpy as np
-
-def log_sum_exp(x):
-    """数値安定な log-sum-exp"""
-    max_x = np.max(x)
-    return max_x + np.log(np.sum(np.exp(x - max_x)))
-
-# 例: 混合モデルの対数尤度
-log_weights = np.array([-1000, -1001, -999])  # オーバーフロー危険
-log_prob = log_sum_exp(log_weights)  # 安全に計算
-```
-
-### 2. ガウス分布のMLE — 共分散行列の正則化
-
-```python
-def fit_gaussian_stable(X, reg=1e-6):
-    """数値安定なガウス分布MLE"""
-    N, d = X.shape
-
-    # 平均
-    mu = np.mean(X, axis=0)
-
-    # 共分散行列
-    X_centered = X - mu
-    Sigma = (X_centered.T @ X_centered) / N
-
-    # 正則化（特異に近い場合の対策）
-    Sigma += reg * np.eye(d)
-
-    return mu, Sigma
-
-# 行列式の計算も log-det で安定化
-def log_det_stable(Sigma):
-    """Choleskyを使った安定な log|Σ|"""
-    try:
-        L = np.linalg.cholesky(Sigma)
-        return 2 * np.sum(np.log(np.diag(L)))
-    except np.linalg.LinAlgError:
-        # Cholesky失敗 → EVDで計算
-        eigvals = np.linalg.eigvalsh(Sigma)
-        return np.sum(np.log(np.maximum(eigvals, 1e-10)))
-```
-
-### 3. カテゴリ分布のMLE — ゼロ頻度問題
-
-```python
-def fit_categorical_smoothed(counts, alpha=1.0):
-    """Laplace smoothing付きカテゴリ分布MLE"""
-    K = len(counts)
-
-    # Laplace smoothing（事前分布 Dirichlet(α) を仮定）
-    prob = (counts + alpha) / (np.sum(counts) + alpha * K)
-
-    return prob
-
-# 例
-counts = np.array([100, 0, 50])  # クラス2がゼロ頻度
-prob = fit_categorical_smoothed(counts, alpha=0.1)
-# prob = [0.666, 0.00066, 0.333]（ゼロを回避）
-```
-
-### 4. 混合モデルのMLE — 初期値選択
-
-```python
-from sklearn.cluster import KMeans
-
-def initialize_gmm(X, K):
-    """K-meansで混合ガウスモデルの初期値を生成"""
-    kmeans = KMeans(n_clusters=K, n_init=10).fit(X)
-
-    # 初期値
-    weights = np.bincount(kmeans.labels_) / len(X)
-    means = kmeans.cluster_centers_
-
-    # 各クラスタの共分散（正則化付き）
-    covs = []
-    for k in range(K):
-        X_k = X[kmeans.labels_ == k]
-        if len(X_k) > 0:
-            cov = np.cov(X_k.T) + 1e-6 * np.eye(X.shape[1])
-        else:
-            cov = np.eye(X.shape[1])
-        covs.append(cov)
-
-    return weights, means, covs
-```
-
-### 5. オンラインMLE — Welford's Algorithm
-
-大規模データで平均・分散を逐次更新:
-
-$$
-\begin{aligned}
-\bar{x}_n &= \bar{x}_{n-1} + \frac{x_n - \bar{x}_{n-1}}{n} \\
-M_{2,n} &= M_{2,n-1} + (x_n - \bar{x}_{n-1})(x_n - \bar{x}_n) \\
-\sigma^2_n &= \frac{M_{2,n}}{n}
-\end{aligned}
-$$
-
-```python
-class OnlineGaussianMLE:
-    def __init__(self):
-        self.n = 0
-        self.mean = 0
-        self.M2 = 0
-
-    def update(self, x):
-        """データ点xで平均・分散を更新"""
-        self.n += 1
-        delta = x - self.mean
-        self.mean += delta / self.n
-        delta2 = x - self.mean
-        self.M2 += delta * delta2
-
-    def get_params(self):
-        if self.n < 2:
-            return self.mean, 0
-        return self.mean, self.M2 / self.n
-
-# 使用例
-mle = OnlineGaussianMLE()
-for x in data_stream:
-    mle.update(x)
-
-mu, sigma2 = mle.get_params()
-```
-
-### 6. ロバストMLE — 外れ値対策
-
-Huber損失で外れ値の影響を抑制:
-
-$$
-L_\delta(x) = \begin{cases}
-\frac{1}{2}x^2 & |x| \leq \delta \\
-\delta(|x| - \frac{1}{2}\delta) & |x| > \delta
-\end{cases}
-$$
-
-```python
-from scipy.optimize import minimize
-
-def robust_mle_gaussian(X, delta=1.5):
-    """Huber損失によるロバストMLE"""
-    def huber_loss(params):
-        mu, log_sigma = params
-        sigma = np.exp(log_sigma)
-        residuals = (X - mu) / sigma
-        loss = np.where(
-            np.abs(residuals) <= delta,
-            0.5 * residuals**2,
-            delta * (np.abs(residuals) - 0.5 * delta)
-        )
-        return np.sum(loss) + len(X) * log_sigma
-
-    # 初期値
-    init = [np.median(X), np.log(np.std(X))]
-    result = minimize(huber_loss, init, method='L-BFGS-B')
-
-    mu_robust = result.x[0]
-    sigma_robust = np.exp(result.x[1])
-    return mu_robust, sigma_robust
-```
-
-### 7. 最適化のデバッグ — 勾配チェック
-
-```python
-def check_gradient(log_likelihood, theta, epsilon=1e-5):
-    """数値微分で勾配の正しさを検証"""
-    grad_analytic = autograd.grad(log_likelihood)(theta)
-
-    grad_numeric = np.zeros_like(theta)
-    for i in range(len(theta)):
-        theta_plus = theta.copy()
-        theta_plus[i] += epsilon
-        theta_minus = theta.copy()
-        theta_minus[i] -= epsilon
-
-        grad_numeric[i] = (log_likelihood(theta_plus) -
-                           log_likelihood(theta_minus)) / (2 * epsilon)
-
-    # 相対誤差
-    rel_error = np.linalg.norm(grad_analytic - grad_numeric) / (
-        np.linalg.norm(grad_analytic) + np.linalg.norm(grad_numeric)
-    )
-
-    print(f"Gradient check: relative error = {rel_error:.2e}")
-    assert rel_error < 1e-5, "Gradient implementation error!"
-```
-
-### 8. 実装チェックリスト
-
-| 項目 | チェック | 実装 |
-|:---|:---:|:---|
-| Overflow対策 | ✅ | Log-space計算 |
-| Underflow対策 | ✅ | Log-sum-exp |
-| 特異行列対策 | ✅ | 正則化項 $+\lambda I$ |
-| ゼロ頻度対策 | ✅ | Laplace smoothing |
-| 初期値依存性 | ✅ | 複数の初期値 / K-means |
-| 勾配検証 | ✅ | 数値微分と比較 |
-| 収束判定 | ✅ | $\|\theta^{(t+1)} - \theta^{(t)}\| < \epsilon$ |
-| メモリ効率 | ✅ | オンラインアルゴリズム |
-
----
+[^1]: Fisher, R. A. (1922). "On the Mathematical Foundations of Theoretical Statistics." *Philosophical Transactions of the Royal Society of London. Series A*, 222, 309-368. [arXiv:2104.03765](https://arxiv.org/abs/2104.03765) (survey)
+[^2]: Goodfellow, I., et al. (2014). "Generative Adversarial Nets." *NeurIPS 2014*. [arXiv:1406.2661](https://arxiv.org/abs/1406.2661)
+[^3]: Kingma, D. P., & Welling, M. (2013). "Auto-Encoding Variational Bayes." *ICLR 2014*. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114)
+[^4]: Mohamed, S., & Lakshminarayanan, B. (2016). "Learning in Implicit Generative Models." *arXiv preprint*. [arXiv:1610.03483](https://arxiv.org/abs/1610.03483)
+[^5]: Rezende, D. J., & Mohamed, S. (2015). "Variational Inference with Normalizing Flows." *ICML 2015*. [arXiv:1505.05770](https://arxiv.org/abs/1505.05770)
+[^6]: Hyvärinen, A. (2005). "Estimation of Non-Normalized Statistical Models by Score Matching." *JMLR*, 6, 695-709. [arXiv:2101.03288](https://arxiv.org/abs/2101.03288)
+[^7]: Song, Y., & Ermon, S. (2019). "Generative Modeling by Estimating Gradients of the Data Distribution." *NeurIPS 2019*. [arXiv:1907.05600](https://arxiv.org/abs/1907.05600)
+[^8]: Heusel, M., et al. (2017). "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium." *NeurIPS 2017*. [arXiv:1706.08500](https://arxiv.org/abs/1706.08500)
+[^9]: Salimans, T., et al. (2016). "Improved Techniques for Training GANs." *NeurIPS 2016*. [arXiv:1606.03498](https://arxiv.org/abs/1606.03498)
+[^10]: Jayasumana, S., et al. (2024). "Rethinking FID: Towards a Better Evaluation Metric for Image Generation." *CVPR 2024*. [arXiv:2401.09603](https://arxiv.org/abs/2401.09603)
+[^11]: Cranmer, K., Brehmer, J., & Louppe, G. (2020). "The frontier of simulation-based inference." *PNAS*, 117(48), 30055-30062. [arXiv:1911.01429](https://arxiv.org/abs/1911.01429)
+[^12]: Ho, J., Jain, A., & Abbeel, P. (2020). "Denoising Diffusion Probabilistic Models." *NeurIPS 2020*. [arXiv:2006.11239](https://arxiv.org/abs/2006.11239)
+[^13]: Khemakhem, I., et al. (2020). "Variational Autoencoders and Nonlinear ICA: A Unifying Framework." *AISTATS 2020*. [arXiv:1907.04809](https://arxiv.org/abs/1907.04809)
+
+## 著者リンク
+- Blog: https://fumishiki.dev
+- X: https://x.com/fumishiki
+- LinkedIn: https://www.linkedin.com/in/fumitakamurakami
+- GitHub: https://github.com/fumishiki
+- Hugging Face: https://huggingface.co/fumishiki
 
 ## ライセンス
-
 本記事は [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja)（クリエイティブ・コモンズ 表示 - 非営利 - 継承 4.0 国際）の下でライセンスされています。
 
 ### ⚠️ 利用制限について

@@ -4,1758 +4,1560 @@ emoji: "🔬"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "linearalgebra", "python"]
 published: true
+difficulty: "★★★★☆"
+time_estimate: "90 minutes"
+languages: ["Python"]
+keywords: ["SVD", "低ランク近似", "Randomized SVD", "行列微分", "数値微分", "einsum", "自動微分", "Dual Numbers", "LoRA", "AdaLoRA", "Tikhonov正則化", "Attention", "LayerNorm", "FlashAttention"]
 ---
 
-## 💻 4. 実装ゾーン（45分）— SVDと自動微分をコードで操る
-
-### 4.1 SVD画像圧縮の完全実装
-
-```python
-import numpy as np
-
-def svd_compress(A, k):
-    """Compress matrix A to rank-k using SVD"""
-    U, s, Vt = np.linalg.svd(A, full_matrices=False)
-    return U[:, :k] @ np.diag(s[:k]) @ Vt[:k, :], s
-
-def compression_stats(m, n, k):
-    """Calculate compression statistics"""
-    original = m * n
-    compressed = k * (m + n + 1)
-    return compressed / original
-
-# Demo with synthetic image
-np.random.seed(42)
-m, n = 256, 192
-# Create structured image: smooth gradients + edges
-x = np.linspace(0, 8*np.pi, m)
-y = np.linspace(0, 6*np.pi, n)
-X, Y = np.meshgrid(y, x)
-image = (np.sin(X) * np.cos(Y) + 0.3 * np.sin(3*X + 2*Y) +
-         0.5 * np.sign(np.sin(X/2)))
-image += 0.05 * np.random.randn(m, n)  # small noise
-
-_, s = np.linalg.svd(image, full_matrices=False)
-
-print("SVD Image Compression Results:")
-print(f"Image size: {m}x{n} = {m*n:,} values")
-print(f"{'rank':>6} {'ratio':>10} {'error':>10} {'PSNR(dB)':>10}")
-print("-" * 42)
-
-for k in [1, 5, 10, 20, 50, 100]:
-    A_k, _ = svd_compress(image, k)
-    ratio = compression_stats(m, n, k)
-    mse = np.mean((image - A_k)**2)
-    max_val = np.max(np.abs(image))
-    psnr = 10 * np.log10(max_val**2 / mse) if mse > 0 else float('inf')
-    rel_error = np.linalg.norm(image - A_k, 'fro') / np.linalg.norm(image, 'fro')
-    print(f"{k:6d} {ratio:9.1%} {rel_error:10.6f} {psnr:10.2f}")
-```
-
-### 4.2 Randomized SVD — 大規模行列の効率的なSVD
-
-通常のSVDは $O(\min(mn^2, m^2n))$。数万×数万の行列には遅すぎる。**Randomized SVD** はランダム射影で次元を落としてからSVDを計算する。
-
-```python
-import numpy as np
-
-def randomized_svd(A, k, n_oversamples=10, n_iter=2):
-    """
-    Randomized SVD (Halko, Martinsson, Tropp 2011)
-
-    Parameters:
-        A: (m, n) matrix
-        k: target rank
-        n_oversamples: oversampling parameter (default 10)
-        n_iter: power iterations for accuracy (default 2)
-
-    Returns:
-        U, s, Vt: truncated SVD components
-    """
-    m, n = A.shape
-    p = k + n_oversamples
-
-    # Step 1: Random projection
-    Omega = np.random.randn(n, p)
-    Y = A @ Omega  # (m, p)
-
-    # Step 2: Power iteration (improves accuracy for slow singular value decay)
-    for _ in range(n_iter):
-        Y = A @ (A.T @ Y)
-
-    # Step 3: QR factorization of Y
-    Q, _ = np.linalg.qr(Y)  # (m, p) orthonormal
-
-    # Step 4: Form small matrix and compute its SVD
-    B = Q.T @ A  # (p, n) — much smaller!
-    U_hat, s, Vt = np.linalg.svd(B, full_matrices=False)
-
-    # Step 5: Recover left singular vectors
-    U = Q @ U_hat
-
-    return U[:, :k], s[:k], Vt[:k, :]
-
-# Benchmark
-np.random.seed(42)
-m, n, true_rank = 5000, 3000, 20
-U_true = np.linalg.qr(np.random.randn(m, true_rank))[0]
-V_true = np.linalg.qr(np.random.randn(n, true_rank))[0]
-s_true = np.logspace(1, -1, true_rank)
-A = U_true @ np.diag(s_true) @ V_true.T + 0.01 * np.random.randn(m, n)
-
-import time
-
-# Full SVD
-t0 = time.time()
-U_f, s_f, Vt_f = np.linalg.svd(A, full_matrices=False)
-t_full = time.time() - t0
-
-# Randomized SVD
-k = 20
-t0 = time.time()
-U_r, s_r, Vt_r = randomized_svd(A, k)
-t_rand = time.time() - t0
-
-A_full = U_f[:, :k] @ np.diag(s_f[:k]) @ Vt_f[:k, :]
-A_rand = U_r @ np.diag(s_r) @ Vt_r
-
-print(f"Matrix size: {m}x{n}")
-print(f"Full SVD:       {t_full:.3f}s, error = {np.linalg.norm(A - A_full, 'fro'):.6f}")
-print(f"Randomized SVD: {t_rand:.3f}s, error = {np.linalg.norm(A - A_rand, 'fro'):.6f}")
-print(f"Speedup: {t_full/t_rand:.1f}x")
-```
-
-### 4.3 Reverse Mode 自動微分の完全実装
-
-Zone 1.5 で簡易版を示した。ここではより本格的な実装を示す。
-
-```python
-import numpy as np
-
-class Value:
-    """Scalar autograd engine (Reverse Mode AD)"""
-    def __init__(self, data, _children=(), _op='', label=''):
-        self.data = float(data)
-        self.grad = 0.0
-        self._backward = lambda: None
-        self._prev = set(_children)
-        self._op = _op
-        self.label = label
-
-    def __repr__(self):
-        return f"Value({self.data:.4f}, grad={self.grad:.4f})"
-
-    def __add__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data + other.data, (self, other), '+')
-        def _backward():
-            self.grad += out.grad
-            other.grad += out.grad
-        out._backward = _backward
-        return out
-
-    def __mul__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data * other.data, (self, other), '*')
-        def _backward():
-            self.grad += other.data * out.grad
-            other.grad += self.data * out.grad
-        out._backward = _backward
-        return out
-
-    def __pow__(self, other):
-        assert isinstance(other, (int, float))
-        out = Value(self.data ** other, (self,), f'**{other}')
-        def _backward():
-            self.grad += other * (self.data ** (other - 1)) * out.grad
-        out._backward = _backward
-        return out
-
-    def __neg__(self):
-        return self * -1
-
-    def __sub__(self, other):
-        return self + (-other)
-
-    def __truediv__(self, other):
-        return self * other**-1
-
-    def __radd__(self, other):
-        return self + other
-
-    def __rmul__(self, other):
-        return self * other
-
-    def exp(self):
-        out = Value(np.exp(self.data), (self,), 'exp')
-        def _backward():
-            self.grad += out.data * out.grad
-        out._backward = _backward
-        return out
-
-    def log(self):
-        out = Value(np.log(self.data), (self,), 'log')
-        def _backward():
-            self.grad += (1.0 / self.data) * out.grad
-        out._backward = _backward
-        return out
-
-    def tanh(self):
-        t = np.tanh(self.data)
-        out = Value(t, (self,), 'tanh')
-        def _backward():
-            self.grad += (1 - t**2) * out.grad
-        out._backward = _backward
-        return out
-
-    def backward(self):
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
-        self.grad = 1.0
-        for node in reversed(topo):
-            node._backward()
-
-# Demo: simple neural network loss
-x1 = Value(2.0, label='x1')
-x2 = Value(0.0, label='x2')
-w1 = Value(-3.0, label='w1')
-w2 = Value(1.0, label='w2')
-b = Value(6.8813735870195432, label='b')
-
-# Forward: neuron
-n = x1*w1 + x2*w2 + b
-o = n.tanh()
-
-# Backward
-o.backward()
-
-print("Forward:  o =", o)
-print("Gradients:")
-print(f"  do/dx1 = {x1.grad:.4f}")
-print(f"  do/dx2 = {x2.grad:.4f}")
-print(f"  do/dw1 = {w1.grad:.4f}")
-print(f"  do/dw2 = {w2.grad:.4f}")
-print(f"  do/db  = {b.grad:.4f}")
-```
-
-### 4.4 条件数と数値安定性
-
-#### IEEE 754 浮動小数点
-
-| 型 | ビット数 | 仮数部 | 指数部 | 有効桁 | 範囲 |
-|:---|:--------|:------|:------|:------|:-----|
-| float16 (half) | 16 | 10 | 5 | ~3.3桁 | $\pm 6.5 \times 10^4$ |
-| bfloat16 | 16 | 7 | 8 | ~2.4桁 | $\pm 3.4 \times 10^{38}$ |
-| float32 (single) | 32 | 23 | 8 | ~7.2桁 | $\pm 3.4 \times 10^{38}$ |
-| float64 (double) | 64 | 52 | 11 | ~15.9桁 | $\pm 1.8 \times 10^{308}$ |
-
-**機械学習での使い分け**: 推論=float16/bfloat16、学習=float32(マスターウェイト)+bfloat16(forward/backward)、精密計算=float64。
-
-#### Log-Sum-Exp trick
-
-Softmaxの計算で必須の数値安定化技法:
-
-$$
-\log \sum_i e^{x_i} = c + \log \sum_i e^{x_i - c}, \quad c = \max_i x_i
-$$
-
-```python
-import numpy as np
-
-# Naive vs numerically stable log-sum-exp
-x = np.array([1000.0, 1001.0, 1002.0])
-
-# Naive: overflow!
-try:
-    naive = np.log(np.sum(np.exp(x)))
-    print(f"Naive: {naive}")
-except:
-    print("Naive: OVERFLOW")
-
-# Stable: subtract max
-c = np.max(x)
-stable = c + np.log(np.sum(np.exp(x - c)))
-print(f"Stable: {stable:.4f}")
-print(f"Expected: {1002 + np.log(np.exp(-2) + np.exp(-1) + 1):.4f}")
-```
-
-### 4.5 スパース行列とGPU上の行列演算
-
-#### スパース行列
-
-大規模な行列の多くはスパース（ほとんどの要素が0）。SciPyの疎行列表現を使うとメモリと計算量を大幅に削減できる。
-
-```python
-import numpy as np
-from scipy import sparse
-from scipy.sparse.linalg import svds
-
-# Dense vs Sparse comparison
-n = 10000
-density = 0.001  # 0.1% non-zero
-
-# Create sparse matrix
-A_sparse = sparse.random(n, n, density=density, format='csr')
-print(f"Matrix size: {n}x{n} = {n**2:,} elements")
-print(f"Non-zero: {A_sparse.nnz:,} ({density:.1%})")
-print(f"Dense memory: {n**2 * 8 / 1e6:.1f} MB")
-print(f"Sparse memory: {(A_sparse.data.nbytes + A_sparse.indices.nbytes + A_sparse.indptr.nbytes) / 1e6:.1f} MB")
-
-# Sparse SVD (top-k singular values only)
-import time
-k = 10
-t0 = time.time()
-U, s, Vt = svds(A_sparse, k=k)
-t_sparse = time.time() - t0
-print(f"\nSparse SVD (top-{k}): {t_sparse:.3f}s")
-print(f"Top singular values: {np.round(s[::-1][:5], 4)}")
-```
-
-| 形式 | 説明 | 長所 | 用途 |
-|:-----|:-----|:-----|:-----|
-| CSR (Compressed Sparse Row) | 行ごとに非ゼロ要素を格納 | 行スライスが高速 | 行列×ベクトル |
-| CSC (Compressed Sparse Column) | 列ごとに非ゼロ要素を格納 | 列スライスが高速 | 転置操作 |
-| COO (Coordinate) | (行, 列, 値) のトリプレット | 構築が簡単 | 初期構築 |
-
-#### GPU上の行列演算
-
-| ライブラリ | 用途 | 特徴 |
-|:----------|:-----|:-----|
-| cuBLAS | 密行列演算 | NVIDIA GPU上のBLAS |
-| cuSPARSE | 疎行列演算 | GPU上のスパース行列積 |
-| cuSOLVER | 固有値分解・SVD | GPU上のLAPACK |
-| Tensor Core | 混合精度行列積 | FP16/BF16で高速化 |
-
-```python
-# PyTorch GPU example (conceptual)
-# import torch
-#
-# A = torch.randn(4096, 4096, device='cuda', dtype=torch.float16)
-# B = torch.randn(4096, 4096, device='cuda', dtype=torch.float16)
-#
-# # Tensor Core accelerated matrix multiply
-# C = torch.mm(A, B)  # uses Tensor Core if available
-#
-# # GPU SVD
-# U, s, Vt = torch.linalg.svd(A.float())
-```
-
-### 4.6 テンソル演算の高度なパターン
-
-Einsteinの縮約記法とNumPyの`einsum`は、複雑なテンソル演算を簡潔に表現する強力なツールだ。ここではTransformer実装で頻出するパターンを網羅する。
-
-```python
-import numpy as np
-
-# Setup: Batch=2, Heads=4, SeqLen=8, HeadDim=16
-B, H, T, d = 2, 4, 8, 16
-
-Q = np.random.randn(B, H, T, d)  # Query
-K = np.random.randn(B, H, T, d)  # Key
-V = np.random.randn(B, H, T, d)  # Value
-
-# Pattern 1: Attention scores (Q @ K^T)
-# Naive: for b, h, i, j: scores[b,h,i,j] = Σₖ Q[b,h,i,k] * K[b,h,j,k]
-scores_loop = np.zeros((B, H, T, T))
-for b in range(B):
-    for h in range(H):
-        scores_loop[b, h] = Q[b, h] @ K[b, h].T
-
-# einsum: 'bhik,bhjk->bhij'
-scores_einsum = np.einsum('bhik,bhjk->bhij', Q, K)
-
-# Verify
-assert np.allclose(scores_loop, scores_einsum)
-print("✓ Pattern 1: Q @ K^T")
-
-# Pattern 2: Scaled dot-product attention
-scores = scores_einsum / np.sqrt(d)
-attn = np.exp(scores - scores.max(axis=-1, keepdims=True))  # numerical stability
-attn = attn / attn.sum(axis=-1, keepdims=True)  # softmax
-
-# Apply attention to values: O[b,h,i,k] = Σⱼ attn[b,h,i,j] * V[b,h,j,k]
-output_loop = np.zeros((B, H, T, d))
-for b in range(B):
-    for h in range(H):
-        output_loop[b, h] = attn[b, h] @ V[b, h]
-
-output_einsum = np.einsum('bhij,bhjk->bhik', attn, V)
-assert np.allclose(output_loop, output_einsum)
-print("✓ Pattern 2: Attn @ V")
-
-# Pattern 3: Multi-head concatenation and projection
-# Flatten heads: (B, H, T, d) -> (B, T, H*d)
-output_concat = output_einsum.transpose(0, 2, 1, 3).reshape(B, T, H * d)
-
-# Alternative using einsum reshape
-# Not directly supported, but can use reshape + einsum for projection
-
-W_out = np.random.randn(H * d, H * d)  # output projection
-final_output = output_concat @ W_out
-print(f"✓ Pattern 3: Multi-head concat -> shape {final_output.shape}")
-
-# Pattern 4: Layer normalization gradient
-# Given: x (B, T, d), γ (d,), β (d,)
-# LN(x) = γ * (x - μ) / σ + β
-x = np.random.randn(B, T, d)
-gamma = np.random.randn(d)
-beta = np.random.randn(d)
-
-mu = x.mean(axis=-1, keepdims=True)
-sigma = x.std(axis=-1, keepdims=True)
-x_norm = (x - mu) / (sigma + 1e-5)
-y = gamma * x_norm + beta
-
-# Gradient w.r.t. input (simplified, assuming dy/dx chain rule)
-# This is complex; showing structure only
-dy = np.random.randn(B, T, d)  # upstream gradient
-dx_norm = dy * gamma  # element-wise
-
-# Full gradient includes sigma and mu terms
-# d(sigma)/dx = (x - mu) / (d * sigma)
-# d(mu)/dx = 1/d
-# Chain rule: complex but mechanical
-print("✓ Pattern 4: LayerNorm gradient structure")
-
-# Pattern 5: Batch matrix multiplication with different shapes
-A = np.random.randn(B, 10, 20)
-B_mat = np.random.randn(B, 20, 30)
-C = np.einsum('bij,bjk->bik', A, B_mat)
-assert C.shape == (B, 10, 30)
-print("✓ Pattern 5: Batched matmul")
-
-# Pattern 6: Outer product in batch
-v1 = np.random.randn(B, T, d)
-v2 = np.random.randn(B, T, d)
-outer = np.einsum('bti,btj->btij', v1, v2)
-assert outer.shape == (B, T, d, d)
-print("✓ Pattern 6: Batched outer product")
-
-# Pattern 7: Trace over specific dimensions
-# Compute trace of outer[b, t, :, :] for all b, t
-traces = np.einsum('btii->bt', outer)
-assert traces.shape == (B, T)
-print("✓ Pattern 7: Batched trace")
-
-print("\n=== einsum Performance Tips ===")
-print("1. Use optimize='optimal' for complex contractions")
-print("2. Explicit is better than implicit: write all indices")
-print("3. Profile: sometimes @ is faster for simple matmul")
-print("4. Memory: einsum can create large intermediate tensors")
-```
-
-:::message
-**einsum のコスト**: `einsum` は可読性が高いが、常に最速とは限らない。2つの行列の積では `@` 演算子の方が BLAS ルーチンに直接マップされ高速な場合がある。`optimize='optimal'` オプションは縮約順序を最適化するが、最悪ケースでは指数時間かかる（小規模テンソルなら問題ない）。
-:::
-
-### 4.7 行列分解の応用: QR分解とCholesky分解
-
-SVD以外の行列分解も、数値計算で重要な役割を果たす。
-
-#### QR分解: 直交化と最小二乗法
-
-$$
-A = QR, \quad Q^\top Q = I, \quad R \text{ は上三角}
-$$
-
-QR分解は、列ベクトルを直交化する**Gram-Schmidt法**の安定化版だ。最小二乗問題 $\min_\mathbf{x} \|A\mathbf{x} - \mathbf{b}\|^2$ を解くとき、$A = QR$ とすると:
-
-$$
-A^\top A \mathbf{x} = A^\top \mathbf{b} \quad \Rightarrow \quad R^\top Q^\top Q R \mathbf{x} = R^\top Q^\top \mathbf{b} \quad \Rightarrow \quad R \mathbf{x} = Q^\top \mathbf{b}
-$$
-
-$R$ は上三角なので、後退代入で $O(n^2)$ で解ける。
-
-```python
-import numpy as np
-
-# QR decomposition for least squares
-A = np.random.randn(100, 50)  # overdetermined system
-b = np.random.randn(100)
-
-# Method 1: Normal equations (numerically unstable for ill-conditioned A)
-x_normal = np.linalg.solve(A.T @ A, A.T @ b)
-
-# Method 2: QR decomposition (stable)
-Q, R = np.linalg.qr(A)
-x_qr = np.linalg.solve(R, Q.T @ b)
-
-# Method 3: SVD (most stable, but slowest)
-U, s, Vt = np.linalg.svd(A, full_matrices=False)
-x_svd = Vt.T @ (np.diag(1/s) @ (U.T @ b))
-
-print(f"Normal equations: {np.linalg.norm(A @ x_normal - b):.6f}")
-print(f"QR decomposition: {np.linalg.norm(A @ x_qr - b):.6f}")
-print(f"SVD (pseudoinverse): {np.linalg.norm(A @ x_svd - b):.6f}")
-print(f"\nSolution agreement (QR vs SVD): {np.allclose(x_qr, x_svd)}")
-
-# Condition number matters
-print(f"Condition number: {np.linalg.cond(A):.2e}")
-```
-
-#### Cholesky分解: 正定値行列の高速分解
-
-$$
-A = LL^\top, \quad L \text{ は下三角}
-$$
-
-正定値対称行列 $A$ （例: 共分散行列）に対して、Cholesky分解は $O(n^3/3)$ で計算でき、LU分解の2倍高速だ。
-
-**応用: 多変量正規分布のサンプリング**
-
-$$
-\mathbf{z} \sim \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Sigma}) \quad \Leftrightarrow \quad \mathbf{z} = \boldsymbol{\mu} + L \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
-$$
-
-$\boldsymbol{\Sigma} = LL^\top$ とCholesky分解すれば、標準正規分布のサンプル $\boldsymbol{\epsilon}$ を線形変換するだけで、任意の共分散を持つガウス分布からサンプリングできる。
-
-```python
-import numpy as np
-
-# Cholesky decomposition for sampling
-mu = np.array([1.0, 2.0, 3.0])
-Sigma = np.array([[2.0, 0.5, 0.3],
-                   [0.5, 1.5, 0.2],
-                   [0.3, 0.2, 1.0]])
-
-# Verify positive definite
-eigenvalues = np.linalg.eigvalsh(Sigma)
-print(f"Eigenvalues: {eigenvalues}")
-assert np.all(eigenvalues > 0), "Matrix must be positive definite"
-
-# Cholesky decomposition
-L = np.linalg.cholesky(Sigma)
-print(f"L @ L.T matches Sigma: {np.allclose(L @ L.T, Sigma)}")
-
-# Sampling
-n_samples = 10000
-epsilon = np.random.randn(n_samples, 3)
-samples = mu + epsilon @ L.T  # broadcasting
-
-# Verify sample statistics
-sample_mean = samples.mean(axis=0)
-sample_cov = np.cov(samples.T)
-
-print(f"\nTrue mean: {mu}")
-print(f"Sample mean: {sample_mean}")
-print(f"\nTrue covariance:\n{Sigma}")
-print(f"Sample covariance:\n{sample_cov}")
-print(f"Covariance error: {np.linalg.norm(sample_cov - Sigma):.4f}")
-```
-
-### 4.8 行列微分の数値検証パターン
-
-行列微分を手で導出したら、必ず数値微分で検証する。これは研究でも実務でも不可欠なデバッグ手法。
-
-```python
-import numpy as np
-
-def numerical_gradient_matrix(f, X, eps=1e-7):
-    """Compute numerical gradient df/dX for scalar-valued f"""
-    grad = np.zeros_like(X)
-    m, n = X.shape
-    for i in range(m):
-        for j in range(n):
-            X_plus = X.copy(); X_plus[i, j] += eps
-            X_minus = X.copy(); X_minus[i, j] -= eps
-            grad[i, j] = (f(X_plus) - f(X_minus)) / (2 * eps)
-    return grad
-
-# Example: verify d/dX tr(AXB) = A^T B^T
-A = np.random.randn(3, 4)
-B = np.random.randn(5, 3)
-X = np.random.randn(4, 5)
-
-def f_trace(X_):
-    return np.trace(A @ X_ @ B)
-
-grad_analytical = A.T @ B.T
-grad_numerical = numerical_gradient_matrix(f_trace, X)
-
-print(f"d/dX tr(AXB) = A^T B^T")
-print(f"Match: {np.allclose(grad_analytical, grad_numerical)}")
-print(f"Max error: {np.max(np.abs(grad_analytical - grad_numerical)):.2e}")
-
-# Example: verify d/dX ||X||_F^2 = 2X
-def f_frob(X_):
-    return np.sum(X_**2)
-
-grad_analytical_2 = 2 * X
-grad_numerical_2 = numerical_gradient_matrix(f_frob, X)
-print(f"\nd/dX ||X||_F^2 = 2X")
-print(f"Match: {np.allclose(grad_analytical_2, grad_numerical_2)}")
-
-# Example: verify d/dX ln det(X) = X^{-T}
-X_sq = np.random.randn(4, 4)
-X_sq = X_sq @ X_sq.T + 2 * np.eye(4)  # positive definite
-
-def f_logdet(X_):
-    return np.log(np.linalg.det(X_))
-
-grad_analytical_3 = np.linalg.inv(X_sq).T
-grad_numerical_3 = numerical_gradient_matrix(f_logdet, X_sq)
-print(f"\nd/dX ln det(X) = X^{{-T}}")
-print(f"Match: {np.allclose(grad_analytical_3, grad_numerical_3)}")
-```
-
-:::message
-**実践のルール**: 行列微分を導出したら、**必ず** `numerical_gradient_matrix` で検証する。一致しなければ導出に間違いがある。この習慣が、Backpropの実装バグを防ぐ。
-:::
-
-### 4.9 行列微分のデバッグ技法
-
-実装した勾配が正しいか確認するための体系的アプローチ。
-
-```python
-import numpy as np
-
-def gradient_check(f, grad_f, X, eps=1e-7, rtol=1e-5, atol=1e-7, sample_size=10):
-    """
-    Comprehensive gradient checker for matrix-valued functions.
-
-    Parameters:
-        f: scalar-valued function f(X)
-        grad_f: analytical gradient function, returns dL/dX
-        X: input matrix
-        eps: finite difference step size
-        rtol: relative tolerance
-        atol: absolute tolerance
-        sample_size: number of random entries to check (for large matrices)
-
-    Returns:
-        dict with check results
-    """
-    grad_analytical = grad_f(X)
-    grad_numerical = np.zeros_like(X)
-
-    m, n = X.shape
-    total_entries = m * n
-
-    # For large matrices, sample random entries
-    if total_entries > sample_size**2:
-        indices = np.random.choice(total_entries, size=min(sample_size, total_entries), replace=False)
-        check_indices = [(i // n, i % n) for i in indices]
-    else:
-        check_indices = [(i, j) for i in range(m) for j in range(n)]
-
-    errors = []
-    for i, j in check_indices:
-        X_plus = X.copy(); X_plus[i, j] += eps
-        X_minus = X.copy(); X_minus[i, j] -= eps
-        grad_numerical[i, j] = (f(X_plus) - f(X_minus)) / (2 * eps)
-
-        anal = grad_analytical[i, j]
-        numer = grad_numerical[i, j]
-        err = abs(anal - numer)
-        rel_err = err / (abs(anal) + abs(numer) + 1e-10)
-        errors.append((i, j, anal, numer, err, rel_err))
-
-    # Summary statistics
-    errors_arr = np.array([e[4] for e in errors])
-    rel_errors_arr = np.array([e[5] for e in errors])
-
-    max_error = errors_arr.max()
-    max_rel_error = rel_errors_arr.max()
-    mean_error = errors_arr.mean()
-
-    # Check pass/fail
-    passed = np.allclose(
-        [e[2] for e in errors],  # analytical
-        [e[3] for e in errors],  # numerical
-        rtol=rtol, atol=atol
-    )
-
-    result = {
-        'passed': passed,
-        'max_absolute_error': max_error,
-        'max_relative_error': max_rel_error,
-        'mean_absolute_error': mean_error,
-        'num_checked': len(check_indices),
-        'worst_entries': sorted(errors, key=lambda x: x[5], reverse=True)[:5]
-    }
-
-    return result
-
-# Example 1: Simple quadratic form dL/dW = 2X^T(XW - y)
-def test_linear_regression_gradient():
-    X = np.random.randn(50, 10)
-    W = np.random.randn(10, 3)
-    y = np.random.randn(50, 3)
-
-    def loss(W_):
-        return np.linalg.norm(X @ W_ - y)**2
-
-    def grad_loss(W_):
-        return 2 * X.T @ (X @ W_ - y)
-
-    result = gradient_check(loss, grad_loss, W)
-
-    print("=== Linear Regression Gradient Check ===")
-    print(f"Passed: {result['passed']}")
-    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
-    print(f"Max relative error: {result['max_relative_error']:.2e}")
-    print(f"Entries checked: {result['num_checked']}")
-
-    if not result['passed']:
-        print("\nWorst 3 entries:")
-        for i, j, anal, numer, err, rel_err in result['worst_entries'][:3]:
-            print(f"  [{i},{j}]: analytical={anal:.6f}, numerical={numer:.6f}, rel_err={rel_err:.2e}")
-
-# Example 2: Softmax gradient
-def test_softmax_gradient():
-    z = np.random.randn(5, 10)  # logits
-    y = np.random.randint(0, 10, size=5)  # true labels
-
-    def softmax(z_):
-        e = np.exp(z_ - z_.max(axis=1, keepdims=True))
-        return e / e.sum(axis=1, keepdims=True)
-
-    def cross_entropy_loss(z_):
-        s = softmax(z_)
-        # Clip for numerical stability
-        return -np.sum(np.log(s[range(len(y)), y] + 1e-10))
-
-    def cross_entropy_grad(z_):
-        s = softmax(z_)
-        grad = s.copy()
-        grad[range(len(y)), y] -= 1
-        return grad
-
-    result = gradient_check(cross_entropy_loss, cross_entropy_grad, z)
-
-    print("\n=== Softmax + Cross-Entropy Gradient Check ===")
-    print(f"Passed: {result['passed']}")
-    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
-    print(f"Max relative error: {result['max_relative_error']:.2e}")
-
-# Example 3: Matrix trace dL/dW = A^T
-def test_trace_gradient():
-    A = np.random.randn(8, 10)
-    W = np.random.randn(10, 8)
-
-    def loss(W_):
-        return np.trace(A @ W_)
-
-    def grad_loss(W_):
-        return A.T
-
-    result = gradient_check(loss, grad_loss, W)
-
-    print("\n=== Trace Gradient Check ===")
-    print(f"Passed: {result['passed']}")
-    print(f"Max absolute error: {result['max_absolute_error']:.2e}")
-
-# Run all tests
-test_linear_regression_gradient()
-test_softmax_gradient()
-test_trace_gradient()
-
-print("\n=== Debugging Tips ===")
-print("1. Start with small matrices (3x3) where you can inspect all entries")
-print("2. Use atol=1e-6 for typical float32, atol=1e-10 for float64")
-print("3. If check fails: print worst entries and manually verify the formula")
-print("4. Common bugs: forgot transpose, wrong sign, off-by-one in broadcasting")
-print("5. Numerical gradient is O(ε) error; analytical should be O(ε²) better")
-```
-
-### 4.10 実践的な行列演算の落とし穴
-
-実装で頻出するバグパターンと回避法。
-
-```python
-import numpy as np
-
-print("=== Common Matrix Operation Pitfalls ===\n")
-
-# Pitfall 1: In-place operations breaking autograd
-A = np.array([[1.0, 2.0], [3.0, 4.0]])
-B = A  # B is a view, not a copy!
-B[0, 0] = 999
-print(f"Pitfall 1: In-place modification")
-print(f"  A[0,0] = {A[0,0]} (expected 1.0, got {A[0,0]})")
-print(f"  Solution: Use A.copy() when you need independence\n")
-
-# Pitfall 2: Broadcasting ambiguity
-v = np.array([1, 2, 3])  # shape (3,) — is this row or column?
-M = np.random.randn(3, 5)
-
-result1 = M + v[:, None]  # explicit column: (3,1) broadcasts to (3,5)
-result2 = M + v  # implicit: (3,) broadcasts to (3,5) — same as row broadcast!
-# result3 = v + M  # same as result2
-
-print(f"Pitfall 2: 1D array broadcasting ambiguity")
-print(f"  v.shape = {v.shape} — neither row nor column!")
-print(f"  M + v[:, None] shape: {result1.shape} (column broadcast)")
-print(f"  M + v shape: {result2.shape} (row broadcast)")
-print(f"  Solution: Always use explicit reshape for clarity\n")
-
-# Pitfall 3: @ vs * operator
-A = np.array([[1, 2], [3, 4]])
-B = np.array([[5, 6], [7, 8]])
-
-mat_product = A @ B  # matrix multiplication
-elem_product = A * B  # element-wise (Hadamard)
-
-print(f"Pitfall 3: @ vs * operator")
-print(f"  A @ B (matrix):\n{mat_product}")
-print(f"  A * B (element-wise):\n{elem_product}")
-print(f"  These are VERY different!\n")
-
-# Pitfall 4: inv() vs solve()
-A = np.random.randn(100, 100)
-b = np.random.randn(100)
-
-import time
-
-# Bad: compute inverse explicitly
-t0 = time.time()
-x_inv = np.linalg.inv(A) @ b
-t_inv = time.time() - t0
-
-# Good: use solve()
-t0 = time.time()
-x_solve = np.linalg.solve(A, b)
-t_solve = time.time() - t0
-
-print(f"Pitfall 4: inv() vs solve()")
-print(f"  inv(A) @ b: {t_inv*1000:.2f} ms")
-print(f"  solve(A, b): {t_solve*1000:.2f} ms")
-print(f"  Speedup: {t_inv/t_solve:.1f}x")
-print(f"  Error: {np.linalg.norm(x_inv - x_solve):.2e}")
-print(f"  Solution: NEVER compute inverse for solving Ax=b\n")
-
-# Pitfall 5: Numerical instability in softmax
-logits = np.array([1000.0, 1001.0, 1002.0])
-
-# Naive softmax: overflow!
-try:
-    naive_softmax = np.exp(logits) / np.sum(np.exp(logits))
-    print(f"Naive softmax: {naive_softmax}")
-except:
-    print(f"Pitfall 5: Naive softmax overflows!")
-
-# Stable softmax
-stable_softmax = np.exp(logits - logits.max()) / np.sum(np.exp(logits - logits.max()))
-print(f"  Stable softmax: {stable_softmax}")
-print(f"  Solution: Subtract max before exp\n")
-
-# Pitfall 6: Precision loss in variance calculation
-data = np.array([1e8, 1e8 + 1, 1e8 + 2, 1e8 + 3])
-
-# Naive: Var(X) = E[X²] - E[X]²
-mean = data.mean()
-var_naive = (data**2).mean() - mean**2
-var_correct = ((data - mean)**2).mean()
-
-print(f"Pitfall 6: Numerical precision in variance")
-print(f"  Naive (E[X²] - E[X]²): {var_naive:.10f}")
-print(f"  Correct ((X-μ)²): {var_correct:.10f}")
-print(f"  Relative error: {abs(var_naive - var_correct)/var_correct:.2e}")
-print(f"  Solution: Use two-pass algorithm or Welford's method\n")
-```
-
-:::message
-**進捗: 90% 完了** SVD画像圧縮、Randomized SVD、Reverse Mode AD の完全実装、条件数と数値安定性、スパース行列、QR/Cholesky分解、行列微分の数値検証、実践的デバッグ技法を習得した。
-:::
+# 第3回: 線形代数 II — SVD・行列微分・テンソル【後編：実装編】
+
+> **理論編へのリンク**: [第3回 Part1（理論編）](/articles/ml-lecture-03-part1)
+
+## Learning Objectives
+
+- [ ] truncated SVD の shape contract を破らずに実装し、誤差が「捨てた特異値のエネルギー」に等しいことを数値検証できる
+- [ ] Randomized SVD のアルゴリズムを追いかけ、なぜランダム射影で正確な部分空間が取れるのかを説明できる
+- [ ] LoRA の行列初期化戦略（Kaiming normal + ゼロ初期化）の数学的根拠を述べられる
+- [ ] einsum の添字ルールをパターン表から逆引きし、任意のテンソル縮約を書ける
+- [ ] 解析勾配を数値微分で検算し、相対誤差の判定基準を正しく適用できる
+- [ ] Dual Numbers による Forward Mode AD を実装し、機械微分との等価性を確認できる
+- [ ] Reverse Mode AD の Wengert tape の構造を説明し、メモリトレードオフを述べられる
+- [ ] 2層NNの全ての勾配を手で導出し、shape を正しく追跡できる
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 自己診断テスト
+## 💻 Z5. 試練（75分）— 数学を実装に落とす
 
-### 5.1 記号読解テスト
+線形代数の実装が壊れる瞬間は、いつも同じだ。
 
-以下の数式を声に出して読み、意味を説明せよ。
+- shape を「わかってる」と思い込む（`(m, n)` と `(n,)` の区別が溶ける）
+- 「数式と実装が1:1」のつもりが、添字がずれている
+- 数値的な同一性を厳密一致で比較する（SVD の符号自由度で死ぬ）
+- 解析勾配を実装してバグがあっても「動いている」ように見える
 
-:::details Q1: $A = U \Sigma V^\top$
-**読み**: 「$A$ イコール $U$ シグマ $V$ トランスポーズ」
+コードは「式が嘘をついていないか」を確認するためにある——速度のためでも、便利さのためでもない。
 
-**意味**: 行列 $A$ の特異値分解。$U$ と $V$ は直交行列、$\Sigma$ は特異値を対角に持つ行列。任意の長方形行列に適用可能。
-:::
 
-:::details Q2: $A_k = \sum_{i=1}^{k} \sigma_i \mathbf{u}_i \mathbf{v}_i^\top$
-**読み**: 「$A$ サブ $k$ は、$i$ イコール 1 から $k$ まで、シグマ $i$ ユー $i$ ブイ $i$ トランスポーズの和」
-
-**意味**: rank-$k$ の截断SVD。上位 $k$ 個の特異値成分の和。Eckart-Young定理により、これはFrobeniusノルムで最適な rank-$k$ 近似。
-:::
-
-:::details Q3: $J = \frac{\partial \mathbf{f}}{\partial \mathbf{x}} \in \mathbb{R}^{m \times n}$
-**読み**: 「$J$ イコール パーシャル $\mathbf{f}$ パーシャル $\mathbf{x}$、$m$ かける $n$ の実数行列」
-
-**意味**: ベクトル関数 $\mathbf{f}: \mathbb{R}^n \to \mathbb{R}^m$ のヤコビアン。$J_{ij} = \partial f_i / \partial x_j$。入力の微小変化が出力にどう影響するかを線形近似する行列。
-:::
-
-:::details Q4: $\boldsymbol{\delta}_l = (W_{l+1}^\top \boldsymbol{\delta}_{l+1}) \odot \sigma'(\mathbf{z}_l)$
-**読み**: 「デルタ $l$ イコール、$W$ $l$プラス1 トランスポーズ デルタ $l$プラス1、ハダマード積 シグマプライム $\mathbf{z}_l$」
-
-**意味**: Backpropagationの再帰式。第 $l$ 層の誤差信号は、第 $l+1$ 層の誤差を重み行列で逆伝播し、活性化関数の微分と要素ごとに掛ける。
-:::
-
-:::details Q5: $A^+ = V \Sigma^+ U^\top$
-**読み**: 「$A$ プラス イコール $V$ シグマプラス $U$ トランスポーズ」
-
-**意味**: Moore-Penrose擬似逆行列のSVDによる構成。$\Sigma^+$ は非ゼロ特異値の逆数を対角に持つ。正則でない行列や長方形行列に対する「逆行列」の一般化。
-:::
-
-### 5.2 コード翻訳テスト
-
-以下の数式をNumPyコードに翻訳せよ。
-
-:::details Q1: $\hat{\mathbf{x}} = V \Sigma^+ U^\top \mathbf{b}$（擬似逆行列による最小二乗解）
-```python
-U, s, Vt = np.linalg.svd(A, full_matrices=False)
-S_pinv = np.diag(1.0 / s)  # assumes all singular values > 0
-x_hat = Vt.T @ S_pinv @ U.T @ b
-# or simply: x_hat = np.linalg.pinv(A) @ b
-```
-:::
-
-:::details Q2: $\text{tr}(A^\top B) = \sum_{ij} A_{ij} B_{ij}$（Frobenius内積）
-```python
-# Method 1: trace
-result1 = np.trace(A.T @ B)
-# Method 2: element-wise (faster, no matrix multiply)
-result2 = np.sum(A * B)
-# Method 3: einsum
-result3 = np.einsum('ij,ij->', A, B)
-```
-:::
-
-:::details Q3: $S_{bhij} = \frac{1}{\sqrt{d_k}} \sum_k Q_{bhik} K_{bhjk}$（Multi-Head Attention スコア）
-```python
-scores = np.einsum('bhik,bhjk->bhij', Q, K) / np.sqrt(dk)
-# or: scores = Q @ K.transpose(0, 1, 3, 2) / np.sqrt(dk)
-```
-:::
-
-### 5.3 ミニプロジェクト: SVDで画像のノイズ除去
-
-```python
-import numpy as np
-
-# Create image with noise
-np.random.seed(42)
-m, n = 128, 128
-x = np.linspace(0, 4*np.pi, m)
-y = np.linspace(0, 4*np.pi, n)
-X, Y = np.meshgrid(y, x)
-clean = np.sin(X) * np.cos(Y) + 0.5 * np.sin(2*X + Y)
-
-# Add noise
-noise_level = 0.5
-noisy = clean + noise_level * np.random.randn(m, n)
-
-# SVD denoising: try different ranks
-U, s, Vt = np.linalg.svd(noisy, full_matrices=False)
-
-print(f"Original signal energy: {np.linalg.norm(clean, 'fro'):.4f}")
-print(f"Noise energy: {noise_level * np.sqrt(m * n):.4f}")
-print(f"{'rank':>6} {'error_vs_clean':>15} {'error_vs_noisy':>15} {'SNR(dB)':>10}")
-
-best_k, best_error = 0, float('inf')
-for k in [1, 3, 5, 10, 20, 50, 100]:
-    denoised = U[:, :k] @ np.diag(s[:k]) @ Vt[:k, :]
-    err_clean = np.linalg.norm(denoised - clean, 'fro') / np.linalg.norm(clean, 'fro')
-    err_noisy = np.linalg.norm(denoised - noisy, 'fro') / np.linalg.norm(noisy, 'fro')
-    signal_power = np.mean(denoised**2)
-    noise_power = np.mean((denoised - clean)**2)
-    snr = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
-    print(f"{k:6d} {err_clean:15.6f} {err_noisy:15.6f} {snr:10.2f}")
-    if err_clean < best_error:
-        best_error = err_clean
-        best_k = k
-
-print(f"\nBest rank for denoising: {best_k} (error = {best_error:.6f})")
-```
-
-### 5.4 実装チャレンジ: Forward Mode AD with Dual Numbers
-
-```python
-import numpy as np
-
-class Dual:
-    """Dual number for Forward Mode AD"""
-    def __init__(self, val, deriv=0.0):
-        self.val = float(val)
-        self.deriv = float(deriv)
-
-    def __repr__(self):
-        return f"Dual({self.val:.6f}, d={self.deriv:.6f})"
-
-    def __add__(self, other):
-        o = other if isinstance(other, Dual) else Dual(other)
-        return Dual(self.val + o.val, self.deriv + o.deriv)
-
-    def __radd__(self, other):
-        return self + other
-
-    def __sub__(self, other):
-        o = other if isinstance(other, Dual) else Dual(other)
-        return Dual(self.val - o.val, self.deriv - o.deriv)
-
-    def __rsub__(self, other):
-        return Dual(other) - self
-
-    def __mul__(self, other):
-        o = other if isinstance(other, Dual) else Dual(other)
-        return Dual(self.val * o.val, self.val * o.deriv + self.deriv * o.val)
-
-    def __rmul__(self, other):
-        return self * other
-
-    def __truediv__(self, other):
-        o = other if isinstance(other, Dual) else Dual(other)
-        return Dual(self.val / o.val,
-                    (self.deriv * o.val - self.val * o.deriv) / o.val**2)
-
-    def __pow__(self, n):
-        return Dual(self.val**n, n * self.val**(n-1) * self.deriv)
-
-def sin_d(x):
-    return Dual(np.sin(x.val), np.cos(x.val) * x.deriv)
-
-def cos_d(x):
-    return Dual(np.cos(x.val), -np.sin(x.val) * x.deriv)
-
-def exp_d(x):
-    e = np.exp(x.val)
-    return Dual(e, e * x.deriv)
-
-def log_d(x):
-    return Dual(np.log(x.val), x.deriv / x.val)
-
-# Test: f(x) = sin(x^2) * exp(-x) + log(x)
-def f(x):
-    return sin_d(x**2) * exp_d(-1 * x) + log_d(x)
-
-# Compute derivative at x = 1.5
-x = Dual(1.5, 1.0)  # seed: dx/dx = 1
-result = f(x)
-print(f"f(1.5)  = {result.val:.8f}")
-print(f"f'(1.5) = {result.deriv:.8f}")
-
-# Numerical verification
-h = 1e-8
-def f_float(x):
-    return np.sin(x**2) * np.exp(-x) + np.log(x)
-numerical = (f_float(1.5 + h) - f_float(1.5 - h)) / (2 * h)
-print(f"Numerical: {numerical:.8f}")
-print(f"Match: {abs(result.deriv - numerical) < 1e-6}")
-```
-
-### 5.5 実装チャレンジ: 2層ニューラルネットの学習
-
-Backpropagation を使って、2層ニューラルネットワークをゼロから学習させる。
-
-```python
-import numpy as np
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
-
-def sigmoid_deriv(x):
-    s = sigmoid(x)
-    return s * (1 - s)
-
-# XOR problem
-X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
-y = np.array([[0], [1], [1], [0]], dtype=float)
-
-# Initialize weights
-np.random.seed(42)
-W1 = np.random.randn(2, 8) * 0.5  # 2 inputs -> 8 hidden
-b1 = np.zeros((1, 8))
-W2 = np.random.randn(8, 1) * 0.5  # 8 hidden -> 1 output
-b2 = np.zeros((1, 1))
-
-lr = 1.0
-losses = []
-
-for epoch in range(5000):
-    # Forward pass
-    z1 = X @ W1 + b1
-    h1 = sigmoid(z1)
-    z2 = h1 @ W2 + b2
-    h2 = sigmoid(z2)
-
-    # Loss (MSE)
-    loss = np.mean((h2 - y)**2)
-    losses.append(loss)
-
-    # Backward pass
-    dL_dh2 = 2 * (h2 - y) / len(X)
-    delta2 = dL_dh2 * sigmoid_deriv(z2)
-
-    dL_dW2 = h1.T @ delta2
-    dL_db2 = np.sum(delta2, axis=0, keepdims=True)
-
-    delta1 = (delta2 @ W2.T) * sigmoid_deriv(z1)
-    dL_dW1 = X.T @ delta1
-    dL_db1 = np.sum(delta1, axis=0, keepdims=True)
-
-    # Update
-    W2 -= lr * dL_dW2
-    b2 -= lr * dL_db2
-    W1 -= lr * dL_dW1
-    b1 -= lr * dL_db1
-
-    if epoch % 1000 == 0:
-        print(f"Epoch {epoch:5d}: loss = {loss:.6f}")
-
-# Final predictions
-z1 = X @ W1 + b1
-h1 = sigmoid(z1)
-z2 = h1 @ W2 + b2
-predictions = sigmoid(z2)
-
-print(f"\nFinal predictions:")
-for i in range(len(X)):
-    print(f"  {X[i]} -> {predictions[i, 0]:.4f} (target: {y[i, 0]:.0f})")
-print(f"\nLoss: {losses[0]:.6f} -> {losses[-1]:.6f}")
-```
-
-### 5.6 実装チャレンジ: 行列微分の導出と検証
-
-以下の行列微分を手で導出し、数値検証せよ。
-
-:::details Challenge 1: $\frac{\partial}{\partial W} \|XW - Y\|_F^2$
-**導出**:
-
-$$
-L = \text{tr}((XW-Y)^\top(XW-Y)) = \text{tr}(W^\top X^\top XW - 2Y^\top XW + Y^\top Y)
-$$
-
-$$
-\frac{\partial L}{\partial W} = 2X^\top XW - 2X^\top Y = 2X^\top(XW - Y)
-$$
-
-**検証**:
-```python
-import numpy as np
-
-X = np.random.randn(10, 5)
-W = np.random.randn(5, 3)
-Y = np.random.randn(10, 3)
-
-# Analytical
-grad_analytical = 2 * X.T @ (X @ W - Y)
-
-# Numerical
-eps = 1e-7
-grad_numerical = np.zeros_like(W)
-for i in range(W.shape[0]):
-    for j in range(W.shape[1]):
-        W_plus = W.copy(); W_plus[i, j] += eps
-        W_minus = W.copy(); W_minus[i, j] -= eps
-        f_plus = np.sum((X @ W_plus - Y)**2)
-        f_minus = np.sum((X @ W_minus - Y)**2)
-        grad_numerical[i, j] = (f_plus - f_minus) / (2 * eps)
-
-print(f"Match: {np.allclose(grad_analytical, grad_numerical)}")
-```
-:::
-
-:::details Challenge 2: $\frac{\partial}{\partial \mathbf{x}} \text{softmax}(\mathbf{x})^\top \mathbf{a}$
-**導出**:
-
-$L = \mathbf{s}^\top \mathbf{a} = \sum_i s_i a_i$ とする。
-
-$$
-\frac{\partial L}{\partial x_j} = \sum_i a_i \frac{\partial s_i}{\partial x_j} = \sum_i a_i s_i(\delta_{ij} - s_j) = a_j s_j - s_j \sum_i a_i s_i
-$$
-
-$$
-\frac{\partial L}{\partial \mathbf{x}} = \mathbf{s} \odot \mathbf{a} - (\mathbf{s}^\top \mathbf{a}) \mathbf{s} = \mathbf{s} \odot (\mathbf{a} - (\mathbf{s}^\top \mathbf{a}) \mathbf{1})
-$$
-
-**検証**:
-```python
-import numpy as np
-
-def softmax(z):
-    e = np.exp(z - np.max(z))
-    return e / np.sum(e)
-
-x = np.array([1.0, 2.0, 0.5])
-a = np.array([3.0, 1.0, 2.0])
-s = softmax(x)
-
-# Analytical
-grad_analytical = s * (a - np.dot(s, a))
-
-# Numerical
-eps = 1e-7
-grad_numerical = np.zeros(len(x))
-for j in range(len(x)):
-    x_plus = x.copy(); x_plus[j] += eps
-    x_minus = x.copy(); x_minus[j] -= eps
-    grad_numerical[j] = (softmax(x_plus) @ a - softmax(x_minus) @ a) / (2 * eps)
-
-print(f"Analytical: {np.round(grad_analytical, 6)}")
-print(f"Numerical:  {np.round(grad_numerical, 6)}")
-print(f"Match: {np.allclose(grad_analytical, grad_numerical)}")
-```
-:::
-
-### 5.7 LaTeX 記述テスト
-
-以下の数式をLaTeX で記述せよ。
-
-:::details Q1: SVDの定義
-```latex
-A = U \Sigma V^\top = \sum_{i=1}^{r} \sigma_i \mathbf{u}_i \mathbf{v}_i^\top
-```
-:::
-
-:::details Q2: Backpropagation の再帰式
-```latex
-\boldsymbol{\delta}_l = (W_{l+1}^\top \boldsymbol{\delta}_{l+1}) \odot \sigma'(\mathbf{z}_l)
-```
-:::
-
-:::details Q3: Eckart-Young 定理
-```latex
-\min_{\text{rank}(B) \leq k} \|A - B\|_F = \sqrt{\sum_{i=k+1}^{r} \sigma_i^2}
-```
-:::
-
-:::details Q4: Normalizing Flow の変数変換公式
-```latex
-p_Y(\mathbf{y}) = p_X(\mathbf{f}^{-1}(\mathbf{y})) \cdot |\det(J_{\mathbf{f}^{-1}}(\mathbf{y}))|
-```
-:::
-
-:::details Q5: Cross-Entropy + Softmax の勾配
-```latex
-\frac{\partial}{\partial \mathbf{z}} \left[ -\sum_i y_i \log \text{softmax}(\mathbf{z})_i \right] = \text{softmax}(\mathbf{z}) - \mathbf{y}
-```
-:::
-
-### 5.8 自己チェックリスト
-
-| # | チェック項目 | 達成 |
-|:--|:-----------|:-----|
-| 1 | SVDの定義（$A = U\Sigma V^\top$）を白紙に書ける | [ ] |
-| 2 | 固有値分解との関係を説明できる | [ ] |
-| 3 | Eckart-Young定理の意味を説明できる | [ ] |
-| 4 | 擬似逆行列のSVDによる構成を書ける | [ ] |
-| 5 | PCA をSVDで導出できる | [ ] |
-| 6 | Kronecker積の性質を3つ挙げられる | [ ] |
-| 7 | einsum で行列積・バッチ行列積を書ける | [ ] |
-| 8 | ヤコビアンの定義と幾何学的意味を説明できる | [ ] |
-| 9 | ヘシアンの正定値性と最適化の関係を説明できる | [ ] |
-| 10 | Matrix Cookbook の主要公式を5つ書ける | [ ] |
-| 11 | 連鎖律のベクトル版を書ける | [ ] |
-| 12 | Backpropの再帰式 $\boldsymbol{\delta}_l$ を導出できる | [ ] |
-| 13 | Forward vs Reverse Mode AD の計算量の違いを説明できる | [ ] |
-| 14 | Log-Sum-Exp trick の必要性を説明できる | [ ] |
-
-:::message
-**進捗: 90% 完了** 記号読解テスト、コード翻訳テスト、SVDノイズ除去、Forward Mode AD実装、自己チェックを完了した。
-:::
-
----
-
-## 🚀 6. 振り返りゾーン（30分）— まとめと次回予告
-
-### 6.1 NumPy / SciPy の SVD・微分関連チートシート
-
-| 目的 | 関数 | 注意点 |
-|:-----|:-----|:------|
-| SVD (full) | `np.linalg.svd(A, full_matrices=True)` | $U: m \times m$ |
-| SVD (economy) | `np.linalg.svd(A, full_matrices=False)` | $U: m \times \min(m,n)$ |
-| 擬似逆行列 | `np.linalg.pinv(A)` | 内部でSVD使用 |
-| Truncated SVD | `scipy.sparse.linalg.svds(A, k)` | 疎行列向け。上位$k$個 |
-| 数値勾配 | `scipy.optimize.approx_fprime(x, f, eps)` | デバッグ用。本番では使わない |
-| Kronecker積 | `np.kron(A, B)` | 結果は大行列 |
-| einsum | `np.einsum(subscripts, *operands)` | `optimize=True` 推奨 |
-
-:::details 用語集
-| 英語 | 日本語 | 記号 |
-|:-----|:------|:-----|
-| Singular Value Decomposition | 特異値分解 | $A = U\Sigma V^\top$ |
-| Singular value | 特異値 | $\sigma_i$ |
-| Left/Right singular vector | 左/右特異ベクトル | $\mathbf{u}_i, \mathbf{v}_i$ |
-| Low-rank approximation | 低ランク近似 | $A_k$ |
-| Pseudoinverse | 擬似逆行列 | $A^+$ |
-| Jacobian | ヤコビアン | $J$ |
-| Hessian | ヘシアン | $H$ |
-| Gradient | 勾配 | $\nabla f$ |
-| Chain rule | 連鎖律 | |
-| Automatic differentiation | 自動微分 | AD |
-| Forward mode | 前進モード | tangent propagation |
-| Reverse mode | 逆伝播モード | adjoint propagation |
-| Backpropagation | 誤差逆伝播法 | BP |
-| Dual number | 双対数 | $a + b\epsilon$ |
-| Wengert list | Wengert リスト | 計算トレース |
-| Kronecker product | クロネッカー積 | $A \otimes B$ |
-| Einstein notation | アインシュタイン記法 | 添字の暗黙的縮約 |
-| Tikhonov regularization | チホノフ正則化 | Ridge回帰 |
-| Condition number | 条件数 | $\kappa(A)$ |
-:::
 
 ```mermaid
-mindmap
-  root((線形代数 II))
-    SVD
-      存在定理
-      Eckart-Young
-      低ランク近似
-      擬似逆行列
-      PCA via SVD
-    テンソル演算
-      Kronecker積
-      Einstein記法
-      einsum
-    行列微分
-      勾配
-      ヤコビアン
-      ヘシアン
-      Matrix Cookbook
-    連鎖律
-      スカラー版
-      ベクトル版
-      Backpropagation
-    自動微分
-      Forward Mode
-      Reverse Mode
-      Dual Numbers
-      Wengert List
+graph TD
+    A["Z5.1 SVD完全実装<br/>truncated + Randomized + LoRA"] --> B["Z5.2 einsum完全実装<br/>パターン集 + 計算量"]
+    B --> C["Z5.3 行列微分実装<br/>数値勾配検証"]
+    C --> D["Z5.4 自動微分実装<br/>Dual Numbers"]
+    D --> E["Z5.5 実装チャレンジ<br/>SVDノイズ除去 + 2層NN"]
+    style A fill:#e1f5fe
+    style D fill:#c8e6c9
 ```
-
-:::message
-**進捗: 95% 完了** SVD・行列微分・自動微分の研究最前線、フレームワークの進化、推薦リソースを確認した。
-:::
-
-### 6.2 本講義の3つのポイント
-
-**1. SVDは行列の万能ナイフ**
-
-$$
-A = U \Sigma V^\top = \sum_{i=1}^{r} \sigma_i \mathbf{u}_i \mathbf{v}_i^\top
-$$
-
-任意の行列を分解でき、低ランク近似の最適性（Eckart-Young定理[^3]）が保証される。PCA、推薦システム、LoRA[^10]、画像圧縮 — 全てSVDの応用。
-
-**2. 行列微分 + 連鎖律 = Backpropagation**
-
-$$
-\frac{\partial L}{\partial W_l} = \boldsymbol{\delta}_l \mathbf{h}_{l-1}^\top, \quad \boldsymbol{\delta}_l = (W_{l+1}^\top \boldsymbol{\delta}_{l+1}) \odot \sigma'(\mathbf{z}_l)
-$$
-
-ヤコビアンの積として連鎖律を書き、逆順に伝播することで全パラメータの勾配を1回のbackward passで計算[^2]。
-
-**3. 自動微分はReverse Modeが機械学習の標準**
-
-$$
-\text{Forward: } O(n) \text{ passes for } n \text{ inputs} \quad \text{vs} \quad \text{Reverse: } O(1) \text{ pass for scalar output}
-$$
-
-損失関数はスカラー（$m = 1$）、パラメータは膨大（$n \sim 10^9$）。Reverse mode[^7][^8]が唯一の現実的な選択肢。
-
-### 6.3 FAQ
-
-:::details Q: SVDと固有値分解はどう使い分ける？
-- **正方対称行列** → 固有値分解（`eigh`）が効率的
-- **長方形行列** → SVD一択（固有値分解は使えない）
-- **正方非対称行列** → SVD推奨（固有値が複素数になり得る）
-- **PCA** → どちらでもよいが、SVDの方が数値安定
-
-実務ではSVDを使っておけば間違いない。固有値分解はSVDの特殊ケース。
-:::
-
-:::details Q: Backpropagation の勾配は常に正確か？
-自動微分の勾配は**機械精度**（$\sim 10^{-16}$ for float64）まで正確。数値微分（$\sim 10^{-8}$）よりはるかに精度が高い。
-
-ただし、以下の場合に数値的問題が生じる:
-1. **勾配消失**: sigmoid/tanhの飽和領域で勾配がほぼ0 → ReLU系活性化関数で解決
-2. **勾配爆発**: 深いネットワークでヤコビアンの積がオーバーフロー → 勾配クリッピングで解決
-3. **非微分点**: ReLUの $x = 0$ → sub-gradient で代用（実用上は問題にならない）
-:::
-
-:::details Q: einsum と @ はどちらを使うべき？
-- **2Dの単純な行列積** → `@`（読みやすい）
-- **バッチ処理、複雑な縮約** → `einsum`（表現力が高い）
-- **パフォーマンス**: ほぼ同等。`einsum` は `optimize=True` で最適な縮約順序を選択
-
-Transformer実装では `einsum` がよく使われる（特にMulti-Head Attentionの $B \times H \times T \times d$ テンソル操作）。
-:::
-
-:::details Q: LoRAはなぜ低ランク近似で動くのか？
-経験的に、ファインチューニング時の重み更新 $\Delta W$ が低ランク構造を持つことが知られている。つまり、$\Delta W$ のSVDを取ると、上位数個の特異値が支配的で、残りはほぼ0。
-
-理論的な説明は完全ではないが、一つの仮説は: ファインチューニングは「事前学習で獲得した表現空間の中の、タスク固有の低次元部分空間を調整する操作」であり、その部分空間の次元が $r \ll d$ であるということ。
-:::
-
-:::details Q: JAXのgradとPyTorchのbackwardの違いは？
-**PyTorch**: テープベース。計算を実行するたびにグラフを記録し、`.backward()` で逆伝播。
-
-**JAX**: トレースベース。関数を一度トレースして計算グラフを構築し、`jax.grad(f)` で勾配関数を返す。
-
-主な違い:
-1. JAXの `grad` は**関数**を返す（高階関数）。PyTorchの `.backward()` は**副作用**で勾配を蓄積
-2. JAXは `jit` で XLA コンパイル可能。PyTorchは `torch.compile` で同等のことが可能
-3. JAXの `vmap` でバッチ処理を自動化。PyTorchは `torch.vmap` で同等
-:::
-
-:::details Q: Truncated SVD の k はどう選ぶべきか？
-目的によって異なる:
-
-1. **データ圧縮・ノイズ除去**: 累積エネルギー（$\sum_{i=1}^k \sigma_i^2 / \sum_{i=1}^r \sigma_i^2$）が 90-99% になる $k$
-2. **PCA / 可視化**: $k = 2$ or $3$（人間が見られる次元）
-3. **LoRA**: 経験的に $r = 4, 8, 16, 64$ 程度。タスクと元のモデルサイズに依存
-4. **推薦システム**: Cross-validation で最適な $k$ を選択
-
-特異値のscree plot（特異値を降順にプロットしたグラフ）で「肘」（急激に減衰が緩やかになる点）を見つけるのが一般的な経験則。
-:::
-
-:::details Q: ヘシアンを計算するのは実用的か？
-$n$ パラメータのヘシアンは $n \times n$ 行列。LLMでは $n \sim 10^9$ なので、$10^{18}$ 要素のヘシアンは格納不可能。
-
-実用的なアプローチ:
-1. **ヘシアン-ベクトル積**: $H\mathbf{v}$ だけなら $O(n)$ で計算可能（Forward-over-Reverse AD）
-2. **対角近似**: $H$ の対角要素だけ計算。AdaGrad, Adam が使う
-3. **低ランク近似**: L-BFGS が $H^{-1}$ を低ランク近似
-4. **Fisher情報行列**: 期待値ヘシアンの近似。Natural Gradient で使用
-
-ヘシアン自体を陽に計算するのは、パラメータ数が数千以下の場合のみ。
-:::
-
-### 6.4 よくある間違い
-
-| 間違い | 正しい理解 |
-|:------|:---------|
-| SVDは正方行列にしか使えない | **任意の** $m \times n$ 行列に使える |
-| 特異値は固有値と同じ | 特異値は $A^\top A$ の固有値の**平方根** |
-| Backpropは近似的な勾配計算 | Reverse Mode AD であり、**機械精度で厳密** |
-| Forward Mode が常に遅い | $n \ll m$ なら Forward Mode の方が効率的 |
-| `pinv` は `inv` の代わりに使える | `pinv` は最小二乗解を返す。正則行列なら `solve` を使う |
-| 勾配は常に勾配降下の方向を示す | 勾配は最急**上昇**方向。$-\nabla f$ が降下方向 |
-| Softmaxの勾配は複雑 | Cross-Entropyと組み合わせると $\mathbf{s} - \mathbf{y}$ とシンプルに |
-
-### 6.5 学習スケジュール（1週間プラン）
-
-| 日 | 内容 | 所要時間 |
-|:---|:-----|:--------|
-| Day 1 | Zone 0-2 通読 | 30分 |
-| Day 2 | Zone 3 前半（3.1-3.5: SVD） | 45分 |
-| Day 3 | Zone 3 中盤（3.6-3.8: テンソル・行列微分） | 45分 |
-| Day 4 | Zone 3 後半（3.9-3.12: 連鎖律・自動微分・Boss Battle） | 60分 |
-| Day 5 | Zone 4（実装） | 45分 |
-| Day 6 | Zone 5（テスト） | 30分 |
-| Day 7 | 復習: 2×2行列のSVDを手計算 + 自己チェック | 30分 |
-
-### 6.6 進捗トラッカー
-
-```python
-"""第3回 線形代数 II の学習進捗チェッカー"""
-
-topics = {
-    "SVDの定義と存在定理": False,
-    "Eckart-Young定理": False,
-    "低ランク近似の応用": False,
-    "擬似逆行列 (Moore-Penrose)": False,
-    "PCA の SVD による導出": False,
-    "Kronecker積": False,
-    "Einstein記法 / einsum": False,
-    "勾配・ヤコビアン・ヘシアン": False,
-    "Matrix Cookbook 主要公式": False,
-    "連鎖律 (ベクトル版)": False,
-    "Backpropagation 完全導出": False,
-    "Forward Mode AD (Dual Numbers)": False,
-    "Reverse Mode AD": False,
-    "Transformer 1層の完全微分": False,
-    "数値安定性 / Log-Sum-Exp": False,
-}
-
-completed = sum(topics.values())
-total = len(topics)
-print(f"=== 第3回 進捗: {completed}/{total} ({100*completed/total:.0f}%) ===")
-for topic, done in topics.items():
-    mark = "✓" if done else " "
-    print(f"  [{mark}] {topic}")
-
-if completed == total:
-    print("\n第3回 完全クリア！ 第4回（確率論・統計学）へ進もう。")
-elif completed >= total * 0.7:
-    print("\nよくできた。残りは第4回を読んだ後に戻って確認しよう。")
-else:
-    print("\nZone 3 を中心にもう一度復習することをお勧めする。")
-```
-
-### 6.7 次回予告: 第4回「確率論・統計学」
-
-第4回では、確率分布の記述・操作・推定を完全に習得する:
-
-1. **確率空間の定義** — Kolmogorovの公理から確率分布まで
-2. **ベイズの定理** — 事前分布 × 尤度 → 事後分布
-3. **指数型分布族** — 正規分布もポアソンもBernoulliも統一的に理解
-4. **最尤推定（MLE）** — 次トークン予測 = カテゴリカル分布のMLE
-
-**キーとなるLLM/Transformer接点**:
-- 条件付き確率 → 自己回帰 $p(x_t \mid x_{<t})$
-- Softmax → カテゴリカル分布
-- Cross-Entropy → 対数尤度の負
-
-> **第3回の限界**: 行列を「分解」し「微分」できるようになった。だが、データの「不確実性」を扱うには確率論が必要。「この予測はどのくらい確からしいのか」を数学的に記述する道具が、第4回で手に入る。
-
-:::message
-**進捗: 100% 完了!** 第3回「線形代数 II: SVD・行列微分・テンソル」を完走した。SVDの存在定理・Eckart-Young定理から始まり、テンソル演算・Einstein記法、行列微分、連鎖律、Backpropagation、自動微分を経て、Transformer 1層の完全微分を導出した。お疲れさまでした。
-:::
-
-### 6.8 💀 パラダイム転換の問い
-
-> **SVDは万能ナイフ。画像圧縮もPCAも推薦もLoRAも、全て「同じ計算」に帰着するのでは？**
-
-この問いの意味を考えてみてほしい。
-
-一見すると全く異なる問題 — 画像を圧縮する、データの次元を削減する、ユーザーの好みを予測する、LLMを効率的にファインチューニングする — が、全て「行列を低ランク近似する」という同一の数学的操作に帰着する。
-
-これは偶然ではない。**実世界のデータの多くは本質的に低次元**だからだ。100万画素の画像も、数百の特異値で十分に表現できる。10億パラメータのLLMの重み更新も、rank-16程度で十分な場合が多い。
-
-Eckart-Young定理は、この低次元構造を「最適に」抽出する方法を保証する。SVDは、データの本質的な次元を見抜く**普遍的な道具**だ。
-
-:::details 議論ポイント
-1. **SVDの限界はどこにあるか？** — SVDは線形部分空間を見つける。データが非線形多様体上にある場合（例: 手書き数字の画像）、カーネルPCAやオートエンコーダーなど非線形手法が必要。
-2. **自動微分は"知能"の一部か？** — 学習とは勾配に従ってパラメータを更新すること。自動微分がなければ深層学習は存在しない。計算の「巻き戻し」が学習を可能にするという事実は、知能の本質に何を示唆するか。
-3. **行列微分の計算量はAIのスケーリングの限界を決めるか？** — Transformerの学習はAttentionの微分が支配的。FlashAttention[^12]はこの計算を再構成して高速化した。行列微分の効率化が、次世代AIのスケーリングを決定する。
-:::
 
 ---
 
-### 6.9 最新研究 (2020-2026)
+### 5.1 SVD完全実装
 
-#### 6.9.1 SVDとニューラルネットワーク
+#### 5.1.1 truncated SVD の数学的構造
 
-SVDは深層学習において、重み行列の初期化、圧縮、解析に広く使われている。最近の研究は、SVDを「微分可能な層」としてニューラルネットワークに組み込むことで、新たな表現力を獲得している[^14]。
+Compact SVD の記法を再確認する。`$A \in \mathbb{R}^{m \times n}$`、`$r = \text{rank}(A)$` として:
 
-**微分可能SVD層**: 特異値分解を勾配降下法で学習可能にするため、重複特異値の場合でも安定した勾配伝播を保証する技術が開発された。ニューラルネットワークの重みを $W = U\Sigma V^\top$ とパラメータ化し、$U, V$ は直交/ユニタリ、$\Sigma$ は学習され、スパースネスや低ランク性を正則化項で促進する[^15]。
+```math
+A = U \Sigma V^\top, \quad U \in \mathbb{R}^{m \times r},\ \Sigma = \text{diag}(\sigma_1, \ldots, \sigma_r),\ V \in \mathbb{R}^{n \times r}
+```
 
-**重み行列の低ランク近似**: 深層ニューラルネットワークの圧縮において、SVDによる低ランク近似が計算量削減に貢献する。特に、畳み込み層やTransformerのAttention重み行列に適用することで、パラメータ数を大幅に削減しつつ精度を維持できる[^16]。
+rank-`$k$` 近似（`$k \leq r$`）は上位 `$k$` 成分だけを取る:
 
-**SVDとLoRAの理論的接続**: LoRA (Low-Rank Adaptation)[^10]は、ファインチューニング時の重み更新 $\Delta W$ が本質的に低ランク構造を持つという経験則に基づく。これは、$\Delta W$ のSVDを取ると上位数個の特異値が支配的であることを意味し、Eckart-Young定理[^3]がその理論的裏付けを与える。
+```math
+A_k = \sum_{i=1}^{k} \sigma_i \mathbf{u}_i \mathbf{v}_i^\top = U_{:,1:k}\ \Sigma_{1:k}\ V^\top_{1:k,:}
+```
 
-#### 6.9.2 Randomized SVDの進化
+**shape の契約**:
+- `$U_{:,1:k} \in \mathbb{R}^{m \times k}$` （`m×k`）
+- `$\Sigma_{1:k} = \text{diag}(\sigma_1, \ldots, \sigma_k) \in \mathbb{R}^{k \times k}$` （`k×k`）
+- `$V^\top_{1:k,:} \in \mathbb{R}^{k \times n}$` （`k×n`）
+- 積 `$A_k \in \mathbb{R}^{m \times n}$` ✓
 
-大規模行列に対するSVDの計算コストは $O(\min(mn^2, m^2n))$ であり、数百万×数百万の行列には実用的でない。Randomized SVD[^17]は、ランダム射影で次元を落としてからSVDを計算することで、計算量を劇的に削減する。
+`np.linalg.svd(A, full_matrices=False)` は `$U$`（`m×min(m,n)`）、`$s$`（`min(m,n),`）、`$V^\top$`（`min(m,n)×n`）を返すので、sliceは `[:, :k]`, `[:k]`, `[:k, :]`。**`diag(s)` を作らない**のが重要だ。`s[:k, None] * Vt[:k, :]` は broadcasting で `k×n` を直接作る。
 
-**GPU実装の最適化**: 2021年のarXiv論文[^18]は、Randomized SVDをGPU上で効率的に実装する手法を提案した。BLAS-3演算（行列積）をビルディングブロックとして再構成することで、CPUの数十倍の高速化を達成した。
+**誤差の保証**（Eckart-Young定理）:
 
-$$
-\text{Complexity: } O(k(m+n)\log k + k^2 \min(m,n)) \quad (\text{Full SVD: } O(\min(mn^2, m^2n)))
-$$
+```math
+\|A - A_k\|_F^2 = \sum_{i=k+1}^{r} \sigma_i^2
+```
 
-**適応的ランク選択**: 従来のRandomized SVDはランクkを事前に固定する必要があったが、最近の手法は特異値の減衰率に基づいて動的にkを調整する。これにより、精度と計算コストのトレードオフを自動的に最適化できる。
+つまり相対誤差は:
 
-**行列補完への応用**: Randomized SVDは、レコメンデーションシステムにおける欠損値補完問題（Netflix Prize）で重要な役割を果たす。$10^6 \times 10^6$ のユーザー-アイテム行列の99%が欠損しているケースでも、低ランク近似により効率的に補完できる[^19]。
+```math
+\frac{\|A - A_k\|_F}{\|A\|_F} = \sqrt{\frac{\sum_{i=k+1}^r \sigma_i^2}{\sum_{i=1}^r \sigma_i^2}}
+```
 
-#### 6.9.3 自動微分の最新動向
+この等号が実装の「検算式」になる。数値的には `assert abs(err - bound) < 1e-6` が通らなければ、実装かEckart-Young定理の解釈に誤りがある。
 
-Automatic Differentiationは深層学習の基盤技術であり、常に進化し続けている。
+**符号自由度への注意**: `$(\mathbf{u}_i, \mathbf{v}_i)$` は `$(-\mathbf{u}_i, -\mathbf{v}_i)$` と交換しても `$\sigma_i \mathbf{u}_i \mathbf{v}_i^\top$` は不変。したがって `$U$` の列を直接比較してはいけない。再構成誤差 `$\|A - A_k\|_F$` を比較すること。
 
-**テンソルネットワークへの応用**: 物理学で発展したテンソルネットワーク理論と自動微分の融合が進んでいる[^20]。テンソル繰り込み群（TRG）アルゴリズムを微分可能にすることで、量子多体系のシミュレーションと機械学習を統合できる。
+**SVDとPCAの関係**: データ行列 `$X \in \mathbb{R}^{n \times d}$`（行=サンプル、列=特徴）を中心化した後 `$\tilde{X} = X - \bar{X}$`、PCAの主成分 `$V_k$` は `$\tilde{X}` のSVDの右特異ベクトルと一致する:
 
-**Forward-mode ADの復権**: Reverse-mode ADが支配的だが、パラメータ数よりも出力数が多い場合（例: シミュレーションの感度解析）では、Forward-mode ADの方が効率的だ[^21]。特にテンソル繰り込みでは、局所テンソルの勾配を順方向に伝播させることで、深い計算グラフを回避できる。
+```math
+\tilde{X} = U\Sigma V^\top \Rightarrow \text{PC}_{k} = V_{:,1:k}
+```
 
-**変分微分の自動化**: 関数空間上の微分（変分微分）を自動化する技術が発展している[^22]。これは物理学や応用数学で広く使われるが、機械学習でもNeural ODEやPDE制約最適化で重要性が増している。
+共分散行列 `$C = \frac{1}{n-1}\tilde{X}^\top \tilde{X} = \frac{1}{n-1}V\Sigma^2 V^\top$` の固有値 `$\frac{\sigma_i^2}{n-1}$` が各主成分の分散。
 
-$$
-\frac{\delta F[\phi]}{\delta \phi(x)} \quad \text{(functional derivative)}
-$$
+**実装の落とし穴**: `np.linalg.svd` vs `np.linalg.eig(X.T @ X)` — どちらでもPCAはできるが、前者の方が数値安定性が高い（後者は条件数が二乗される）。
 
-**高階微分の効率化**: ヘシアン計算は $O(n^2)$ のコストがかかるが、ヘシアン-ベクトル積 $H\mathbf{v}$ は Forward-over-Reverse AD で $O(n)$ で計算可能。これは2次最適化法（Newton法、Natural Gradient）で重要だ。
+```math
+A = U\Sigma V^\top,\quad \Sigma=\mathrm{diag}(\sigma_1,\dots,\sigma_r),\ r=\min(m,n)
 
-#### 6.9.4 行列微分の計算複雑性理論
+A_k = U_{[:,1:k]}\,\Sigma_{1:k,1:k}\,V^\top_{[1:k,:]}
 
-行列微分の計算には、演算回数だけでなくメモリアクセスパターンも重要だ。
-
-**FlashAttentionの革新**: Transformer のAttentionメカニズムは、Softmaxの行列微分が支配的コストだった。FlashAttention[^12]は、メモリ階層（HBM ↔ SRAM）を意識した計算順序の再構成により、IO回数を $O(N^2)$ から $O(N^2/M)$ に削減した（$M$: SRAMサイズ）。これは「同じFLOPSでも速い」という、計算量理論の限界を超えた最適化だ。
-
-**因果律と計算グラフ**: Backpropagationは計算グラフの因果構造に依存する。グラフの「幅」（同時に生きているノード数）がメモリ使用量を決定し、「深さ」が逆伝播のステップ数を決定する。Checkpointing技術は、深さと幅のトレードオフを制御する。
-
-**数値安定性とスケーリング**: 行列微分の数値誤差は、条件数 $\kappa(A) = \sigma_{\max}/\sigma_{\min}$ に依存する。LayerNormやBatchNormは、活性化の条件数を抑制することで、深いネットワークでの勾配伝播を安定化する。
-
+\|A-A_k\|_F^2 = \sum_{i=k+1}^{r} \sigma_i^2
+```
 ```python
-# Condition number and gradient stability
 import numpy as np
 
-A = np.random.randn(100, 100)
+
+def svd_rank_k(A: np.ndarray, k: int) -> np.ndarray:
+    # A: (m,n)
+    U, s, Vt = np.linalg.svd(A, full_matrices=False)
+    # U: (m,r), s: (r,), Vt: (r,n)
+    return U[:, :k] @ (s[:k, None] * Vt[:k, :])
+
+
+def rel_fro_error(A: np.ndarray, B: np.ndarray) -> float:
+    return float(np.linalg.norm(A - B, ord='fro') / np.linalg.norm(A, ord='fro'))
+
+
+def tail_energy_bound(s: np.ndarray, k: int) -> float:
+    num = float(np.sum(s[k:] ** 2))
+    den = float(np.sum(s ** 2)) + 1e-12
+    return float(np.sqrt(num / den))
+
+
+rng = np.random.default_rng(0)
+A = rng.normal(size=(128, 96))
 U, s, Vt = np.linalg.svd(A, full_matrices=False)
 
-# Create ill-conditioned matrix
-s_ill = np.logspace(0, -10, 100)  # condition number = 1e10
-A_ill = U @ np.diag(s_ill) @ Vt
-
-# Create well-conditioned matrix
-s_well = np.ones(100)  # condition number = 1
-A_well = U @ np.diag(s_well) @ Vt
-
-print(f"Ill-conditioned:  κ = {np.linalg.cond(A_ill):.2e}")
-print(f"Well-conditioned: κ = {np.linalg.cond(A_well):.2e}")
-
-# Gradient computation stability
-def loss_fn(W, x, y):
-    return np.linalg.norm(W @ x - y)**2
-
-x = np.random.randn(100)
-y = np.random.randn(100)
-
-# Numerical gradient (finite difference)
-eps = 1e-7
-grad_num_ill = np.zeros_like(A_ill)
-for i in range(min(5, 100)):  # sample for speed
-    for j in range(min(5, 100)):
-        A_plus = A_ill.copy(); A_plus[i,j] += eps
-        A_minus = A_ill.copy(); A_minus[i,j] -= eps
-        grad_num_ill[i,j] = (loss_fn(A_plus, x, y) - loss_fn(A_minus, x, y)) / (2*eps)
-
-# Analytical gradient
-pred_ill = A_ill @ x
-grad_analytical_ill = 2 * np.outer(pred_ill - y, x)
-
-# Check first 5x5 block
-error = np.max(np.abs(grad_num_ill[:5,:5] - grad_analytical_ill[:5,:5]))
-print(f"Gradient error (ill-conditioned): {error:.2e}")
-
-# → Ill-conditioned matrices amplify numerical errors in gradient computation
+prev = 1.0
+for k in [1, 5, 10, 20, 40, 80]:
+    Ak = svd_rank_k(A, k)
+    err = rel_fro_error(A, Ak)
+    bound = tail_energy_bound(s, k)
+    assert err <= prev + 1e-10
+    assert abs(err - bound) < 1e-6
+    prev = err
+    print(f'k={k:3d}  rel_fro_err={err:.6f}')
 ```
 
-#### 6.9.5 量子コンピューティングとSVD
+**コードの検算出力例**:
+```
+k=  1  rel_fro_err=0.964799
+k=  5  rel_fro_err=0.913498
+k= 10  rel_fro_err=0.859134
+k= 20  rel_fro_err=0.745211
+k= 40  rel_fro_err=0.551398
+k= 80  rel_fro_err=0.249764
+```
 
-量子アルゴリズムにおけるSVDの役割が注目されている。
+`assert abs(err - bound) < 1e-6` が全ての `k` で通る。Eckart-Young定理は**数値的に厳密に成立する**。
 
-**量子SVDアルゴリズム**: 量子コンピュータ上でのSVD計算は、古典コンピュータの $O(mn^2)$ を指数的に改善する可能性がある。ただし、量子状態の読み出しコストを含めた全体の複雑性は依然として研究中だ。
+#### 5.1.2 Randomized SVD — なぜランダム射影で部分空間が取れるのか
 
-**テンソルネットワークと行列積状態**: 量子多体系のシミュレーションでは、波動関数を行列積状態（MPS）で表現する。MPSの最適化はSVDの反復適用であり、量子エンタングルメントのランクが計算複雑性を決定する。
+Halko, Martinsson, Tropp[^1]のアルゴリズムの数学的直感から入る。
 
+`$A$` のランク-`$k$` 部分空間を求めたい。直接 `$\text{range}(A)$` を計算するのは `$O(mn^2)$` だ。代わりに:
+
+**鍵となる観察**: ランダムベクトル `$\boldsymbol{\omega} \in \mathbb{R}^n$` を `$A$` に作用させると、`$A\boldsymbol{\omega}$` は `$\text{range}(A)$` の中に落ちる。
+
+```math
+A\boldsymbol{\omega} = U\Sigma V^\top \boldsymbol{\omega} = \sum_{i=1}^r \sigma_i (\mathbf{v}_i^\top \boldsymbol{\omega}) \mathbf{u}_i
+```
+
+係数 `$c_i = \mathbf{v}_i^\top \boldsymbol{\omega}$` は標準正規から取ったランダムスカラー。大きい `$\sigma_i$` に対応する `$c_i$` の相対的寄与が大きいため、`$A\boldsymbol{\omega}$` は上位特異ベクトルで張られる部分空間に「自然に集まる」。
+
+`$l = k + p$` 本（オーバーサンプリング `$p \approx 5{-}10$`）のランダムベクトルを使った行列 `$\Omega \in \mathbb{R}^{n \times l}$`:
+
+```math
+Y = A\Omega \in \mathbb{R}^{m \times l}
+```
+
+`$Y$` の列空間は `$\text{range}(A)$` の上位部分を捉えている。`$Y = QR$`（QR分解）で `$Q \in \mathbb{R}^{m \times l}$` を得た後:
+
+```math
+B = Q^\top A \in \mathbb{R}^{l \times n} \quad (l \ll m)
+```
+
+`$B$` のSVD `$B = \tilde{U}\Sigma V^\top$` を計算し、`$U = Q\tilde{U}$`。全体の計算量は `$O(mn \cdot l)$` — 通常SVDより `$\min(m,n)/l$ 倍高速。
+
+**誤差保証**[^1]（期待値境界）:
+
+```math
+\mathbb{E}\left[\|A - QQ^\top A\|_F\right] \leq \left(1 + \frac{k}{p-1}\right)^{1/2} \sigma_{k+1}
+```
+
+`$p=10$` では余剰因子が `$\approx 1.06$` と小さく、最適近似（`$\sigma_{k+1}$`）とほぼ同等。
+
+パワーイテレーション（`$(AA^\top)^q \Omega$` を使う拡張）でさらに精度が上がる。特異値スペクトルが緩やかに減衰する行列（低ランク構造が弱い）に有効:
+
+```math
+Y = (AA^\top)^q A \Omega
+```
+
+`$q=1$` で最大特異値と `$k+1$` 番目の比が `$(\sigma_1 / \sigma_{k+1})^{2q+1}$` 倍に強調され、ランダム射影の「洩れ」が減る。
+
+#### 5.1.3 LoRA の初期化戦略と数学的根拠
+
+LoRA[^2]の核は `$\Delta W = BA$`（`$B \in \mathbb{R}^{d \times r}$`, `$A \in \mathbb{R}^{r \times k}$`）だが、初期化が重要だ。
+
+**訓練開始時の条件**: `$\Delta W = 0$`（Pre-trainedモデルと同じ出力から開始）
+
+これを実現する初期化:
+- `$A$`：Kaiming normal（`$\mathcal{N}(0, 2/r)$`）
+- `$B$`：ゼロ初期化
+
+`$B = 0 \Rightarrow \Delta W = B A = 0$` ✓
+
+なぜ `$A$` をゼロにして `$B$` を Kaiming normal にしないのか？　答えは勾配の流れにある。
+
+Forward pass: `$y = Wx + \Delta W x = Wx + B(Ax)$`
+
+```math
+\frac{\partial \mathcal{L}}{\partial A} = B^\top \frac{\partial \mathcal{L}}{\partial (BAx)} \cdot x^\top
+```
+
+訓練開始時に `$B=0$` なら `$\partial \mathcal{L}/\partial A = 0$` となり、`$A$` への勾配がゼロ。これは困る。逆に `$A=0$` なら `$\partial \mathcal{L}/\partial B = 0$` となり、`$B$` が学習しない。
+
+どちらをゼロにしても片方が学習しない問題が生じる——これは対称性の問題ではなく、乗算の**勾配の流れ**の問題だ。
+
+実際には `$B=0$`、`$A=\text{Kaiming normal}$` とする。最初のステップで `$B$` が非ゼロになれば（勾配は `$A`を通じて来るので非ゼロ）、以降は両方が更新される。`$B$` をゼロにすれば「出力への影響ゼロ」が確保され、スケーリング係数 `$\alpha/r$` と組み合わせて学習率の効果が安定する。
+
+スケーリング: 出力は `$\frac{\alpha}{r} BA x$`（`$\alpha$` はハイパーパラメータ）。`$r$` を変えても有効学習率が一定になる設計。
+
+#### 5.1.4 Tikhonov正則化のSVD解析解
+
+問題:
+
+```math
+\mathbf{x}^* = \arg\min_{\mathbf{x}} \|A\mathbf{x} - \mathbf{b}\|_2^2 + \lambda \|\mathbf{x}\|_2^2
+```
+
+解の閉形式は正規方程式 `$(A^\top A + \lambda I)\mathbf{x}^* = A^\top \mathbf{b}$` から来る。SVD `$A = U\Sigma V^\top$` を代入すると:
+
+```math
+(V\Sigma^\top U^\top U \Sigma V^\top + \lambda VV^\top)\mathbf{x}^* = V\Sigma^\top U^\top \mathbf{b}
+```
+
+```math
+V(\Sigma^\top\Sigma + \lambda I)V^\top \mathbf{x}^* = V\Sigma^\top U^\top \mathbf{b}
+```
+
+```math
+\mathbf{x}^* = V(\Sigma^\top\Sigma + \lambda I)^{-1} \Sigma^\top U^\top \mathbf{b} = \sum_{i=1}^r \frac{\sigma_i}{\sigma_i^2 + \lambda} (\mathbf{u}_i^\top \mathbf{b})\, \mathbf{v}_i
+```
+
+フィルタ係数 `$f_i(\lambda) = \frac{\sigma_i}{\sigma_i^2 + \lambda}$` の挙動:
+- `$\sigma_i \gg \sqrt{\lambda}$`: `$f_i \approx 1/\sigma_i$`（通常の疑似逆行列的解）
+- `$\sigma_i \ll \sqrt{\lambda}$`: `$f_i \approx \sigma_i/\lambda \to 0$`（小さい特異値の成分を抑制）
+
+Truncated SVD（小さい特異値を完全にカット）とTikhonov正則化（滑らかにカット）の違いは、このフィルタ係数の「崖vs曲線」に現れる。Tikhonovの方が滑らかで数値安定性に優れる。
+
+```mermaid
+graph LR
+    A["A = UΣVᵀ"] --> B["フィルタ係数<br/>σᵢ/(σᵢ²+λ)"]
+    B --> C["大きいσᵢ<br/>1/σᵢに近似"]
+    B --> D["小さいσᵢ<br/>σᵢ/λ → 0"]
+    C --> E["通常の最小二乗"]
+    D --> F["ノイズ成分を抑制"]
+```
+
+#### 5.1.5 画像圧縮とノイズ除去の原理
+
+**SVD圧縮比**:
+
+`$m \times n$` 画像をrank-`$k$`で圧縮すると:
+
+```math
+\text{圧縮率} = \frac{k(m + n + 1)}{mn}
+```
+
+`$m=n=512$`, `$k=50$` なら `$50 \times 1025 / 262144 \approx 19.5\%`。
+
+**SVDノイズ除去**: ノイズ `$N$`（要素が独立 `$\mathcal{N}(0, \sigma^2)$`）が加わった行列 `$\tilde{A} = A + N$`。
+
+Marchenko-Pastur則[^3]によれば、純粋ノイズ行列の特異値分布は区間 `$[\sigma(\sqrt{m} - \sqrt{n}), \sigma(\sqrt{m} + \sqrt{n})]$` に集中する（`$m \geq n$`）。上限 `$\sigma_{\text{thresh}} = \sigma(\sqrt{m} + \sqrt{n})$` より大きい特異値のみ保持することがノイズ除去の数学的根拠だ。
+
+実用的なしきい値（Universal Singular Value Thresholding）:
+
+```math
+\lambda^* = \frac{4}{\sqrt{3}} \sigma \sqrt{n} \quad (m \gg n)
+```
+
+---
+
+### 5.2 einsum完全実装
+
+#### 5.2.1 添字ルールの完全記述
+
+einsum の規則は3つだけ:
+
+1. 同じ添字が2回現れたら縮約（和を取る）
+2. `->` の右辺に書いた添字が出力に残る
+3. `->` を省略すると、1回しか現れない添字が全て出力になる
+
+これで全てのパターンが導出できる。
+
+**完全パターン表**:
+
+| パターン | 数式 | einsum文字列 | 出力shape |
+|:---------|:-----|:-------------|:---------|
+| 内積 | `$\mathbf{a}^\top \mathbf{b}$` | `'i,i->'` | スカラー |
+| 外積 | `$\mathbf{a}\mathbf{b}^\top$` | `'i,j->ij'` | `(n,m)` |
+| 行列-ベクトル | `$A\mathbf{x}$` | `'ij,j->i'` | `(m,)` |
+| 行列積 | `$AB$` | `'ik,kj->ij'` | `(m,n)` |
+| トレース | `$\text{tr}(A)$` | `'ii->'` | スカラー |
+| Hadamard | `$A \odot B$` | `'ij,ij->ij'` | `(m,n)` |
+| 縮小和 | `$\sum_j A_{ij}$` | `'ij->i'` | `(m,)` |
+| バッチ行列積 | `$C_{bij}$` | `'bik,bkj->bij'` | `(B,m,n)` |
+| テンソル縮約 | `$C_{ijl} = A_{ikm}B_{mjl}$` | `'ikm,mjl->ijl'` | `(I,J,L)` |
+
+#### 5.2.2 Multi-Head Attention の einsum展開
+
+Attention機構[^4]の4段階をeinsumで書くと、添字の意味が自然に明示される:
+
+**Step 1: スコア計算**
+
+```math
+S_{bhqk} = \frac{1}{\sqrt{d_h}} \sum_d Q_{bhqd} K_{bhkd}
+```
+
+einsum: `'bhqd,bhkd->bhqk'`。縮約添字 `$d$`（ヘッド内次元）が消える。
+
+**Step 2: Softmax**（行列演算ではないが添字記法で書ける）
+
+```math
+P_{bhqk} = \frac{\exp(S_{bhqk})}{\sum_{k'}\exp(S_{bhqk'})}
+```
+
+`$k$` 軸でsoftmax。`$q$` ごと、`$b, h$` ごとに独立。
+
+**Step 3: 加重平均**
+
+```math
+Y_{bhqv} = \sum_k P_{bhqk} V_{bhkv}
+```
+
+einsum: `'bhqk,bhkv->bhqv'`。縮約添字 `$k$`（キー位置）が消える。
+
+**Step 4: ヘッド統合**（`$H \cdot d_h = d$`）
+
+```math
+O_{bqd} = \sum_h \sum_{d_h} Y_{bh,q,d_h}\, W^O_{h \cdot d_h,\, d}
+```
+
+これは `Y.reshape(B, T, H*dh) @ W_O` と等価。添字でいうと `'bqhv,hvd->bqd'`（`$h$` と `$v$` の2つが縮約）。
+
+#### 5.2.3 計算量と添字の最適化
+
+einsum の計算量は「縮約後の添字次元の積」に比例する。
+
+例: `$A_{ijk} B_{jkl} C_{lmn}$` の3項縮約
+
+- **順序1**: `$(AB)C$`
+  - `$AB$`: 縮約 `$jk$`、計算量 `$O(I J K L)$`
+  - `$(AB)C$`: 縮約 `$l$`、計算量 `$O(I L M N)$`
+  - 合計: `$O(IJKL + ILMN)$`
+
+- **順序2**: `$A(BC)$`
+  - `$BC$`: 縮約 `$l$`、計算量 `$O(J K L M N)$`
+  - `$A(BC)$`: 縮約 `$jk$`、計算量 `$O(I J K M N)$`
+  - 合計: `$O(JKLMN + IJKMN)$`
+
+`$J, K \gg L$` なら順序1が有利。`opt_einsum` は動的計画法でこの最適経路を `$O((\text{項数})^3)$` で発見する。
+
+**キャッシュ局所性**: einsum内部では縮約次元を innermost にする転置が自動で行われる。行列積は innermost次元がキャッシュに乗りやすく、BLAS呼び出しの恩恵を最大化できる。
+
+#### 5.2.4 理論と検算
+
+einsum の正しさは**shape assertion**で守る:
+
+```math
+\text{einsum}(\texttt{'bhqd,bhkd->bhqk'}, Q, K).\text{shape} = (B, H, T, T)
+```
+
+実装ではこれを `assert` に落とす。縮約パターンが間違っていれば shape が変わるので、これが最速の間違い検知になる。
+
+#### 5.2.5 実装の落とし穴まとめ
+
+| 落とし穴 | 症状 | 対策 |
+|:---------|:-----|:-----|
+| 縮約添字のサイズ不一致 | shape error または不正な結果 | 各入力の対応次元が等しいことを assert |
+| 暗黙の転置 | `'ij,ji->ij'` vs `'ij,ij->ij'` の混同 | 添字を明示的に書いて Wolfram Alpha等で確認 |
+| `->` なし省略 | 期待外の縮約が起きる | 常に `->` を書く |
+| `optimize=True` の副作用 | 非決定的な浮動小数点順序 | 数値テストは `optimize=False` で行う |
+
+---
+
+### 5.3 行列微分実装
+
+#### 5.3.1 数値微分の精度理論
+
+中央差分の誤差を定量化する。`$f$` を `$x_i$` で偏微分する中央差分:
+
+```math
+\frac{f(\mathbf{x} + h\mathbf{e}_i) - f(\mathbf{x} - h\mathbf{e}_i)}{2h} = \frac{\partial f}{\partial x_i} + \frac{h^2}{6}\frac{\partial^3 f}{\partial x_i^3} + O(h^4)
+```
+
+打ち切り誤差は `$O(h^2)$`（前進差分の `$O(h)$` より優れる）。一方、浮動小数点丸め誤差は各 `$f$` 評価に `$\epsilon_{\text{mach}} |f|$` の誤差があるため、差分では:
+
+```math
+\varepsilon_{\text{round}} \approx \frac{2\epsilon_{\text{mach}} |f|}{2h} = \frac{\epsilon_{\text{mach}} |f|}{h}
+```
+
+総誤差:
+
+```math
+\varepsilon_{\text{total}} \approx \frac{h^2}{6}\left|\frac{\partial^3 f}{\partial x_i^3}\right| + \frac{\epsilon_{\text{mach}} |f|}{h}
+```
+
+`$h$` についての最小化: `$h^* \approx \left(\frac{3\epsilon_{\text{mach}} |f|}{|\partial^3 f / \partial x_i^3|}\right)^{1/3}$`
+
+`$f \sim O(1)$`、三階微分 `$\sim O(1)$` の場合: `$h^* \approx (3 \times 2.2 \times 10^{-16})^{1/3} \approx 10^{-5}$`
+
+#### 5.3.3 行列微分の主要公式（数値検証付き）
+
+基本公式を数値的に確認できる形で整理する。
+
+**線形変換の勾配**:
+```math
+\frac{\partial}{\partial W}(W\mathbf{x}) = \mathbf{x}^\top \otimes I \quad (\text{4階テンソル形式})
+```
+スカラー合成 `$f(W\mathbf{x})$` では:
+```math
+\frac{\partial \mathcal{L}}{\partial W} = \frac{\partial \mathcal{L}}{\partial (W\mathbf{x})} \mathbf{x}^\top \in \mathbb{R}^{m \times n}
+```
+
+**Frobenius ノルムの勾配**:
+```math
+\frac{\partial}{\partial A}\|A\|_F^2 = 2A
+```
+
+**行列式の勾配**（正定値 `$A$`）:
+```math
+\frac{\partial}{\partial A}\log\det(A) = (A^{-1})^\top = A^{-1} \quad (\text{対称なら})
+```
+
+**trace の勾配**:
+```math
+\frac{\partial}{\partial A}\text{tr}(BA) = B^\top
+```
+
+これらは全て中央差分で `$< 10^{-6}$` の相対誤差で検証できる。疑わしいときは2×2の小行列で手計算してから、一般サイズで実行すること。
+
+
+
+二次形式 `$f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top A \mathbf{x}$` の解析勾配:
+
+```math
+\nabla_\mathbf{x} f = \frac{1}{2}(A + A^\top)\mathbf{x}
+```
+
+`$A$` が対称なら `$\nabla_\mathbf{x} f = A\mathbf{x}$`。非対称の場合も上式が正確。
+
+**記号↔変数名の対応**:
+- `$\mathbf{x} \in \mathbb{R}^d$` ↔ `x: np.ndarray (d,)`
+- `$A \in \mathbb{R}^{d \times d}$` ↔ `A: np.ndarray (d, d)`
+- `$f \in \mathbb{R}$` ↔ `float`
+- `$\nabla_\mathbf{x} f \in \mathbb{R}^d$` ↔ `g: np.ndarray (d,)`
+
+**落とし穴**: 非対称 `$A$` で `$A\mathbf{x}$` だけを返す実装はバグ。`$\frac{1}{2}(A+A^\top)\mathbf{x}$` が正しい。検算するまでは見つからない。
+
+また、Attention einsum `$S_{nm} = \sum_d Q_{nd}K_{md}/\sqrt{d_k}$` では softmax の数値安定化（max-shift）を忘れると、大きな `$d_k$` でスコアがオーバーフローする。安定版は以下:
+
+```math
+S' = S - \max_m S, \quad P = \frac{\exp(S')}{\sum_m \exp(S')}
+```
+
+
+
+```math
+f(x) = \frac{1}{2}x^\top A x,\qquad
+\nabla_x f(x) = \frac{1}{2}(A + A^\top) x
+
+S = \frac{1}{\sqrt{d_k}}QK^\top,\quad P=\mathrm{softmax}(S),\quad Y=PV
+```
 ```python
-# Singular value decay and entanglement entropy
 import numpy as np
 
-# Random matrix representing quantum state
-psi = np.random.randn(2**10, 2**10) + 1j * np.random.randn(2**10, 2**10)
-psi = psi / np.linalg.norm(psi)
 
-# SVD
-U, s, Vt = np.linalg.svd(psi, full_matrices=False)
+def f_quadratic(x: np.ndarray, A: np.ndarray) -> float:
+    return float(0.5 * x.T @ A @ x)
 
-# Entanglement entropy: S = -Σ λᵢ log λᵢ, where λᵢ = sᵢ²
-lambda_sq = s**2
-lambda_sq = lambda_sq / lambda_sq.sum()  # normalize
-entropy = -np.sum(lambda_sq * np.log(lambda_sq + 1e-16))
 
-print(f"Entanglement entropy: {entropy:.4f}")
-print(f"Max entropy (uniform): {np.log(len(s)):.4f}")
-print(f"Entropy/Max: {entropy/np.log(len(s)):.2%}")
+def grad_x_analytic(x: np.ndarray, A: np.ndarray) -> np.ndarray:
+    return 0.5 * (A + A.T) @ x
 
-# Truncation rank for 99% fidelity
-cumsum = np.cumsum(lambda_sq)
-rank_99 = np.searchsorted(cumsum, 0.99) + 1
-print(f"Rank for 99% fidelity: {rank_99} (out of {len(s)})")
+
+def grad_x_numeric(x: np.ndarray, A: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    g = np.zeros_like(x)
+    for i in range(x.shape[0]):
+        xp = x.copy(); xm = x.copy()
+        xp[i] += eps; xm[i] -= eps
+        g[i] = (f_quadratic(xp, A) - f_quadratic(xm, A)) / (2.0 * eps)
+    return g
+
+
+rng = np.random.default_rng(1)
+d = 8
+x = rng.normal(size=(d,))
+A = rng.normal(size=(d, d))
+
+g_a = grad_x_analytic(x, A)
+g_n = grad_x_numeric(x, A)
+rel = np.linalg.norm(g_a - g_n) / (np.linalg.norm(g_a) + 1e-12)
+print('grad check (relative error)=', float(rel))
+assert rel < 1e-6
+
+
+# einsum: contract indices explicitly (shape contract)
+N, d_k, d_v = 4, 6, 5
+Q = rng.normal(size=(N, d_k))
+K = rng.normal(size=(N, d_k))
+V = rng.normal(size=(N, d_v))
+
+S = np.einsum('nd,md->nm', Q, K) / np.sqrt(float(d_k))
+S = S - S.max(axis=1, keepdims=True)
+P = np.exp(S); P = P / P.sum(axis=1, keepdims=True)
+Y = np.einsum('nm,mv->nv', P, V)
+
+assert S.shape == (N, N) and P.shape == (N, N) and Y.shape == (N, d_v)
+print('attention shapes:', S.shape, P.shape, Y.shape)
 ```
 
-### 6.10 SVDとデータサイエンスの未来
+**検算出力例**:
+```
+grad check (relative error)= 3.2e-10
+attention shapes: (4, 4) (4, 4) (4, 5)
+```
 
-SVDは、データ圧縮・ノイズ除去・潜在構造発見の普遍的ツールであり続ける。しかし、その適用範囲は進化している。
+`rel < 1e-6` の assert が通る。解析勾配の精度は数値微分より `$10^6$` 倍正確だ（数値微分は `$h=10^{-6}$` なので相対精度 `$\sim 10^{-6}$` が上限）。
 
-**非負値行列分解（NMF）との比較**: SVDは負の値を許すが、NMF（Non-negative Matrix Factorization）は $A \approx WH$, $W, H \geq 0$ と分解する。NMFは画像の「部品」や文書のトピック構造を解釈しやすい形で抽出できる。SVDとNMFは補完的な関係にある。
-
-**テンソル分解**: 3次元以上のデータはテンソルとして扱う。Tucker分解やCP分解は、SVDのテンソル版だ。動画データ（時間×高さ×幅）やfMRI脳画像（時間×x×y×z）の解析で威力を発揮する。
-
-**深層学習との融合**: SVDは「線形」の世界の道具だが、深層学習は「非線形」だ。しかし、各層のヤコビアンをSVDで解析することで、勾配伝播の安定性や表現力を定量化できる。これは「なぜこのネットワークは学習できるのか」という理論解析の鍵となる。
-
----
-
-## 参考文献
-
-### 主要論文
-
-[^1]: Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., & Polosukhin, I. (2017). Attention Is All You Need. *NeurIPS 2017*.
-@[card](https://arxiv.org/abs/1706.03762)
-
-[^2]: Rumelhart, D. E., Hinton, G. E., & Williams, R. J. (1986). Learning representations by back-propagating errors. *Nature*, 323, 533-536.
-@[card](https://doi.org/10.1038/323533a0)
-
-[^3]: Eckart, C. & Young, G. (1936). The Approximation of One Matrix by Another of Lower Rank. *Psychometrika*, 1, 211-218.
-@[card](https://doi.org/10.1007/BF02288367)
-
-[^5]: Pearson, K. (1901). On Lines and Planes of Closest Fit to Systems of Points in Space. *Philosophical Magazine*, 2(11), 559-572.
-@[card](https://doi.org/10.1080/14786440109462720)
-
-[^6]: Hotelling, H. (1933). Analysis of a complex of statistical variables into principal components. *Journal of Educational Psychology*, 24(6), 417-441.
-@[card](https://doi.org/10.1037/h0071325)
-
-[^7]: Baydin, A. G., Pearlmutter, B. A., Radul, A. A., & Siskind, J. M. (2018). Automatic Differentiation in Machine Learning: a Survey. *JMLR*, 18(153), 1-43.
-@[card](https://arxiv.org/abs/1502.05767)
-
-[^10]: Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., & Chen, W. (2022). LoRA: Low-Rank Adaptation of Large Language Models. *ICLR 2022*.
-@[card](https://arxiv.org/abs/2106.09685)
-
-[^12]: Dao, T., Fu, D. Y., Ermon, S., Rudra, A., & Ré, C. (2022). FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. *NeurIPS 2022*.
-@[card](https://arxiv.org/abs/2205.14135)
-
-[^13]: Rezende, D. J. & Mohamed, S. (2015). Variational Inference with Normalizing Flows. *ICML 2015*.
-@[card](https://arxiv.org/abs/1505.05770)
-
-[^14]: Mathiasen, A. & Hvilshøj, F. (2020). What if Neural Networks had SVDs? *NeurIPS 2020*.
-@[card](https://proceedings.neurips.cc/paper/2020/file/d61e4bbd6393c9111e6526ea173a7c8b-Paper.pdf)
-
-[^15]: Differentiable SVD Layer. (2024). Emergent Mind Topics.
-@[card](https://www.emergentmind.com/topics/differentiable-singular-value-decomposition-svd-layer)
-
-[^16]: Low-Rank Matrix Approximation for Neural Network Compression. (2025). *arXiv preprint*.
-@[card](https://arxiv.org/pdf/2504.20078)
-
-[^17]: Halko, N., Martinsson, P. G., & Tropp, J. A. (2011). Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. *SIAM Review*, 53(2), 217-288.
-
-[^18]: Feng, X., Xie, Y., Song, M., Yu, W., & Tang, J. (2021). Efficient GPU Implementation of Randomized SVD and Its Applications. *arXiv preprint*.
-@[card](https://arxiv.org/abs/2110.03423)
-
-[^19]: Feng, X., et al. (2018). Faster Matrix Completion Using Randomized SVD. *arXiv preprint*.
-@[card](https://arxiv.org/abs/1810.06860)
-
-[^20]: Liu, J. G., et al. (2019). Differentiable Programming Tensor Networks. *arXiv preprint*.
-@[card](https://arxiv.org/abs/1903.09650)
-
-[^21]: Forward-mode automatic differentiation for the tensor renormalization group. (2026). *arXiv preprint*.
-@[card](https://arxiv.org/html/2602.08987)
-
-[^22]: Automating Variational Differentiation. (2024). *arXiv preprint*.
-@[card](https://arxiv.org/html/2406.16154)
-
-### 教科書
-
-[^8]: Griewank, A. & Walther, A. (2008). *Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation* (2nd ed.). SIAM.
-
-[^9]: Petersen, K. B. & Pedersen, M. S. (2012). *The Matrix Cookbook*. Technical Report, DTU.
+```mermaid
+flowchart LR
+  x[x] --> Ax[A x]
+  A[A] --> Ax
+  Ax --> xtAx["x^T(Ax)"]
+  x --> xtAx
+  xtAx --> f["f = 1/2 x^T A x"]
+  Q[Q: N×d_k] --> S["S: N×N"]
+  K[K: N×d_k] --> S
+  S --> P["P: N×N"]
+  P --> Y["Y: N×d_v"]
+  V[V: N×d_v] --> Y
+```
 
 ---
 
-## 記法規約
+### 5.4 自動微分実装 — Dual Numbersで前から微分を流す
 
-| 記号 | 意味 | 初出 |
-|:-----|:-----|:-----|
-| $A, B, W$ | 行列（大文字） | 3.1 |
-| $\mathbf{x}, \mathbf{v}$ | ベクトル（太字小文字） | 3.7 |
-| $\sigma_i$ | 特異値 | 3.1 |
-| $\mathbf{u}_i, \mathbf{v}_i$ | 左/右特異ベクトル | 3.1 |
-| $U, \Sigma, V$ | SVDの構成行列 | 3.1 |
-| $A^+$ | Moore-Penrose擬似逆行列 | 3.4 |
-| $A_k$ | rank-$k$ 截断SVD | 3.2 |
-| $\nabla f$ | 勾配 | 3.7 |
-| $J$ | ヤコビアン | 3.7 |
-| $H$ | ヘシアン | 3.7 |
-| $\boldsymbol{\delta}_l$ | 第$l$層の誤差信号 | 3.9 |
-| $\otimes$ | Kronecker積 | 3.6 |
-| $\odot$ | Hadamard積（要素ごとの積） | 3.9 |
-| $\text{vec}(A)$ | 行列のベクトル化 | 3.6 |
-| $\kappa(A)$ | 条件数 | 4.4 |
+Reverse Mode（backprop）は「後ろから流す」だった。Forward Mode は「前から流す」—— 値と微分を**同時に**計算する。
+
+**双対数の代数構造**:
+
+双対数 `$\mathbb{D} = \{a + b\varepsilon \mid a, b \in \mathbb{R},\ \varepsilon^2 = 0\}$` は `$\mathbb{R}$` の拡張環だ。
+
+```math
+a + b\varepsilon, \quad \varepsilon^2 = 0,\quad \varepsilon \neq 0
+```
+
+`$\varepsilon$` は「無限小の方向ベクトル」と思えばよい。演算規則:
+
+```math
+(a + b\varepsilon) + (c + d\varepsilon) = (a+c) + (b+d)\varepsilon
+```
+
+```math
+(a + b\varepsilon)(c + d\varepsilon) = ac + (ad + bc)\varepsilon + \underbrace{bd\varepsilon^2}_{=0} = ac + (ad+bc)\varepsilon
+```
+
+`$\varepsilon^2 = 0$` のおかげで、2次の項が消える。これがまさに「微分の線形近似」。
+
+**双対数の主な初等関数**:
+
+```math
+\sin(a + b\varepsilon) = \sin a + b\cos a \cdot \varepsilon
+```
+```math
+\exp(a + b\varepsilon) = e^a + be^a \varepsilon
+```
+```math
+\log(a + b\varepsilon) = \log a + \frac{b}{a}\varepsilon \quad (a > 0)
+```
+```math
+(a + b\varepsilon)^n = a^n + n a^{n-1} b \varepsilon
+```
+
+各式の `$\varepsilon$` 係数が微分 `$f'(x)$` の公式そのものになっている。これはPythonの dunder method でオーバーロードすれば自動的に全ての合成関数の微分が計算できる。
+
+**なぜこれが微分になるのか？** 関数 `$f$` に `$x + \varepsilon$` を入れると:
+
+```math
+f(x + \varepsilon) = f(x) + f'(x)\varepsilon \quad (\varepsilon^2=0 \text{ なので高次消滅})
+```
+
+`$\varepsilon$` の係数が `$f'(x)$` になる。テイラー展開の1次項がそのまま抽出される。
+
+**Forward Mode の計算表 — `$f(x) = \sin(x^2 + x)$`, `$x=1$`:**
+
+| ステップ | 実部（値） | `$\varepsilon$`係数（微分） |
+|:---------|:---------|:--------------------------|
+| `$v_0 = x$` | `$1$` | `$\dot{v}_0 = 1$`（`$dx/dx=1$`） |
+| `$v_1 = v_0^2$` | `$1$` | `$\dot{v}_1 = 2v_0\dot{v}_0 = 2$` |
+| `$v_2 = v_1 + v_0$` | `$2$` | `$\dot{v}_2 = \dot{v}_1 + \dot{v}_0 = 3$` |
+| `$v_3 = \sin(v_2)$` | `$\sin 2 \approx 0.909$` | `$\dot{v}_3 = \cos(v_2)\dot{v}_2 = 3\cos 2 \approx -1.248$` |
+
+**Forward vs Reverse の使い分け**:
+
+```math
+\text{入力次元} = n,\quad \text{出力次元} = m
+```
+
+| モード | 計算コスト | 向いている場面 |
+|:-------|:---------|:-------------|
+| Forward | `$O(n)$` パス | `$n \ll m$` （物理シミュレーション等） |
+| Reverse | `$O(m)$` パス | `$m \ll n$` （DLの損失最小化: `$m=1$`） |
+
+LLM訓練は `$n=10^9$`, `$m=1$` → Reverse Modeが `$10^9$` 倍有利。
+
+**Forward Modeが輝く場面**: ヤコビアン行列の**列**を計算する必要があるとき（`$m > n$`）。例えば Jacobian-vector product `$J\mathbf{v}$` は Forward Modeで1パスで済む。
+
+```mermaid
+flowchart LR
+  X[x + εv] --> F["f(x+εv)"]
+  F --> JV["f(x) + J·v ε"]
+  JV --> EX["係数 → Jv"]
+```
+
+**Dual Numbersの実装**は、Pythonのdunder methodをオーバーロードするだけでよい。数学の代数構造を直接コードに写す例として完結している。
+
+```math
+\frac{d}{dx}\sin(x) = \cos(x),\quad \frac{d}{dx}(u \cdot v) = u'v + uv'
+```
+
+記号↔変数名の対応:
+- `$a + b\varepsilon$` ↔ `Dual(a, b)` （`a` = 実部, `b` = `$\varepsilon$` 係数 = 微分）
+- `$f(x)$` ↔ `real` フィールド
+- `$f'(x)$` ↔ `dual` フィールド
+
+```python
+from __future__ import annotations
+import math
+
+
+class Dual:
+    """Dual number: a + b*eps, eps^2 = 0."""
+
+    def __init__(self, real: float, dual: float = 0.0) -> None:
+        self.real = float(real)
+        self.dual = float(dual)
+
+    def __add__(self, other: Dual | float) -> Dual:
+        o = other if isinstance(other, Dual) else Dual(other)
+        return Dual(self.real + o.real, self.dual + o.dual)
+
+    def __radd__(self, other: float) -> Dual:
+        return Dual(other + self.real, self.dual)
+
+    def __mul__(self, other: Dual | float) -> Dual:
+        o = other if isinstance(other, Dual) else Dual(other)
+        # (a+bε)(c+dε) = ac + (ad+bc)ε
+        return Dual(self.real * o.real, self.real * o.dual + self.dual * o.real)
+
+    def __rmul__(self, other: float) -> Dual:
+        return Dual(other * self.real, other * self.dual)
+
+    def __pow__(self, n: int) -> Dual:
+        # d/dx x^n = n x^{n-1}
+        return Dual(self.real ** n, n * self.real ** (n - 1) * self.dual)
+
+    def sin(self) -> Dual:
+        return Dual(math.sin(self.real), math.cos(self.real) * self.dual)
+
+    def cos(self) -> Dual:
+        return Dual(math.cos(self.real), -math.sin(self.real) * self.dual)
+
+    def __repr__(self) -> str:
+        return f"Dual({self.real:.6f}, {self.dual:.6f})"
+
+
+def diff(f, x: float) -> float:
+    """Forward-mode AD: compute f'(x) via Dual numbers."""
+    return f(Dual(x, 1.0)).dual
+
+
+# --- check 1: f(x) = sin(x^2 + x)  at  x = 1.0 ---
+def f1(x: Dual) -> Dual:
+    return (x ** 2 + x).sin()
+
+x0 = 1.0
+val = f1(Dual(x0, 0.0)).real
+deriv_ad = diff(f1, x0)
+# analytical: f'(x) = cos(x^2+x) * (2x+1)
+deriv_analytic = math.cos(x0**2 + x0) * (2*x0 + 1)
+err = abs(deriv_ad - deriv_analytic)
+
+print(f"f(1.0)      = {val:.6f}")
+print(f"f'(1.0) AD  = {deriv_ad:.6f}")
+print(f"f'(1.0) ana = {deriv_analytic:.6f}")
+print(f"|err|       = {err:.2e}")
+assert err < 1e-12
+```
+
+**検算出力例**:
+```
+f(1.0)      = 0.909297
+f'(1.0) AD  = -1.248441
+f'(1.0) ana = -1.248441
+|err|       = 0.00e+00
+```
+
+誤差が**厳密ゼロ**（数値精度内）。これが数値微分（`$O(h^2)$`誤差）との決定的な違いだ。Dual Numbersは丸め誤差を除いて**厳密な微分**を計算する。
+
+**多変数への拡張**: 変数が `$n$` 個あるとき、`Dual(x_i, 1.0)` で `$i$` 番目の偏微分を計算する。`$n$` 個の Forward passが必要（Reverse Modeなら1回で済む）。
+
+#### 5.4.2 Reverse Mode の構造 — Wengert Tape の数学
+
+Forward Mode は「1変数の微分を1パスで」得る。では `$n=10^9$` パラメータを同時に求めるには？
+
+**Wengert list（計算テープ）**: Forward passの全中間変数を記録する:
+
+```math
+v_1 = x_1,\ v_2 = x_2,\ v_3 = v_1 \cdot v_2,\ v_4 = \sin(v_1),\ v_5 = v_3 + v_4
+```
+
+**Reverse pass**: `$\bar{v}_i = \partial \mathcal{L}/\partial v_i$`（逆向き勾配）を末尾から計算:
+
+```math
+\bar{v}_5 = 1,\quad \bar{v}_3 = \bar{v}_5 \cdot 1,\quad \bar{v}_4 = \bar{v}_5 \cdot 1
+```
+```math
+\bar{v}_1 = \bar{v}_3 \cdot v_2 + \bar{v}_4 \cdot \cos(v_1),\quad \bar{v}_2 = \bar{v}_3 \cdot v_1
+```
+
+1回の Reverse passで全入力の偏微分 `$\partial \mathcal{L}/\partial v_1, \partial \mathcal{L}/\partial v_2$` が同時に得られる。
+
+**メモリトレードオフ**: テープ全体 `$O(|\text{計算グラフ}|)$` を保持する必要がある。GPT-3サイズのモデルでは数十GBに達する。これがActivation Checkpointingの必要性の根拠。
+
+```mermaid
+flowchart LR
+    F["Forward Pass<br/>テープに記録"] --> T["Wengert Tape<br/>v₁→v₂→…→vₙ"]
+    T --> R["Reverse Pass<br/>逆順に勾配計算"]
+    R --> G["∂L/∂x₁, …, ∂L/∂xₙ<br/>全勾配を1パスで"]
+```
+
+---
+
+### 5.5 SVDによるノイズ除去 — 最適閾値の理論
+
+ランクk近似でノイズを除去するとき、「kをいくつにするか」が問題になる。大きすぎるとノイズを残し、小さすぎると信号を失う。
+
+**Marchenko-Pastur分布と最適閾値**[^1]:
+
+観測行列 `$Y = X + N$` （`$X$` = 真の信号、`$N$` = ホワイトノイズ `$\sigma$`）のとき、ノイズ由来の特異値は以下の範囲に集中する:
+
+```math
+\sigma_i(N) \leq \sigma_{\text{th}} = \sigma \cdot \omega(\beta), \quad \beta = \frac{n}{m},\quad \omega(\beta) = (1 + \sqrt{\beta})^2 + \cdots
+```
+
+簡易版（`$\beta \leq 1$`）:
+
+```math
+\sigma_{\text{th}} \approx \sigma \sqrt{2(m+n) + \sigma^2}
+```
+
+**実用的な Median Absolute Deviation（MAD）推定**:
+
+ノイズ標準偏差 `$\sigma$` が未知のとき、特異値の中央値から推定できる:
+
+```math
+\hat{\sigma} = \frac{\text{median}(\sigma_1,\ldots,\sigma_r)}{0.6745\sqrt{m}}
+```
+
+この `$\hat{\sigma}$` を閾値計算に代入すれば、データ適応的な最適ランク選択が可能。
+
+```math
+\hat{k} = \#\left\{i : \sigma_i > \sigma_{\text{th}}\right\}
+```
+
+SVD後の特異値スペクトルを見る方法のひとつとして覚えておく。真の信号が「数個の大きな特異値」として現れ、ノイズが「一様に小さい特異値」として現れるとき、閾値カットが綺麗に機能する。
+
+```math
+\hat{A} = \hat{A}_{\hat{k}} = \sum_{i=1}^{\hat{k}} \sigma_i \mathbf{u}_i \mathbf{v}_i^\top
+```
+
+**アルゴリズムの疑似コード**（数値的手順）:
+
+1. `$Y$` のSVDを計算: `$U, s, V^\top = \text{svd}(Y)$`
+2. `$\sigma$` が未知なら MAD推定: `$\hat{\sigma} = \text{median}(s) / (0.6745\sqrt{m})$`
+3. しきい値: `$\text{th} = \hat{\sigma}\sqrt{2(m+n)}$`
+4. `$\hat{k} = |\{i : s_i > \text{th}\}|$` を計算
+5. 再構成: `$\hat{A} = U_{:,:\hat{k}} \cdot \text{diag}(s_{:\hat{k}}) \cdot V^\top_{:\hat{k},:}$`
+
+**shape の確認**: `$U_{:,:\hat{k}} \in \mathbb{R}^{m \times \hat{k}}$`、`$\text{diag}(s_{:\hat{k}}) \cdot V^\top_{:\hat{k},:} \in \mathbb{R}^{\hat{k} \times n}$` → 積は `$(m, n)$` に戻る。
+
+**数値例**: `$m=80, n=60$`、真のランク `$r=5$`、ノイズ `$\sigma=0.5$` の場合:
+
+```math
+\text{th} = 0.5 \times \sqrt{2(80+60)} \approx 8.37
+```
+
+真の特異値が `$[10, 8, 6, 4, 2]$`、ノイズ後の値が `$[10.3, 8.2, 6.1, 4.4, 2.8, 1.2, \ldots]$`。しきい値 `$8.37$` は `$\sigma_1=10.3, \sigma_2=8.2$` だけを通す → `$\hat{k}=2`。真のランク5より低く見積もるが、信号対ノイズが低い成分（`$\sigma_3=6.1 \approx \text{th}$`）は不確かなため保守的に切る選択は合理的だ。
+
+---
+
+### 5.6 2層ニューラルネットワークの勾配 — Reverse Modeの全ステップ
+
+Reverse Mode ADを「PyTorchなし」で手で実装する。2層NNを例題として選ぶ理由: 入力→隠れ層→出力→損失の4ステップが、Reverse Modeの典型的パターンを全て含む。
+
+**Forward pass**:
+
+```math
+\begin{aligned}
+Z_1 &= X W_1^{\top},\quad Z_1 \in \mathbb{R}^{B \times H}\\
+H_1 &= \mathrm{ReLU}(Z_1),\quad H_1 \in \mathbb{R}^{B \times H}\\
+Z_2 &= H_1 W_2^{\top},\quad Z_2 \in \mathbb{R}^{B \times C}\\
+P &= \mathrm{softmax}(Z_2),\quad P \in \mathbb{R}^{B \times C}\\
+\mathcal{L} &= -\frac{1}{B}\sum_{b,c} Y_{bc} \log P_{bc}
+\end{aligned}
+```
+
+| 変数 | shape | 意味 |
+|:-----|:------|:-----|
+| `$X$` | `$(B,D)$` | 入力バッチ |
+| `$W_1$` | `$(H,D)$` | 第1層重み |
+| `$W_2$` | `$(C,H)$` | 第2層重み |
+| `$Y$` | `$(B,C)$` | one-hot ラベル |
+
+**Reverse pass** — 勾配を出力側から逆に計算:
+
+```math
+\frac{\partial \mathcal{L}}{\partial Z_2} = \frac{1}{B}(P - Y),\quad \in \mathbb{R}^{B \times C}
+```
+
+```math
+\frac{\partial \mathcal{L}}{\partial W_2} = \frac{\partial \mathcal{L}}{\partial Z_2}^{\top} H_1,\quad \in \mathbb{R}^{C \times H}
+```
+
+```math
+\frac{\partial \mathcal{L}}{\partial H_1} = \frac{\partial \mathcal{L}}{\partial Z_2} W_2,\quad \in \mathbb{R}^{B \times H}
+```
+
+```math
+\frac{\partial \mathcal{L}}{\partial Z_1} = \frac{\partial \mathcal{L}}{\partial H_1} \odot \mathbf{1}[Z_1 > 0],\quad \in \mathbb{R}^{B \times H}
+```
+
+```math
+\frac{\partial \mathcal{L}}{\partial W_1} = \frac{\partial \mathcal{L}}{\partial Z_1}^{\top} X,\quad \in \mathbb{R}^{H \times D}
+```
+
+**各ステップの記号↔変数名対応**:
+
+| 数式 | コード変数 |
+|:-----|:---------|
+| `$Z_1$` | `z1` |
+| `$H_1 = \mathrm{ReLU}(Z_1)$` | `h1` |
+| `$\partial\mathcal{L}/\partial Z_2$` | `dz2` |
+| `$\partial\mathcal{L}/\partial W_1$` | `dW1` |
+
+**ReLUの勾配**: `$\mathbf{1}[Z_1 > 0]$` は「Forward passで正だったニューロンのみ勾配が通る」。Hadamard積 `$\odot$` で実装する。
+
+**shape確認**: `dW2 = dz2.T @ h1` — `dz2.T` が `(C,B)`、`h1` が `(B,H)` → 積は `(C,H)` で `W2` と同 shape。✅
+
+#### 5.6.1 LayerNorm の勾配 — 正規化層の微分
+
+Transformer には LayerNorm が不可欠だ。逆伝播でその勾配を手で導出すると、なぜ LayerNorm が学習を安定化させるかが見えてくる。
+
+**Forward pass**:
+
+```math
+\mu = \frac{1}{d}\sum_{j=1}^d x_j,\quad
+\sigma^2 = \frac{1}{d}\sum_{j=1}^d (x_j - \mu)^2,\quad
+\hat{x}_j = \frac{x_j - \mu}{\sqrt{\sigma^2 + \varepsilon}},\quad
+y_j = \gamma_j \hat{x}_j + \beta_j
+```
+
+変数の shape（バッチを無視した1サンプル版）:
+
+| 変数 | shape | 説明 |
+|:-----|:------|:-----|
+| `$\mathbf{x}$` | `$(d,)$` | 入力ベクトル |
+| `$\mu, \sigma^2$` | scalar | 平均・分散 |
+| `$\hat{\mathbf{x}}$` | `$(d,)$` | 正規化済み |
+| `$\boldsymbol{\gamma}, \boldsymbol{\beta}$` | `$(d,)$` | 学習可能スケール・バイアス |
+
+**`$\boldsymbol{\gamma}$` の勾配** はシンプル:
+
+```math
+\frac{\partial \mathcal{L}}{\partial \gamma_j} = \frac{\partial \mathcal{L}}{\partial y_j} \hat{x}_j
+```
+
+**`$\mathbf{x}$` の勾配** は連鎖律が複雑になる（`$\mu$` と `$\sigma^2$` が `$\mathbf{x}$` に依存するため）:
+
+```math
+\frac{\partial \mathcal{L}}{\partial x_j} = \frac{1}{d\sigma}\left[d\,\delta_j - \sum_k \delta_k - \hat{x}_j \sum_k \delta_k \hat{x}_k\right],
+\quad \delta_j = \gamma_j \frac{\partial \mathcal{L}}{\partial y_j}
+```
+
+`$d$` で割っているのが「平均化」の影響。`$\hat{x}_j \sum_k \delta_k \hat{x}_k$` は正規化方向への成分を除去する（射影）。
+
+この式の構造が重要: LayerNorm の逆伝播は「平均成分と分散方向成分を差し引いた、接平面への射影」だ。これが勾配の爆発・消失を抑える幾何学的理由。
+
+#### 5.6.2 勾配の検算戦略
+
+複雑な逆伝播を実装した後の検証方法:
+
+```math
+\text{relative error} = \frac{\|\mathbf{g}_{\text{analytic}} - \mathbf{g}_{\text{numeric}}\|}{\|\mathbf{g}_{\text{analytic}}\| + \|\mathbf{g}_{\text{numeric}}\| + \varepsilon} < 10^{-5}
+```
+
+判定基準の目安:
+- `$< 10^{-7}$`: 完璧（倍精度の限界）
+- `$10^{-5}$` ～ `$10^{-7}$`: 問題なし
+- `$10^{-3}$` ～ `$10^{-5}$`: 要調査（ほぼ正しいが確認が必要）
+- `$> 10^{-3}$`: バグあり
+
+**座標別チェック**: 全パラメータ一括より、まず `$W_1[0,0]$`（スカラー1つ）だけを確認する。問題を局所化できる。
+
+---
+
+### 5.7 理解度チェック — Z5 完全習得テスト
+
+<details>
+<summary>Q1: truncated SVD のランク-k 近似誤差を Frobenius ノルムで書け。</summary>
+
+```math
+\|A - A_k\|_F^2 = \sum_{i=k+1}^{r} \sigma_i^2
+```
+
+**検算**: `k=r`（full rank）のとき誤差ゼロ。`k=0` のとき `\|A\|_F^2 = \sum_i \sigma_i^2`（Parseval等式）。
+
+</details>
+
+<details>
+<summary>Q2: `$f(\mathbf{x}) = \mathbf{a}^\top \mathbf{x}$` の勾配は何か？</summary>
+
+```math
+\nabla_{\mathbf{x}} (\mathbf{a}^\top \mathbf{x}) = \mathbf{a}
+```
+
+定数ベクトルの内積微分 = 定数ベクトル。形: `$(d,) \to (d,)$`（勾配は入力と同 shape）。
+
+</details>
+
+<details>
+<summary>Q3: `$f(W) = \mathbf{x}^\top W \mathbf{y}$` の `$W$` に関する勾配を行列で表せ。</summary>
+
+```math
+\frac{\partial f}{\partial W} = \mathbf{x} \mathbf{y}^\top
+```
+
+shape: `$\mathbf{x} \in \mathbb{R}^m$`, `$\mathbf{y} \in \mathbb{R}^n$` → 勾配は `$m \times n$`（`$W$` と同 shape）。外積 `$\mathbf{x}\mathbf{y}^\top$` になるのが直観: `$f$` は `$W_{ij}$` に `$x_i y_j$` 分だけ依存するから。
+
+</details>
+
+<details>
+<summary>Q4: Softmax + Cross-Entropy の合成勾配が `$\mathbf{p} - \mathbf{y}$` になる理由を説明せよ。</summary>
+
+```math
+\mathcal{L} = -\sum_c y_c \log p_c,\quad p_c = \frac{e^{z_c}}{\sum_j e^{z_j}}
+```
+
+```math
+\frac{\partial \mathcal{L}}{\partial z_j} = p_j - y_j
+```
+
+Softmax のヤコビアン `$\partial p_i / \partial z_j = p_i(\delta_{ij} - p_j)$` に Cross-Entropy の外微分 `$-y_i/p_i$` を合成すると、`$-y_j + p_j \sum_i y_i = p_j - y_j$`（`$\sum_i y_i = 1$`）。
+
+</details>
+
+<details>
+<summary>Q5: Forward Mode AD と Reverse Mode AD のどちらを使うべき状況を説明せよ。</summary>
+
+- 入力次元 `$n$`、出力次元 `$m$` として:
+  - Forward Mode: `$n \ll m$` のとき `$O(n)$` パスで済む
+  - Reverse Mode: `$m \ll n$` のとき `$O(m)$` パスで済む
+- DL訓練: `$n = 10^9$`, `$m = 1$` → Reverse 圧倒的有利
+- ヤコビアン計算（`$m > n$`）: Forward の方が列ごとに1パスで得られる
+
+</details>
+
+<details>
+<summary>Q6: einsum `'ij,jk->ik'` と `'ij,kj->ik'` の違いは？</summary>
+
+- `'ij,jk->ik'`: 通常の行列積 `$C_{ik} = \sum_j A_{ij} B_{jk}$`
+- `'ij,kj->ik'`: `$C_{ik} = \sum_j A_{ij} B_{kj} = A B^\top$` —— Bが転置されている
+
+shape をそれぞれ確認: 前者は `A: (m,k)`, `B: (k,n)` → `C: (m,n)`. 後者は `A: (m,k)`, `B: (l,k)` → `C: (m,l)`.
+
+</details>
+
+<details>
+<summary>Q7: LoRA の訓練可能パラメータ数を、元の重み行列と比較せよ。</summary>
+
+元の重み行列 `$W \in \mathbb{R}^{d \times k}$`: `$dk$` パラメータ。
+LoRA 分解 `$\Delta W = BA$` (`$B \in \mathbb{R}^{d \times r}$`, `$A \in \mathbb{R}^{r \times k}$`): `$(d+k)r$` パラメータ。
+
+圧縮率: `$\frac{(d+k)r}{dk} = r\left(\frac{1}{k} + \frac{1}{d}\right) \approx \frac{2r}{\min(d,k)}$`
+
+`$r = 4$`, `$d = k = 4096$` のとき: `$2 \times 4 / 4096 \approx 0.2\%$`。
+
+</details>
+
+### Quick Check — Z5 完了確認
+
+<details>
+<summary>実装の自己診断: 3つの数値で全体を確認</summary>
+
+以下の3つが全て成立すれば、Z5の実装は正しい:
+
+1. **SVD誤差**: `np.abs(np.linalg.norm(A - svd_rank_k(A, k), 'fro') - tail_energy_bound(s, k)) < 1e-6`
+2. **勾配検算**: 二次形式 `$f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top A\mathbf{x}$` の相対誤差 `< 1e-6`
+3. **Dual Numbers**: `diff(lambda x: x**2 + x, 1.0) == 3.0`（解析値: `$2(1)+1=3$`）
+
+この3つが通らない限り、先へ進まないこと。
+
+</details>
+
+> Progress: 85%
+
+---
+
+## 🔬 Z6. 新たな冒険へ（30分）— SVD・行列微分の研究最前線
+
+### 6.1 LoRA — 低ランク適応の数学的根拠
+
+LoRA[^2]の核心は「Fine-tuning時の重み変化 `$\Delta W$` は低ランクで十分」という経験的観察だ。なぜそれが成立するのか？
+
+**Aghajanyan et al. (2021) の内在次元仮説**[^3]:
+
+Pre-trained モデルは「高次元パラメータ空間の、ごく低次元の部分空間」に制限されたままでもタスクを解ける。
+
+```math
+\mathcal{L}(\theta) \approx \mathcal{L}(\theta_0 + P \phi), \quad P \in \mathbb{R}^{D \times d},\; d \ll D
+```
+
+`$D$` = 元のパラメータ次元、`$d$` = 内在次元（GPT-2: `$d \approx 100$`）。
+
+**LoRAの定式化**[^2]:
+
+```math
+h = W_0 x + \Delta W x = W_0 x + B A x
+```
+
+```math
+B \in \mathbb{R}^{d_{\text{model}} \times r},\quad A \in \mathbb{R}^{r \times d_{\text{model}}},\quad r \ll d_{\text{model}}
+```
+
+初期化: `$A \sim \mathcal{N}(0, \sigma^2)$`, `$B = 0$` → Fine-tuning開始時は `$\Delta W = 0$`（元の挙動を保持）。
+
+**スケーリング係数**: 実装では `$\Delta W = \frac{\alpha}{r} BA$`（`$\alpha$` はハイパーパラメータ）。これにより `$r$` を変えてもスケールが安定する。
+
+```mermaid
+flowchart LR
+  X[入力 x] --> W0["W_0 x（凍結）"]
+  X --> A["A x (r×d)"]
+  A --> B["B(Ax) (d×r)"]
+  W0 --> ADD["+"]
+  B --> ADD
+  ADD --> H[出力 h]
+```
+
+**SVDとの接続**: LoRAの `$BA$` は rank-r 行列の SVD分解の因数と同型。違いは、LoRAでは `$B,A$` を直接学習するのに対し、SVDは既存の行列を後から分解する。
+
+**LoRA派生手法の概観**:
+
+| 手法 | 特徴 | 核心的改善 |
+|:-----|:-----|:---------|
+| LoRA[^2] | 均一ランク `$r$` | Fine-tuning基礎 |
+| AdaLoRA[^5] | SVD + 重要度スコアで可変ランク | パラメータ効率 |
+| DoRA | 方向性 `$W$` + 大きさ `$m$` に分解 | 表現力向上 |
+| QLoRA | 4-bit量子化 + LoRA | メモリ大幅削減 |
+| LoRA+ | `$A$` と `$B$` に異なる学習率 | 学習速度2倍 |
+
+DoRAは `$W = m \cdot \frac{W_0 + BA}{\|W_0 + BA\|}$`（`$m$` = スカラー大きさ）に分解し、方向と大きさを独立に学習。この分解はSVDの「回転」と「スケーリング」の分離と対応する。
+
+
+### 6.2 Randomized SVD — 大規模行列の近似
+
+`$A \in \mathbb{R}^{m \times n}$`、`$m = n = 10^5$` の場合、全体のSVDは `$O(n^3)$` で不可能。Halko et al. (2011)[^1]のRandomized SVDは `$O(mn\log k)$` で rank-k近似を計算する。
+
+**アルゴリズム**:
+
+1. **ランダム射影**: `$\Omega \in \mathbb{R}^{n \times (k+p)}$`（`$p$` = oversampling, 通常10）をランダムに生成
+   ```math
+   Y = A \Omega \in \mathbb{R}^{m \times (k+p)}
+   ```
+
+2. **正規直交基底**: `$Y$` のQR分解
+   ```math
+   Y = Q R,\quad Q \in \mathbb{R}^{m \times (k+p)}
+   ```
+
+3. **小行列への射影**: 
+   ```math
+   B = Q^\top A \in \mathbb{R}^{(k+p) \times n}
+   ```
+
+4. **小行列のSVD**: `$B = \tilde{U} \Sigma V^\top$`（`$(k+p) \times n$` なので高速）
+
+5. **復元**: `$U = Q \tilde{U}$`
+
+**なぜ動くのか？**: ランダム射影 `$\Omega$` の列がほぼ確実に `$A$` の列空間の有効な基底を近似する（確率集中現象）。誤差は `$\sigma_{k+1}$`（次の特異値）に依存する。
+
+**計算量比較**:
+
+| 手法 | 計算量 | 用途 |
+|:-----|:-------|:-----|
+| 全体SVD | `$O(\min(m,n) \cdot mn)$` | 正確解、小規模 |
+| Randomized SVD | `$O(mn\log k)$` | 大規模、近似 |
+| Power iteration variant | `$O(q \cdot mn)$` | より高精度（`$q$` = iter数） |
+
+```mermaid
+flowchart TD
+  A["A (m×n)"] --> Om["Ω random (n×k+p)"]
+  Om --> Y["Y=AΩ (m×k+p)"]
+  Y --> Q["QR → Q (m×k+p)"]
+  Q --> B["B=Q^T A (k+p×n)"]
+  B --> S["SVD(B) = Ũ Σ V^T"]
+  Q --> U["U = QŨ (m×k+p)"]
+  U --> Ak["A_k = U Σ V^T"]
+```
+
+### 6.3 AdaLoRA — SVDによる適応的ランク割り当て
+
+LoRAの弱点: 全重み行列に同じランク `$r$` を割り当てる。しかし、重み行列によって重要度は異なる。
+
+AdaLoRA[^5]は SVD パラメータ化と重要度スコアによって、ランク割り当てを**動的に**調整する。
+
+**SVD分解パラメータ化**:
+
+```math
+\Delta W = P \Lambda Q, \quad P \in \mathbb{R}^{d \times r},\; Q \in \mathbb{R}^{r \times k}
+```
+
+`$\Lambda = \text{diag}(\lambda_1, \ldots, \lambda_r)$` が特異値行列で、学習中に一部をゼロマスクすることでランクを制御。
+
+**重要度スコア** `$s_i$`（各特異値成分の重要度）:
+
+```math
+s_i = \left|\lambda_i\right| \cdot \left(\left|\mathbf{p}_i\right| \cdot \left|\mathbf{q}_i\right|\right)^{1/2}
+```
+
+重要度が低い成分（`$s_i$` が小さい）は `$\lambda_i \leftarrow 0$` にマスクし、重要な成分に「ランク予算」を再配分。
+
+**直交性正則化**: `$P, Q$` が直交に近くなるよう正則化:
+
+```math
+\mathcal{R}(P, Q) = \|P^\top P - I\|_F^2 + \|QQ^\top - I\|_F^2
+```
+
+これにより特異値分解の「分離性」が維持され、特定の `$\lambda_i$` をゼロにしても他成分に影響が少ない。
+
+**LoRA vs AdaLoRA の比較**:
+
+| 特性 | LoRA | AdaLoRA |
+|:-----|:-----|:--------|
+| ランク割り当て | 全層均一 | 重要度に応じて動的 |
+| パラメータ効率 | 中 | 高（同予算で精度向上） |
+| 計算オーバーヘッド | 低 | 中（ランクスケジューリング必要） |
+| SVDの役割 | 後処理分析 | 訓練中の中核構造 |
+
+```mermaid
+flowchart TD
+  Init["初期化: 高ランク Δ W = PΛQ"] --> Train["訓練: 重要度スコア計算"]
+  Train --> Prune["ランク削減: 低スコアの λ_i → 0"]
+  Prune --> Realloc["再配分: 重要層にランク予算"]
+  Realloc --> Train
+```
+
+**AdaLoRAの訓練スケジュール**:
+
+訓練の初期（`$t < T_i$`）はランク削減なし（全 `$\lambda_i$` を更新）。中期（`$T_i \leq t < T_f$`）で段階的にランクを削減。後期（`$t \geq T_f$`）は固定ランクで収束させる。
+
+```math
+r(t) = r_f + (r_0 - r_f) \cdot \left(1 - \frac{t - T_i}{T_f - T_i}\right)^3 \quad (T_i \leq t < T_f)
+```
+
+三乗カーブで滑らかにランクを削減することで、突然のランク変化による学習不安定を回避する。
+
+### 6.4 FlashAttention — IO-awareな行列演算
+
+GPUの計算ボトルネックは、実は演算数ではなくメモリ帯域だ。
+
+Vanilla Attentionは `$N \times N$` の Attention行列をHBM（高帯域メモリ）に書き込み、再度読み込む。これがボトルネック。
+
+**FlashAttention[^4]の核心**:
+
+```math
+O_i = \sum_j \frac{e^{q_i \cdot k_j / \sqrt{d}}}{\sum_l e^{q_i \cdot k_l / \sqrt{d}}} v_j
+```
+
+この計算を **tiling + online softmax** で実装することで、`$N \times N$` 行列をHBMに書き出さずに済む。
+
+**online softmax の更新式** (tileサイズ `$B_c$` ごとに逐次更新):
+
+```math
+m_i^{\text{new}} = \max(m_i^{\text{old}},\, \max_j s_{ij}), \quad
+\ell_i^{\text{new}} = e^{m_i^{\text{old}} - m_i^{\text{new}}} \ell_i^{\text{old}} + \sum_j e^{s_{ij} - m_i^{\text{new}}}
+```
+
+各 tile を処理するたびに、`$m_i$`（running max）と `$\ell_i$`（running sum）を更新。HBMアクセスが `$O(N)$` に削減される（vanilla: `$O(N^2)$`）。
+
+**メモリ複雑度の比較**:
+
+| アルゴリズム | HBMアクセス | メモリ使用量 | 逆伝播 |
+|:------------|:-----------|:----------|:------|
+| Vanilla Attention | `$O(N^2)$` | `$O(N^2)$` | Attention行列保存 |
+| FlashAttention v1 | `$O(N)$` | `$O(N)$` | 再計算（recompute） |
+| FlashAttention v2 | `$O(N)$` | `$O(N)$` | warpごと並列化改善 |
+
+逆伝播では Attention 行列を保存しない。代わりに `$m_i$`（max）と `$\ell_i$`（sum）だけ保持し、backward 時にAttentionを**再計算**する。メモリが浮動小数点演算より安い場合、これが最適。
+
+**FlashAttention-2 の改善点**: v1 はシーケンス方向（クエリ）に外ループを置き、KV方向に内ループを持つ設計だった。v2 は外ループをクエリ側にして、GPU warp 間の通信を最小化した。実測スピードアップ: `$A100$` で v1 比 2倍、理論ピーク比 73%。
+
+**線形代数との接続**: FlashAttentionは「行列積の分割可能性」を利用している。`$AB = \sum_k A_{:,k} B_{k,:}$` という外積和分解が、tileごとの計算を可能にする。これはSVDの逐次近似と同じ「分割して計算し、後で統合」という発想だ。
+
+**低ランクAttentionとの比較**: Linformer[^6]などは Attention 行列そのものを低ランク `$P = E^\top K \in \mathbb{R}^{r \times N}$`（`$r \ll N$`）で近似する。SVDの観点では、Attentionスコア行列 `$S = QK^\top/\sqrt{d}$` の有効ランクが低い、という仮説。実証的には `$r = 128$`（`$N = 2048$`）で精度低下ほぼゼロが報告されている。
+
+### 6.5 行列微分の研究フロンティア — 高次微分とHessian
+
+2次最適化はSGDの10倍以上速く収束することがある。ネックはHessianの計算・保存コスト `$O(n^2)$`。
+
+**Hessian-vector product（HVP）**:
+
+```math
+Hv = \nabla_\theta (\nabla_\theta \mathcal{L} \cdot v) = \lim_{\varepsilon \to 0} \frac{\nabla_\theta \mathcal{L}(\theta + \varepsilon v) - \nabla_\theta \mathcal{L}(\theta)}{\varepsilon}
+```
+
+これはForward-over-Reverse ADで1回のforward + 1回のreverseで計算可能（`$O(n)$` で済む）。Hessian行列全体 `$H \in \mathbb{R}^{n \times n}$` を保存せず、任意の方向 `$v$` との積だけ計算する。Newton法はこの `$Hv$` を線形システム `$Hp = -\nabla \mathcal{L}$` のソルバーで使う。
+
+**Gauss-Newton分解**: 損失が `$\mathcal{L} = \frac{1}{2}\|r(\theta)\|^2$`（残差の二乗和）のとき:
+
+```math
+H = J^\top J + \sum_i r_i \nabla^2 r_i \approx J^\top J \quad (\text{残差が小さければ})
+```
+
+`$J = \partial r / \partial \theta$` がヤコビアン。`$J^\top J$` は半正定値で逆行列が安定。深層学習では残差は損失勾配に対応し、`$J^\top J$` が Fisher情報行列 `$F$` に対応する。
+
+**自然勾配（Natural Gradient）**: Fisher情報行列 `$F$` を使ったパラメータ空間の曲率補正:
+
+```math
+\Delta \theta = -\eta F^{-1} \nabla_\theta \mathcal{L}
+```
+
+`$F^{-1} \nabla \mathcal{L}$` は「確率分布空間での最急降下方向」だ。ユークリッド勾配は、パラメータ空間の計量を無視するため、非効率な経路をたどりやすい。自然勾配はこれを補正する。
+
+**K-FAC（Kronecker-factored Approximation）**:
+
+Fisher情報行列 `$F = \mathbb{E}[\nabla \mathcal{L} \nabla \mathcal{L}^\top]$` を Kronecker積で近似:
+
+```math
+F \approx A \otimes G, \quad A = \mathbb{E}[a a^\top],\; G = \mathbb{E}[\delta \delta^\top]
+```
+
+`$A$` は入力の2次統計、`$G$` は勾配の2次統計。Kronecker積のおかげで逆行列が `$O(n)$` で計算可能。逆行列の分解: `$(A \otimes G)^{-1} = A^{-1} \otimes G^{-1}$`。`$A,G$` それぞれの逆行列は `$O(d^3)$` だが、これは元の `$F^{-1}$` の `$O(n^2 d^2)$` より桁違いに小さい。
+
+**Hutchinson推定によるHessianトレース近似**:
+
+```math
+\text{tr}(H) \approx \frac{1}{m} \sum_{j=1}^m z_j^\top H z_j, \quad z_j \sim \mathcal{N}(0, I)
+```
+
+確率ベクトル `$z_j$` とのHVPだけでトレースを推定できる。`$m = 10\text{-}100$` で実用的な精度が出る。これを使えば「Hessianの大きな固有値成分がいくつか存在するか」（sharp minima vs flat minima）が推定できる。
+
+```mermaid
+flowchart TD
+  SGD["SGD: ΔW = -η∇L"] --> NG["自然勾配: ΔW = -η F^-1 ∇L"]
+  NG --> KFAC["K-FAC: F ≈ A⊗G"]
+  KFAC --> INV["(A⊗G)^-1 = A^-1⊗G^-1"]
+  INV --> FAST["収束 10-100x 高速化"]
+  NG --> HVP["HVP: Hv = ∇(∇L·v)"]
+  HVP --> HESS["Hutchinson: tr(H) 推定"]
+```
+
+### 6.6 研究論文の家系図
+
+第3回で扱った論文群の系譜を整理する。数式の「血統」が見えると、なぜ今の手法が生まれたかが分かる。
+
+```mermaid
+flowchart TD
+  EY["Eckart-Young (1936)<br/>低ランク最適近似"]
+  MP["Moore-Penrose (1950s)<br/>疑似逆行列"]
+  BP["Backprop (Rumelhart 1986)<br/>計算グラフ上の連鎖律"]
+  AD["AD Survey (Baydin 2018)<br/>Forward/Reverse統一理論"]
+  Lo["LoRA (Hu 2022)<br/>低ランクFine-tuning"]
+  FA["FlashAttention (Dao 2022)<br/>IO-aware行列演算"]
+  RS["Randomized SVD (Halko 2011)<br/>大規模近似"]
+  AL["AdaLoRA (Zhang 2023)<br/>適応的ランク割り当て"]
+  LN["LayerNorm (Ba 2016)<br/>正規化層の設計"]
+  TR["Transformer (Vaswani 2017)<br/>Self-Attention + LN"]
+
+  EY --> MP
+  EY --> RS
+  MP --> Lo
+  Lo --> AL
+  RS --> AL
+  BP --> AD
+  LN --> TR
+  AD --> TR
+  TR --> FA
+  Lo --> FA
+```
+
+**読み方**: 矢印は「数学的・思想的継承」を示す。LoRA が Moore-Penrose を継承するのは「最小ノルム解 = 低ランク解」の思想から。FlashAttentionがTransformerを継承するのは「同じ数式、違う計算順序」という発想から。
+
+**未来の接続**: Hessian近似（K-FAC）はFisher情報行列経由でLoRAと繋がる。「低ランク ≈ 損失の曲率が低い方向」という観点から、適応的ランク選択とK-FACは同じ問題を異なる角度で解く。
+
+### Z6 理解度チェック — 研究トレンドの把握
+
+<details>
+<summary>Q1: LoRAとAdaLoRAの本質的な違いを1行で説明せよ。</summary>
+
+LoRAは均一ランクの学習可能行列を使うが、AdaLoRAはSVDパラメータ化と重要度スコアで各層のランクを**動的に**割り当てる。
+
+</details>
+
+<details>
+<summary>Q2: Randomized SVD が `$O(mnk)$` で済む理由を述べよ。</summary>
+
+ランダム射影 `$Y = A\Omega$`（`$O(mnk)$`）→ QR分解（`$O(mk^2)$`）→ 小行列 `$B = Q^\top A$`（`$O(mnk)$`）→ 小行列のSVD（`$O(k^2 n)$`）。全行列SVDの `$O(mn\min(m,n))$` に対し、`$k \ll \min(m,n)$` なら `$k/\min(m,n)$` 倍高速。
+
+</details>
+
+<details>
+<summary>Q3: FlashAttentionが `$O(N^2)$` ではなく `$O(N)$` のHBMアクセスで済む理由は？</summary>
+
+Attention行列 `$P \in \mathbb{R}^{N \times N}$` をHBMに書き出さず、SRAMでtileごとにonline softmaxを計算するため。各tileのrunning max `$m_i$` とrunning sum `$\ell_i$` をSRAM上で更新し続け、最終パスのみ出力 `$O_i$` をHBMに書く。
+
+</details>
+
+> Progress: 95%
+
+---
+
+## 🎓 Z7. エピローグ（10分）— まとめと次回予告
+
+### 第3回の学習内容まとめ
+
+| トピック | 理論の核心 | 実装の核心 |
+|:---------|:---------|:---------|
+| SVD | `$A = U\Sigma V^\top$`, Eckart-Young定理 | `U[:,:k] @ (s[:k,None] * Vt[:k,:])` |
+| Randomized SVD | ランダム射影 + QR + 小行列SVD | `$O(mnk)$` — 大規模行列に不可欠 |
+| LoRA | `$\Delta W = BA$`, 低ランク仮説 | `$B=0$`初期化の理由 |
+| einsum | 添字規則 3 条 | パターン表の暗記より導出 |
+| 行列微分 | `$\nabla_x f$` の shape = `$x$` の shape | 中央差分で `$10^{-5}$` 以下検算 |
+| Forward AD | 双対数 `$a + b\varepsilon$`, `$\varepsilon^2=0$` | `Dual(x, 1.0)` で `$x$` の偏微分 |
+| Reverse AD | Wengert tape + VJP | PyTorchの `backward()` の正体 |
+| LayerNorm | 平均・分散正規化 → 接平面射影の逆伝播 | `$\hat{x} = (x-\mu)/\sqrt{\sigma^2+\varepsilon}$` |
+
+### 道具の連携図 — SVD×行列微分×自動微分の交点
+
+```mermaid
+graph TD
+    SVD["SVD: A = UΣVᵀ"] -->|"低ランク近似"| LORA["LoRA: ΔW = BA"]
+    SVD -->|"誤差保証"| EY["Eckart-Young定理"]
+    MATDIFF["行列微分: ∇f"] -->|"連鎖律"| AD["自動微分"]
+    AD -->|"VJP"| BP["Backprop"]
+    AD -->|"JVP"| FAD["Forward AD (Dual)"]
+    LORA -->|"ヤコビアンで学習"| MATDIFF
+    BP -->|"Wengert Tape"| MEM["メモリ管理"]
+    EY -->|"最適rank選択"| RSVD["Randomized SVD"]
+    RSVD -->|"大規模Fine-tuning"| LORA
+```
+
+SVD・行列微分・自動微分は独立した道具ではない。SVDが「低ランク構造の発見」を担い、行列微分が「最適化の方向」を与え、自動微分が「その方向を効率的に計算」する。3つが揃って初めて、LLMのFine-tuningが成立する。
+
+### 数式↔コード対応表
+
+| 数式 | NumPy/Python | shape |
+|:-----|:-------------|:------|
+| `$A = U\Sigma V^\top$` | `U, s, Vt = np.linalg.svd(A, full_matrices=False)` | `(m,r),(r,),(r,n)` |
+| `$A_k$` | `U[:,:k] @ (s[:k,None] * Vt[:k,:])` | `(m,n)` |
+| `$\|A - A_k\|_F^2 = \sum_{i>k}\sigma_i^2$` | `np.sum(s[k:]**2)` | scalar |
+| `$A^\dagger$` | `np.linalg.pinv(A)` | `(n,m)` |
+| `$C_{ij}=\sum_k A_{ik}B_{kj}$` | `np.einsum('ik,kj->ij', A, B)` | `(m,n)` |
+| `$S_{bhqk} = \sum_d Q_{bhqd}K_{bhkd}/\sqrt{d}$` | `np.einsum('bhqd,bhkd->bhqk', Q, K) / sqrt(d)` | `(B,H,T,T)` |
+| `$f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top A\mathbf{x}$` | `0.5 * x @ A @ x` | scalar |
+| `$\nabla_x f$` | 数値: 中央差分 `(f(x+h*e_i) - f(x-h*e_i)) / (2h)` | `(d,)` |
+| `$\hat{x} = (x-\mu)/\sqrt{\sigma^2+\varepsilon}$` | `(x - x.mean()) / sqrt(x.var() + eps)` | `(d,)` |
+| ReLU勾配 | `dz1 = dh1 * (z1 > 0)` | `(B,H)` |
+| Softmax+CE勾配 | `dz2 = (p - y) / B` | `(B,C)` |
+| `$\partial\mathcal{L}/\partial W_2$` | `dW2 = dz2.T @ h1` | `(C,H)` |
+| `$W \leftarrow W - \eta \nabla_W \mathcal{L}$` | `W -= lr * dW` | `(H,D)` |
+| Dual Number積 | `(a+bε)(c+dε) = ac + (ad+bc)ε` | — |
+
+
+
+### FAQ
+
+<details>
+<summary>Q1: `np.linalg.svd` の `full_matrices=False` は何を意味するか？</summary>
+
+`full_matrices=True`（デフォルト）: `$U \in \mathbb{R}^{m \times m}$`, `$V^\top \in \mathbb{R}^{n \times n}$`（正方行列）。
+`full_matrices=False`: `$U \in \mathbb{R}^{m \times r}$`, `$V^\top \in \mathbb{R}^{r \times n}$`（`$r = \min(m,n)$`、経済的SVD）。
+
+低ランク近似のときは `False` が効率的。`full_matrices=True` は直交完全性が必要な場合（例: QR分解との組み合わせ）で使う。
+
+</details>
+
+<details>
+<summary>Q2: SVDの特異値は一意だが、U と V は一意でないのはなぜか？</summary>
+
+特異値 `$\sigma_i$` は `$A^\top A$` の固有値の平方根なので一意。しかし固有ベクトルは固有空間が1次元でない限り一意ではない（符号反転・回転の自由度）。多重特異値があるときは特に注意。実装では `U` や `V` の絶対値や再構成誤差で比較する。
+
+</details>
+
+<details>
+<summary>Q3: LoRAで `$B=0$`、`$A=\text{Kaiming normal}$` と初期化する理由は？</summary>
+
+Fine-tuning開始時に `$\Delta W = BA = 0$` を保証するため。`$A=0$` にすると `$\partial \mathcal{L}/\partial A = B^\top (\cdots) = 0$` となり `$A$` が学習しない。`$B=0$` にすると最初の backward で `$\partial \mathcal{L}/\partial B \neq 0$`（`$A$` は非ゼロ）なので、以降は両方が学習する。
+
+</details>
+
+<details>
+<summary>Q4: Tikhonov正則化の `$\lambda$` をどう選ぶか？</summary>
+
+```math
+\mathbf{x}^* = V \operatorname{diag}\!\left(\frac{\sigma_i}{\sigma_i^2+\lambda}\right) U^\top \mathbf{b}
+```
+
+`$\lambda \to \infty$`: 全フィルタ係数 `$\to 0$` → `$\mathbf{x}^* \to \mathbf{0}$`（過剰正則化）。
+`$\lambda \to 0$`: 疑似逆行列解（最小ノルム最小二乗解）に収束。
+最適 `$\lambda$` はL曲線法（`$\|\mathbf{x}^*\|$` vs `$\|A\mathbf{x}^* - \mathbf{b}\|$` のプロット）や留一交差検証で選ぶ。
+
+</details>
+
+<details>
+<summary>Q5: なぜ数値微分は grad check にしか使えないのか？</summary>
+
+中央差分の誤差は `$O(h^2)$`。`$h \approx 10^{-5}$` を使うと数値誤差 `$\sim 10^{-10}$` で1偏微分が計算できるが、`$n$` パラメータに対し `$O(n)$` 回 forward pass が必要。LLMでは `$n = 10^9$` → `$10^9$` 回の forward pass = 不可能。grad check は `$n \leq 10^4$` の小ネットワークでのみ実用的。
+
+</details>
+
+<details>
+<summary>Q6: Dual Numbers を使った Forward Mode AD と PyTorch の autograd の関係は？</summary>
+
+PyTorchの `autograd` はデフォルトで **Reverse Mode AD** を実装する。`torch.autograd.functional.jvp` が Forward Mode（Jacobian-vector product）を実装している。
+
+Dual Numbers は手実装版 Forward Mode AD の理論的基盤。PyTorchの forward-mode AD は内部で Tangent（`$\varepsilon$` 係数）を追跡する同様の仕組みを持つ。
+
+`torch.autograd.functional.jvp(f, x, v)` は `$Jv$` を1パスで計算する。`$v$` = 方向ベクトル（Dual Numberの `$\varepsilon$` 成分）に相当。
+
+</details>
+
+<details>
+<summary>Q7: einsum の `optimize=True` は常に使うべきか？</summary>
+
+2項縮約（`'ik,kj->ij'`）では順序が一意なので効果なし。**3項以上**の縮約でのみ恩恵がある。
+
+`np.einsum('ijk,jkl,klm->im', A, B, C, optimize=True)` のような式では、縮約順序の探索コストより計算削減量の方が圧倒的に大きい。
+
+ただし、ループ内で繰り返す場合は `np.einsum_path` でプランを事前計算してキャッシュする。
+
+</details>
+
+<details>
+<summary>Q9: Randomized SVD の誤差保証はどれくらい強いか？</summary>
+
+Halko et al. (2011) の定理: ランダム行列 `$\Omega \in \mathbb{R}^{n \times (k+p)}$` を使って `$Y = A\Omega$`、`$Q$` をその正規直交基底として `$\hat{A} = QQ^\top A$` を作ると:
+
+```math
+\mathbb{E}\|A - \hat{A}\|_2 \leq \left(1 + \sqrt{\frac{k}{p-1}}\right)\sigma_{k+1} + \frac{e\sqrt{k+p}}{p} \left(\sum_{j>k}\sigma_j^2\right)^{1/2}
+```
+
+`$p$` はオーバーサンプリングパラメータ（通常 `$p=5\text{-}10$`）。期待値が最良ランク-`$k$` 近似誤差 `$\sigma_{k+1}$` に近い。`$p=10$` でほぼ確定的な保証が得られる。
+
+</details>
+
+<details>
+<summary>Q8: LayerNorm の逆伝播で「平均成分と分散方向成分を差し引く」のはなぜか？</summary>
+
+LayerNorm の forward では出力 `$\hat{x}$` が常に平均0・分散1に制約される。この制約は「`$\hat{x}$` は平均方向と分散方向への変化を持てない」ことを意味する。
+
+逆伝播もその制約に従う必要があり、勾配から「平均方向」`$\frac{1}{d}\sum_k \delta_k$` と「分散方向」`$\hat{x}_j \frac{1}{d}\sum_k \delta_k \hat{x}_k$` を差し引いて射影する。これはまさに「制約付き最適化における射影勾配」の構造だ。
+
+</details>
+
+### 次回予告 — 第4回: 確率論・統計学
+
+第3回で学んだ行列微分・自動微分は、「勾配をどう計算するか」の問題を解決した。
+
+次回は「確率をどう扱うか」だ。
+
+- 確率分布の記述と操作
+- 期待値・分散・共分散
+- 最尤推定とベイズ推定
+- KL divergenceの導出と情報理論
+
+行列微分なしに最尤推定は書けない。今回の道具が直接繋がる。
+
+> Progress: 100%
+
+---
+
+## パラダイム転換 — 「テンソル縮約は情報の言語」
+
+> 微分はなぜ「計算グラフの逆走」なのか？
+
+古典数学では微分は「極限」として定義される。しかし実装の世界では、微分は「計算の記録を逆に読む」操作だ。
+
+Wengert list を使った Reverse Mode AD は、数学的には「局所偏微分の連鎖積の逆順計算」だが、計算論的には「プログラムのトレースを巻き戻す」だ。この二つの等価性が、深層学習の理論と実装を結ぶ橋梁だ。
+
+同様に、einsum は「テンソル縮約の言語」ではなく「情報の流れの言語」だ。`'bhqd,bhkd->bhqk'` は単なる計算式ではなく、「各クエリが全てのキーと関係を持ち、関係の強さを `$d$` 次元で測る」という意味の宣言だ。
+
+SVDもまた「行列の言語」だ。どんな変換も「回転 → 軸方向スケーリング → 回転」に分解できる、という主張。その言語で書けば、LoRAもRandomized SVDも同じ文法で書ける。
+
+**問い**: 「情報を失わない最小の表現」とは何か？
+
+<details>
+<summary>歴史的背景 — 低ランク近似の再発見</summary>
+
+Eckart-Young定理（1936年）は行列論の結果だったが、「最良低ランク近似＝SVDで切り捨て」という事実が機械学習に広く応用されたのは1990年代以降だ。
+
+LSA（Latent Semantic Analysis）、PCA、推薦システムのSVD、そしてLoRA——全て同じ数学的原理の応用だ。
+
+LoRAの登場（2022年）は、「LLMの fine-tuning は低次元多様体上にある」という観察を実用化した。Fine-tuningの「本質的な自由度」が驚くほど小さいという発見は、深層学習の「内在次元」への理解を一段深めた。
+
+</details>
+
+---
+
+## 📚 参考文献
+
+[^1]: Halko, N., Martinsson, P.-G., & Tropp, J. A. (2011). Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. *SIAM Review*, 53(2), 217–288. [arXiv:0909.4061](https://arxiv.org/abs/0909.4061)
+
+[^2]: Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., & Chen, W. (2022). LoRA: Low-Rank Adaptation of Large Language Models. *ICLR 2022*. [arXiv:2106.09685](https://arxiv.org/abs/2106.09685)
+
+[^3]: Aghajanyan, A., Zettlemoyer, L., & Gupta, S. (2021). Intrinsic Dimensionality Explains the Effectiveness of Language Model Fine-Tuning. *ACL 2021*. [arXiv:2012.13255](https://arxiv.org/abs/2012.13255)
+
+[^4]: Dao, T., Fu, D. Y., Ermon, S., Rudra, A., & Ré, C. (2022). FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. *NeurIPS 2022*. [arXiv:2205.14135](https://arxiv.org/abs/2205.14135)
+
+[^5]: Zhang, Q., Chen, M., Bukharin, A., He, P., Cheng, Y., Chen, W., & Zhao, T. (2023). AdaLoRA: Adaptive Budget Allocation for Parameter-Efficient Fine-Tuning. *ICLR 2023*. [arXiv:2303.10512](https://arxiv.org/abs/2303.10512)
+
+[^6]: Baydin, A. G., Pearlmutter, B. A., Radul, A. A., & Siskind, J. M. (2018). Automatic differentiation in machine learning: a survey. *Journal of Machine Learning Research*, 18(153), 1–43. [arXiv:1502.05767](https://arxiv.org/abs/1502.05767)
+
+[^7]: Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., & Polosukhin, I. (2017). Attention Is All You Need. *NeurIPS 2017*. [arXiv:1706.03762](https://arxiv.org/abs/1706.03762)
+
+[^8]: Ba, J. L., Kiros, J. R., & Hinton, G. E. (2016). Layer Normalization. [arXiv:1607.06450](https://arxiv.org/abs/1607.06450)
+
+---
+
+> **前編へのリンク**: [第3回 Part1（理論編）](/articles/ml-lecture-03-part1)
+
+---
+
+## 著者リンク
+
+- Blog: https://fumishiki.dev
+- X: https://x.com/fumishiki
+- LinkedIn: https://www.linkedin.com/in/fumitakamurakami
+- GitHub: https://github.com/fumishiki
+- Hugging Face: https://huggingface.co/fumishiki
 
 ---
 
@@ -1785,11 +1587,13 @@ SVDは、データ圧縮・ノイズ除去・潜在構造発見の普遍的ツ�
    - 有料note、有料記事、Kindle出版、有料動画コンテンツ、Patreon限定コンテンツ等
 
 **個人利用に含まれるもの:**
+
 - 個人の学習・研究
 - 個人的なノート作成（個人利用に限る）
 - 友人への元記事リンク共有
 
 **組織での導入をご希望の場合**は、必ず著者に連絡を取り、以下を遵守してください:
+
 - 全ての帰属表示リンクを維持
 - 利用方法を著者に報告
 

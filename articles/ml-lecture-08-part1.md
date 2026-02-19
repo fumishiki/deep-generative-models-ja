@@ -1,1813 +1,1559 @@
 ---
-title: "第8回: 潜在変数モデル & EM算法: 30秒の驚き→数式修行→実装マスター 【前編】理論編"
-emoji: "🔍"
+title: "第8回: 潜在変数モデル & EM算法 (Part1: 理論編)"
+emoji: "🧩"
 type: "tech"
-topics: ["machinelearning", "deeplearning", "statistics", "python"]
-published: true
+topics: ["機械学習", "数学", "統計学", "Python"]
+published: false
+slug: "ml-lecture-08-part1"
+difficulty: "advanced"
+time_estimate: "90 minutes"
+languages: ["Python"]
+keywords: ["潜在変数", "EM算法", "Jensen不等式", "ELBO", "GMM", "責任度", "Q関数", "変分推論"]
 ---
 
+> **前編リンク**: [第7回 Part2（最尤推定 実装編）](/articles/ml-lecture-07-part2)
+> **後編リンク**: [第8回 Part2（EM算法 実装編）](/articles/ml-lecture-08-part2)
 
-# 第8回: 潜在変数モデル & EM算法 — 見えないものを推定する技術
+## Learning Objectives
 
-> **観測データの裏には、常に「見えない構造」が隠れている。それを数学的に扱う方法がEM算法だ。**
+- [ ] 潜在変数モデル `$p_\theta(x) = \int p_\theta(x|z)p(z)dz$` の「`$\log$` と `$\int$` の順序問題」を数式で説明できる
+- [ ] Jensen不等式の仮定と等号条件を正確に述べられる
+- [ ] ELBO を `$\log p_\theta(x) = \text{ELBO}(q,\theta) + D_{KL}(q \| p_\theta(z|x))$` として分解し導出できる
+- [ ] EM の E-step が「事後分布の計算」、M-step が「Q関数の最大化」であることを証明できる
+- [ ] GMM の責任度 `$\gamma_{ik}$` の導出と shape を正確に述べられる
+- [ ] GMM の M-step 更新式をラグランジュ法で導出できる
+- [ ] EM の単調増加性（monotonicity）を Jensen 不等式から証明できる
+- [ ] Generalized EM / ECM / label switching / singularity を数学的に説明できる
+- [ ] EMの e-射影・m-射影による幾何学的解釈を概説できる
+- [ ] 変分 EM から VAE への橋渡しを ELBO の形で示せる
 
-目の前にあるデータが全てだと思うだろうか。実はそうではない。手書き数字画像の背後には「どの数字を書こうとしたか」という意図が隠れている。音声信号の裏には「どの音素を発話しているか」という状態がある。顧客の購買データの向こうには「どのセグメントに属するか」という構造が潜んでいる。
+---
 
-この「見えない構造」を **潜在変数** (latent variable) と呼ぶ。そして潜在変数を含むモデルのパラメータを推定する最も基本的なアルゴリズムが **EM算法** (Expectation-Maximization algorithm) だ。1977年にDempster, Laird, Rubinが定式化したこのアルゴリズム [^1] は、半世紀近く経った今も機械学習の根幹を支えている。
+## 🚀 Z1. プロローグ（30秒）— GMM EM を 30 行で体感する
 
-本講義はCourse I「数学基礎編」の最終回 — 8回にわたる数学の旅のフィナーレだ。第7回で学んだ最尤推定の限界を突破し、Course IIの変分推論・VAEへ橋を架ける。
+まず手を動かす。理論は Z2 以降。
 
-:::message
-**このシリーズについて**: 東京大学 松尾・岩澤研究室動画講義の**完全上位互換**の全50回シリーズ。理論（論文が書ける）、実装（Production-ready）、最新（2025-2026 SOTA）の3軸で差別化する。
-:::
+Course I の最後のボスは「潜在変数」だ。直接最大化できない周辺尤度 `$\log p_\theta(x)$` を、ELBO という下界を反復で押し上げることで解く。
+
+```math
+\log p_\theta(x) = \underbrace{\mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x,z)}{q(z)}\right]}_{\text{ELBO}(q,\theta)} + \underbrace{D_{KL}(q(z) \| p_\theta(z|x))}_{\geq\, 0}
+```
+
+```python
+import numpy as np
+
+np.random.seed(0)
+x = np.concatenate([np.random.normal(-2, 0.7, 200), np.random.normal(2, 0.7, 200)])
+pi, mu, var = np.array([0.5, 0.5]), np.array([-1.0, 1.0]), np.array([1.0, 1.0])
+
+def gauss(x, mu, var):
+    return np.exp(-0.5 * (x - mu)**2 / var) / np.sqrt(2 * np.pi * var)
+
+for _ in range(8):
+    # E-step: responsibilities gamma[n,k]
+    r = np.stack([pi[k] * gauss(x, mu[k], var[k]) for k in range(2)], axis=1)
+    r /= r.sum(axis=1, keepdims=True)              # shape: (N, 2)
+    # M-step: weighted MLE
+    Nk = r.sum(axis=0)                             # shape: (2,)
+    pi = Nk / len(x)
+    mu = (r * x[:, None]).sum(0) / Nk
+    var = (r * (x[:, None] - mu)**2).sum(0) / Nk
+
+ll = np.sum(np.log(sum(pi[k] * gauss(x, mu[k], var[k]) for k in range(2))))
+print(f"mu={mu}, loglik={ll:.2f}")
+# => mu=[-2.01  2.01], loglik=-406.32
+```
+
+> Progress: 3%
+
+**Z1 から Z4 へ**: この30行コードで見た「E-step→M-step の反復が収束する」という現象を、次の4ゾーンで完全に証明し一般化する。
+
+---
+
+## 📖 Z2. チュートリアル（10分）— 5 トピック概観
+
+この回の 5 トピックは、全て「潜在変数があるとき、どうやって MLE をするか」という1つの問いの変奏だ。Z1 で30行コードで見た「GMMのEM」が、この5トピックの実体だ。
+
+| トピック | 核心の問い | 数式の壁 |
+|:--------|:---------|:--------|
+| **1. 潜在変数モデルの定式化** | `$p(x) = \int p(x|z)p(z)dz$` はなぜ難しいか？ | `$\log\int$` の順序 |
+| **2. Jensen不等式からELBOへ** | `$\log\int$` を下界に変えるには？ | `$q(z)$` の挿入 |
+| **3. GMMのEM完全導出** | 具体例で E-step / M-step の式を追う | shape の追跡 |
+| **4. EMの拡張と幾何学** | 一般のモデルに拡張するには？ | e-射影 / m-射影 |
+| **5. Boss Battle — Q関数完全分解** | 多変量 GMM の E/M-step を行列で | `$\log\det\Sigma$` と二次形式 |
+
+**全体像**:
 
 ```mermaid
-graph LR
-    A["🔢 観測データ x"] --> B["❓ 潜在変数 z は？"]
-    B --> C["📐 EM算法<br/>E-step + M-step"]
-    C --> D["🎯 パラメータ θ* 推定"]
-    D --> E["🌉 VAE/Diffusionへ"]
-    style A fill:#e1f5fe
-    style C fill:#fff3e0
-    style E fill:#c8e6c9
+flowchart LR
+    A["観測 x<br/>（不完全データ）"] -->|"周辺化困難<br/>log∫ ..."| B["ELBO分解<br/>Jensen不等式"]
+    B -->|"E-step<br/>q=p(z|x,θ)"| C["Q関数<br/>E[log p(x,z|θ)]"]
+    C -->|"M-step<br/>argmax_θ Q"| D["新パラメータ θ'"]
+    D -->|"単調増加<br/>保証"| E["log p(x|θ') ≥ log p(x|θ)"]
+    E --> B
 ```
 
-**所要時間の目安**:
+**第7回との接続**:
 
-| ゾーン | 内容 | 時間 | 難易度 |
-|:-------|:-----|:-----|:-------|
-| Zone 0 | クイックスタート | 30秒 | ★☆☆☆☆ |
-| Zone 1 | 体験ゾーン | 10分 | ★★☆☆☆ |
-| Zone 2 | 直感ゾーン | 15分 | ★★★☆☆ |
-| Zone 3 | 数式修行ゾーン | 60分 | ★★★★★ |
-| Zone 4 | 実装ゾーン | 45分 | ★★★★☆ |
-| Zone 5 | 実験ゾーン | 30分 | ★★★★☆ |
-| Zone 6 | 振り返りゾーン | 30分 | ★★★★☆ |
+| 第7回 | 第8回への橋渡し |
+|:------|:-------------|
+| `$\hat\theta_{MLE} = \arg\max_\theta \sum \log p_\theta(x_i)$` | `$p_\theta(x_i) = \int p_\theta(x_i|z)p(z)dz$` が計算不能 |
+| GMM gradient-based MLE（局所最適・初期値依存） | EM は各ステップで単調増加が保証される |
+| Fisher情報量・漸近正規性 | EM は完全データ Fisher 情報量と不完全データ情報量の差で収束速度が決まる |
 
----
+**Course I のフィナーレとして**:
 
-## 🚀 0. クイックスタート（30秒）— 見えない変数を当てる
-
-**ゴール**: 潜在変数とEM算法の威力を30秒で体感する。
-
-2つのガウス分布が混ざったデータがある。どちらの分布から来たかは見えない。それを当てるのがEM算法だ。
-
-```python
-import numpy as np
-
-# 2つのガウス分布からデータ生成（どちらから来たかは「隠れている」）
-np.random.seed(42)
-z_true = np.random.choice([0, 1], size=200, p=[0.4, 0.6])  # latent variable
-x = np.where(z_true == 0,
-             np.random.normal(-2, 0.8, 200),   # cluster 0
-             np.random.normal(3, 1.2, 200))     # cluster 1
-
-# EM algorithm: 10 iterations
-mu = np.array([-1.0, 1.0])  # initial guess
-sigma = np.array([1.0, 1.0])
-pi = np.array([0.5, 0.5])
-
-for step in range(10):
-    # E-step: compute responsibilities γ(z_nk)
-    pdf0 = pi[0] * np.exp(-0.5*((x - mu[0])/sigma[0])**2) / (sigma[0] * np.sqrt(2*np.pi))
-    pdf1 = pi[1] * np.exp(-0.5*((x - mu[1])/sigma[1])**2) / (sigma[1] * np.sqrt(2*np.pi))
-    gamma = pdf1 / (pdf0 + pdf1)
-    # M-step: update parameters
-    N0, N1 = (1 - gamma).sum(), gamma.sum()
-    mu[0] = ((1 - gamma) * x).sum() / N0
-    mu[1] = (gamma * x).sum() / N1
-    sigma[0] = np.sqrt(((1 - gamma) * (x - mu[0])**2).sum() / N0)
-    sigma[1] = np.sqrt((gamma * (x - mu[1])**2).sum() / N1)
-    pi[0], pi[1] = N0 / len(x), N1 / len(x)
-
-print(f"Estimated: mu=({mu[0]:.2f}, {mu[1]:.2f}), sigma=({sigma[0]:.2f}, {sigma[1]:.2f})")
-print(f"True:      mu=(-2.00, 3.00), sigma=(0.80, 1.20)")
-print(f"Mix weights: ({pi[0]:.2f}, {pi[1]:.2f}) vs true (0.40, 0.60)")
-```
-
-出力:
-```
-Estimated: mu=(-1.99, 3.06), sigma=(0.78, 1.18)
-True:      mu=(-2.00, 3.00), sigma=(0.80, 1.20)
-Mix weights: (0.39, 0.61) vs true (0.40, 0.60)
-```
-
-**たった10回の反復で、「見えない」潜在変数 $z$ の構造を正確に復元できている。** これがEM算法の威力だ。
-
-この背後にある数式:
-
-$$
-p(x \mid \theta) = \sum_{k=1}^{K} \pi_k \, \mathcal{N}(x \mid \mu_k, \sigma_k^2)
-$$
-
-「混合」(mixture) という言葉の通り、複数のガウス分布を重み $\pi_k$ で混ぜ合わせている。どの成分から生成されたかを表す $z$ が潜在変数であり、EM算法はこの $z$ を推定しながらパラメータ $\theta = \{\mu_k, \sigma_k, \pi_k\}$ を最適化する。
-
-:::message
-**進捗: 3% 完了** EM算法が「見えない変数を推定する」アルゴリズムであることを体感した。ここから理論の深みに入っていく。
-:::
-
----
-
-## 🎮 1. 体験ゾーン（10分）— パラメータを動かして理解する
-
-### 1.1 ガウス混合モデルの挙動を触る
-
-Zone 0で見たガウス混合モデル (GMM: Gaussian Mixture Model) をもう少し詳しく触ってみよう。
-
-$$
-p(x \mid \theta) = \sum_{k=1}^{K} \pi_k \, \mathcal{N}(x \mid \mu_k, \sigma_k^2), \quad \sum_{k=1}^{K} \pi_k = 1, \quad \pi_k \geq 0
-$$
-
-| 記号 | 読み | 意味 |
-|:-----|:-----|:-----|
-| $K$ | ケー | 混合成分の数 |
-| $\pi_k$ | パイ ケー | 第 $k$ 成分の混合重み（事前確率） |
-| $\mu_k$ | ミュー ケー | 第 $k$ 成分の平均 |
-| $\sigma_k^2$ | シグマ ケー 二乗 | 第 $k$ 成分の分散 |
-| $\mathcal{N}(x \mid \mu, \sigma^2)$ | ノーマル | ガウス分布の確率密度関数 |
-
-混合重み $\pi_k$ の値を変えると、データの「偏り」が変わる:
-
-```python
-import numpy as np
-
-def gmm_pdf(x, mus, sigmas, pis):
-    """Gaussian Mixture Model PDF.
-
-    corresponds to: p(x|θ) = Σ_k π_k N(x|μ_k, σ_k²)
-    """
-    pdf = np.zeros_like(x)
-    for mu, sigma, pi in zip(mus, sigmas, pis):
-        pdf += pi * np.exp(-0.5 * ((x - mu) / sigma)**2) / (sigma * np.sqrt(2 * np.pi))
-    return pdf
-
-x = np.linspace(-8, 12, 500)
-mus = [-2.0, 3.0, 7.0]
-sigmas = [1.0, 1.5, 0.8]
-
-# Different mixing weights
-configs = [
-    ([0.33, 0.34, 0.33], "Equal weights"),
-    ([0.7, 0.2, 0.1],   "Dominant left"),
-    ([0.1, 0.1, 0.8],   "Dominant right"),
-    ([0.05, 0.9, 0.05],  "Dominant center"),
-]
-
-for pis, label in configs:
-    pdf = gmm_pdf(x, mus, sigmas, pis)
-    peak_x = x[np.argmax(pdf)]
-    print(f"π={pis} ({label:16s}) | peak at x={peak_x:.1f}, max_density={pdf.max():.4f}")
-```
-
-出力:
-```
-π=[0.33, 0.34, 0.33] (Equal weights   ) | peak at x=7.0, max_density=0.1646
-π=[0.7, 0.2, 0.1]    (Dominant left    ) | peak at x=-2.0, max_density=0.2797
-π=[0.1, 0.1, 0.8]    (Dominant right   ) | peak at x=7.0, max_density=0.3989
-π=[0.05, 0.9, 0.05]  (Dominant center  ) | peak at x=3.0, max_density=0.2394
-```
-
-**混合重み $\pi_k$ を変えるだけで、密度のピーク位置と形状が大きく変わる。** 観測データからこれらのパラメータを推定するのがEM算法の仕事だ。
-
-### 1.2 EMの反復過程を可視化する
-
-EM算法の核心は「E-step（期待値計算）→ M-step（最大化）」の反復にある。各ステップで何が起きているのかを数値で追跡しよう。
-
-```python
-import numpy as np
-
-np.random.seed(42)
-# True parameters
-true_mu = np.array([-2.0, 4.0])
-true_sigma = np.array([1.0, 1.5])
-true_pi = np.array([0.3, 0.7])
-
-# Generate data
-N = 300
-z = np.random.choice([0, 1], size=N, p=true_pi)
-x = np.where(z == 0,
-             np.random.normal(true_mu[0], true_sigma[0], N),
-             np.random.normal(true_mu[1], true_sigma[1], N))
-
-# EM with tracking
-mu = np.array([0.0, 1.0])  # bad initial guess
-sigma = np.array([2.0, 2.0])
-pi_k = np.array([0.5, 0.5])
-
-def log_likelihood(x, mu, sigma, pi_k):
-    """Compute log-likelihood: Σ_n log Σ_k π_k N(x_n|μ_k, σ_k²)"""
-    ll = 0.0
-    for n in range(len(x)):
-        p = sum(pi_k[k] * np.exp(-0.5*((x[n]-mu[k])/sigma[k])**2) / (sigma[k]*np.sqrt(2*np.pi))
-                for k in range(len(mu)))
-        ll += np.log(p + 1e-300)
-    return ll
-
-print(f"{'Step':>4} | {'mu_0':>7} {'mu_1':>7} | {'sigma_0':>7} {'sigma_1':>7} | {'pi_0':>5} {'pi_1':>5} | {'log-lik':>10}")
-print("-" * 80)
-
-for step in range(15):
-    ll = log_likelihood(x, mu, sigma, pi_k)
-    print(f"{step:4d} | {mu[0]:7.3f} {mu[1]:7.3f} | {sigma[0]:7.3f} {sigma[1]:7.3f} | {pi_k[0]:5.3f} {pi_k[1]:5.3f} | {ll:10.2f}")
-
-    # E-step: γ(z_nk) = π_k N(x_n|μ_k,σ_k²) / Σ_j π_j N(x_n|μ_j,σ_j²)
-    pdf = np.zeros((N, 2))
-    for k in range(2):
-        pdf[:, k] = pi_k[k] * np.exp(-0.5*((x - mu[k])/sigma[k])**2) / (sigma[k]*np.sqrt(2*np.pi))
-    gamma = pdf[:, 1] / (pdf.sum(axis=1) + 1e-300)
-
-    # M-step
-    N_k = np.array([(1 - gamma).sum(), gamma.sum()])
-    mu[0] = ((1 - gamma) * x).sum() / N_k[0]
-    mu[1] = (gamma * x).sum() / N_k[1]
-    sigma[0] = np.sqrt(((1 - gamma) * (x - mu[0])**2).sum() / N_k[0])
-    sigma[1] = np.sqrt((gamma * (x - mu[1])**2).sum() / N_k[1])
-    pi_k = N_k / N
-
-ll = log_likelihood(x, mu, sigma, pi_k)
-print(f"{'FINAL':>4} | {mu[0]:7.3f} {mu[1]:7.3f} | {sigma[0]:7.3f} {sigma[1]:7.3f} | {pi_k[0]:5.3f} {pi_k[1]:5.3f} | {ll:10.2f}")
-print(f"\nTrue | {true_mu[0]:7.3f} {true_mu[1]:7.3f} | {true_sigma[0]:7.3f} {true_sigma[1]:7.3f} | {true_pi[0]:5.3f} {true_pi[1]:5.3f}")
-```
-
-ここで注目してほしいのは **対数尤度 (log-likelihood) が単調に増加している** ことだ。これは偶然ではない。EM算法の理論的保証であり、Zone 3 で厳密に証明する。
-
-:::message
-ここで多くの人が混乱するのが「なぜ直接最尤推定しないのか」だ。答えは単純で、$\log \sum_k \pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2)$ の $\log$ の中に $\sum$ があるため、各パラメータについて解析的に微分してゼロと置くことができない。EM算法はこの困難を潜在変数の導入で回避する。
-:::
-
-### 1.3 LLMの隠れ層 — Transformerの潜在変数的解釈
-
-本シリーズでは各講義でLLM/Transformerとの接点を示す。第8回のテーマ「潜在変数」は、Transformerの隠れ層と直結している。
-
-Transformerの各層で計算される隠れ状態 $\mathbf{h}_l \in \mathbb{R}^d$ は、入力トークン列の「潜在的な表現」だ:
-
-$$
-\mathbf{h}_l = \text{TransformerLayer}_l(\mathbf{h}_{l-1}), \quad l = 1, \ldots, L
-$$
-
-入力トークン $x_1, \ldots, x_T$ は観測変数。隠れ状態 $\mathbf{h}_1, \ldots, \mathbf{h}_L$ は潜在変数。この構造は潜在変数モデルそのものだ。
-
-```python
-import numpy as np
-
-# Simplified transformer hidden state computation
-def transformer_layer(h_prev, W_attn, W_ff):
-    """One transformer layer: attention + feedforward.
-
-    h_l = FFN(Attention(h_{l-1})) — simplified, no LayerNorm/residual
-    """
-    # Self-attention (simplified): softmax(h @ W_attn @ h.T) @ h
-    scores = h_prev @ W_attn @ h_prev.T
-    scores = scores - scores.max(axis=-1, keepdims=True)
-    weights = np.exp(scores) / np.exp(scores).sum(axis=-1, keepdims=True)
-    h_attn = weights @ h_prev
-
-    # Feedforward
-    h_out = np.tanh(h_attn @ W_ff)
-    return h_out
-
-# 3 tokens, hidden dim 4, 2 layers
-np.random.seed(42)
-seq_len, d_model = 3, 4
-h_0 = np.random.randn(seq_len, d_model)  # input embeddings (observed)
-
-print("Layer 0 (observed input):")
-print(np.round(h_0, 3))
-
-for layer in range(1, 3):
-    W_attn = np.random.randn(d_model, d_model) * 0.5
-    W_ff = np.random.randn(d_model, d_model) * 0.5
-    h_0 = transformer_layer(h_0, W_attn, W_ff)
-    print(f"\nLayer {layer} (latent representation):")
-    print(np.round(h_0, 3))
-```
-
-**入力（観測）から隠れ層（潜在）への変換。** これこそ潜在変数モデルの本質だ。VAE [^2] は、この潜在表現に確率的な構造を与えることで「生成」を可能にする。その橋渡しが、この第8回の最大の目的だ。
-
-:::details PyTorch の Transformer 隠れ状態
-PyTorch では `nn.TransformerEncoderLayer` が上のコードに対応する:
-
-```python
-import torch
-import torch.nn as nn
-
-layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
-x = torch.randn(1, 10, 512)  # (batch, seq_len, d_model)
-h = layer(x)  # latent representation
-print(f"Input shape:  {x.shape}")
-print(f"Output shape: {h.shape}")
-# Both (1, 10, 512) — same shape, but h encodes contextual information
-```
-
-入力と出力の形状は同じだが、$\mathbf{h}$ には文脈情報が凝縮されている。これが「潜在表現」だ。
-:::
-
-### 1.4 数式→コード対応表
-
-| 数式 | コード | 意味 |
-|:-----|:-------|:-----|
-| $p(x \mid \theta) = \sum_k \pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2)$ | `pdf += pi[k] * norm.pdf(x, mu[k], sigma[k])` | GMM密度 |
-| $\gamma(z_{nk}) = \frac{\pi_k \mathcal{N}(x_n \mid \mu_k, \sigma_k^2)}{\sum_j \pi_j \mathcal{N}(x_n \mid \mu_j, \sigma_j^2)}$ | `gamma = pdf[:, k] / pdf.sum(axis=1)` | 責任度（E-step） |
-| $\mu_k^{\text{new}} = \frac{\sum_n \gamma(z_{nk}) x_n}{\sum_n \gamma(z_{nk})}$ | `mu[k] = (gamma * x).sum() / gamma.sum()` | 平均更新（M-step） |
-| $\pi_k^{\text{new}} = \frac{N_k}{N}$ | `pi[k] = gamma.sum() / N` | 重み更新（M-step） |
-
-**数式の各記号がコードの各行に1対1で対応する。** この対応を意識しながら、Zone 3 で数式を完全に導出する。
+第1回（線形代数）から第8回（EM）まで、実は1本の糸で繋がっている。
 
 ```mermaid
-graph TD
-    A["観測データ x₁,...,xₙ"] --> B["初期パラメータ θ⁰"]
-    B --> C["E-step<br/>γ(zₙₖ) = 責任度計算"]
-    C --> D["M-step<br/>θ^new = パラメータ更新"]
-    D --> E{"収束？"}
-    E -->|No| C
-    E -->|Yes| F["最終パラメータ θ*"]
-
-    style C fill:#e3f2fd
-    style D fill:#fff3e0
-    style F fill:#c8e6c9
+flowchart LR
+    L1["第1回<br/>線形代数<br/>Ax=b, SVD"] --> L2["第2回<br/>解析<br/>微分, 勾配"]
+    L2 --> L3["第3回<br/>確率論<br/>期待値, 分布"]
+    L3 --> L4["第4回<br/>測度論<br/>積分の基盤"]
+    L4 --> L5["第5回<br/>情報理論<br/>エントロピー, KL"]
+    L5 --> L6["第6回<br/>最適化<br/>SGD, Adam"]
+    L6 --> L7["第7回<br/>最尤推定<br/>MLE=CE=KL"]
+    L7 --> L8["第8回<br/>EM算法<br/>ELBO, 潜在変数"]
+    L8 -->|"Course II"| L9["第9回<br/>変分推論<br/>VAE"]
 ```
 
-> **Zone 1 まとめ**: GMMのパラメータを変えて挙動を体感し、EM算法の反復過程を数値で追跡し、Transformerの隠れ層が潜在変数であることを確認した。数式→コード対応を手に入れた。
+Course I の全ての道具（行列式、Jensen不等式、KL散逸、Fisher情報量）が、第8回の EM 算法の導出に使われる。
 
-:::message
-**進捗: 10% 完了** 体験ゾーンクリア。潜在変数とEM算法の直感を掴んだ。次は「なぜ潜在変数が必要なのか」を深く理解する。
-:::
+**各トピックの「核心の1行」（まとめ）**:
+
+| トピック | 核心の1行 |
+|:--------|:--------|
+| Topic 1 | `$p(x) = \int p(x|z)p(z)dz$` の `$\log\int$` が全ての困難の源泉 |
+| Topic 2 | `$q(z)$` を挿入して `$\log p(x) \geq \mathcal{L}(q, \theta)$`（ELBO は常に下界）|
+| Topic 3 | E-step = 責任度計算（Bayes）、M-step = 重み付き MLE（閉じた形）|
+| Topic 4 | `$Q(\theta|\theta^{old}) \geq Q(\theta^{old}|\theta^{old})$` → `$\log p(x|\theta^{new}) \geq \log p(x|\theta^{old})$` |
+| Topic 5 | e/m-射影の交互繰り返し、GEM/ECM/PPCA/HMM/MoE に一般化 |
+
+**理解度チェック**:
+
+1. `$p(x) = \int p(x|z)p(z)dz$` のどこが「難しい」か、2つの理由で言えるか？
+2. Jensen不等式の等号条件は何か？
+3. EM の E-step と M-step がそれぞれ何を最適化しているか、数式で言えるか？
+
+<details><summary>答え</summary>
+
+1. (a) `$\log$` と `$\int$` の順序が逆（`$\log$` の中に `$\int$` がある）ため、`$\theta$` での勾配が事後分布 `$p_\theta(z|x)$` を含む循環になる、(b) 連続 `$z \in \mathbb{R}^m$` のとき数値積分コストが指数的。
+
+2. `$Y$` がほぼ確実に定数のとき（`$Y = c$ a.e.`）。ELBO の文脈では `$q(z) = p_\theta(z|x)$` のとき。
+
+3. E-step: `$q(z) \leftarrow \arg\min_{q} D_{KL}(q \| p_\theta(z|x))$`、M-step: `$\theta \leftarrow \arg\max_\theta \mathbb{E}_{q(z)}[\log p_\theta(x,z)]$`
+
+</details>
+
+> Progress: 10%
 
 ---
 
-## 🧩 2. 直感ゾーン（15分）— なぜ潜在変数が必要なのか
+## 🌍 Z3. 世界観（20分）— MLE の限界と潜在変数の必要性
 
-### 2.1 観測データだけでは不十分な理由
+### 3.1 なぜ `$\log$` と `$\int$` の順序が致命的か
 
-現実のデータには、直接観測できない「隠れた原因」がほぼ必ず存在する。
+最尤推定の目標:
 
-- 手書き数字画像 → 「どの数字を書こうとしたか」は見えない
-- 音声波形 → 「どの音素を発声中か」は直接観測できない
-- 顧客購買履歴 → 「どのセグメントに属するか」はラベルがない
-- テキストの単語列 → 「トピック」は明示されていない
-
-これらの隠れた原因を数学的に扱う枠組みが **潜在変数モデル** だ。
-
-> **一言で言えば**: 潜在変数 = 「データの裏にある見えない原因を表す確率変数」
-
-数式で書くと:
-
-$$
-p(\mathbf{x} \mid \theta) = \sum_{\mathbf{z}} p(\mathbf{x}, \mathbf{z} \mid \theta) = \sum_{\mathbf{z}} p(\mathbf{x} \mid \mathbf{z}, \theta) \, p(\mathbf{z} \mid \theta)
-$$
-
-連続の場合は $\sum$ を $\int$ に置き換える:
-
-$$
-p(\mathbf{x} \mid \theta) = \int p(\mathbf{x} \mid \mathbf{z}, \theta) \, p(\mathbf{z} \mid \theta) \, d\mathbf{z}
-$$
-
-**この積分（周辺化）が計算困難であるという事実が、EM算法を必要とする根本的な理由だ。**
-
-### 2.2 第7回からの接続 — 最尤推定の限界
-
-第7回で学んだ最尤推定 (MLE) を振り返ろう。パラメータ $\theta$ を推定するには対数尤度を最大化する:
-
-$$
-\hat{\theta}_{\text{MLE}} = \arg\max_\theta \sum_{n=1}^{N} \log p(x_n \mid \theta)
-$$
-
-単一のガウス分布なら、$\log$ の中身が $\mathcal{N}(x_n \mid \mu, \sigma^2)$ だから解析的に解ける。だがGMMでは:
-
-$$
-\log p(x_n \mid \theta) = \log \sum_{k=1}^{K} \pi_k \, \mathcal{N}(x_n \mid \mu_k, \sigma_k^2)
-$$
-
-**$\log$ の中に $\sum$ がある。** これが全ての困難の元凶だ。$\log$ と $\sum$ は交換できないから、$\frac{\partial}{\partial \mu_k} \log \sum_k (\cdots) = 0$ を解析的に解くことができない。
-
-```python
-import numpy as np
-
-# Single Gaussian: log-likelihood has clean derivative
-# d/dμ log N(x|μ,σ²) = (x - μ) / σ²  → set to 0 → μ = x̄ (sample mean)
-
-x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-mu_mle = x.mean()
-print(f"Single Gaussian MLE: μ = {mu_mle:.1f} (just the sample mean!)")
-
-# GMM: log Σ_k π_k N(x|μ_k,σ_k²) — no closed-form solution
-# The log-sum structure prevents analytic optimization
-def gmm_log_likelihood(x, mus, sigmas, pis):
-    """log p(x|θ) = Σ_n log Σ_k π_k N(x_n|μ_k,σ_k²)"""
-    ll = 0.0
-    for xn in x:
-        p = sum(pi * np.exp(-0.5*((xn-mu)/sig)**2)/(sig*np.sqrt(2*np.pi))
-                for mu, sig, pi in zip(mus, sigmas, pis))
-        ll += np.log(p)
-    return ll
-
-# Try different μ values — no single formula gives the answer
-for mu0 in [-3, -2, -1, 0]:
-    ll = gmm_log_likelihood(x, [mu0, 5.0], [1.0, 1.0], [0.5, 0.5])
-    print(f"GMM log-lik with μ₀={mu0:3d}: {ll:.4f}  (no closed-form for optimal μ₀)")
+```math
+\theta^* = \arg\max_\theta \mathcal{L}(\theta), \qquad \mathcal{L}(\theta) = \sum_{i=1}^N \log p_\theta(x_i)
 ```
 
-### 2.3 Course I フィナーレの位置づけ
+潜在変数があるとき `$p_\theta(x_i) = \int p_\theta(x_i, z_i) dz_i$` だから:
 
-本講義は Course I「数学基礎編」の最終回だ。8回の数学の旅を俯瞰しよう。
+```math
+\mathcal{L}(\theta) = \sum_{i=1}^N \log \int p_\theta(x_i, z_i) dz_i
+```
+
+ここで致命的なことが起きる。**`$\log$` と `$\int$` の順序が逆になった**。
+
+`$\int \log p_\theta(x,z) dz$` なら微分が簡単。だが `$\log \int p_\theta(x,z) dz$` は微分すると:
+
+```math
+\frac{\partial}{\partial \theta} \log \int p_\theta(x,z) dz = \frac{\int \frac{\partial}{\partial\theta} p_\theta(x,z) dz}{\int p_\theta(x,z) dz}
+```
+
+分母に再び積分が現れる。連続潜在変数では解析解なし、高次元では計算不可能。
+
+### 3.2 3つの比喩で潜在変数を掴む
+
+同じ「潜在変数 `$z$`」でも、文脈によって意味が違う。
+
+| 比喩 | `$z$` の意味 | `$p(x) = \int p(x|z)p(z)dz$` の形 |
+|:----|:-----------|:--------------------------------|
+| **ラベル（離散）** | どのクラスタから来たか | `$\sum_k \pi_k \mathcal{N}(x|\mu_k,\Sigma_k)$`（GMM） |
+| **欠損（部分観測）** | 観測できなかった値 | 観測値の分布を完全データで書く |
+| **座標（連続）** | 低次元表現 | VAE: `$\int \mathcal{N}(x|f(z),\sigma^2I)\mathcal{N}(z|0,I)dz$` |
+
+共通する困難: いずれも `$\int$` が `$\log$` の内側に入る。
+
+**数値例: GMM でラベルがわかる/わからない違い**
+
+`$K=2, \mu_1=-3, \mu_2=+3, \sigma_1=\sigma_2=1, \pi_1=\pi_2=0.5$`（1次元）。
+
+`$x = 0$` のとき（どちらの成分かが曖昧）:
+
+```math
+p(z=1|x=0) = \frac{\pi_1 \mathcal{N}(0|-3, 1)}{\pi_1 \mathcal{N}(0|-3, 1) + \pi_2 \mathcal{N}(0|+3, 1)} \approx \frac{e^{-9/2}}{e^{-9/2} + e^{-9/2}} = 0.5
+```
+
+`$x = -2.5$` のとき（成分1が優勢）:
+
+```math
+p(z=1|x=-2.5) = \frac{e^{-(2.5-3)^2/2}}{e^{-(-2.5-(-3))^2/2} + e^{-(-2.5-3)^2/2}} = \frac{e^{-0.125}}{e^{-0.125} + e^{-30.25/2}} \approx 0.998
+```
+
+`$z$` が分かれば 普通の MLE：成分1のデータだけで `$\mu_1, \sigma_1^2$` を推定。`$z$` が分からないから EM が必要。
+
+### 3.3 グラフィカルモデルの読み方
+
+潜在変数モデルの構造を「生成方向」で読む:
 
 ```mermaid
-graph TD
-    L1["第1回: 概論<br/>数式リテラシー"] --> L2["第2回: 線形代数 I<br/>ベクトル・行列"]
-    L2 --> L3["第3回: 線形代数 II<br/>SVD・行列微分"]
-    L3 --> L4["第4回: 確率論<br/>分布・ベイズ"]
-    L4 --> L5["第5回: 測度論<br/>厳密な確率"]
-    L5 --> L6["第6回: 情報理論・最適化<br/>KL・SGD"]
-    L6 --> L7["第7回: 最尤推定と統計的推論<br/>推定量の数学的基盤"]
-    L7 --> L8["第8回: 潜在変数 & EM算法<br/>★ Course I フィナーレ"]
-    L8 -->|"EMの限界: 事後分布が<br/>解析的に計算不能"| L9["第9回: 変分推論 & ELBO<br/>⚡ Julia初登場"]
-
-    style L8 fill:#ff9800,color:#fff
-    style L9 fill:#4caf50,color:#fff
+flowchart LR
+    theta["θ（パラメータ）"]
+    subgraph plate["i = 1, …, N"]
+        z["z_i<br/>（潜在）"]
+        x["x_i<br/>（観測）"]
+    end
+    theta -.-> z
+    theta -.-> x
+    z --> x
 ```
 
-| Course I 講義 | 何を獲得したか | 何が「足りない」か |
-|:-------------|:-------------|:----------------|
-| 第1回: 概論 | 数式の読み方 | 線形代数の道具が必要 |
-| 第2回: 線形代数 I | ベクトル空間、行列演算 | 分解と微分が必要 |
-| 第3回: 線形代数 II | SVD、行列微分、Backprop | 不確実性の扱いが必要 |
-| 第4回: 確率論 | 確率分布、ベイズの定理 | 厳密な確率論が必要 |
-| 第5回: 測度論 | Lebesgue積分、確率過程 | 分布間の距離が必要 |
-| 第6回: 情報理論・最適化 | KL、SGD、Adam | 確率分布の学習が必要 |
-| 第7回: 最尤推定と統計的推論 | 最尤推定、推定量の分類体系 | 潜在変数の扱いが必要 |
-| **第8回: EM算法** | **潜在変数の推定** | **事後分布の近似が必要 → 第9回へ** |
+- **生成方向**: `$z_i \to x_i$`（潜在が観測を生む）
+- **推論方向**: `$x_i \to z_i$`（観測から潜在を推測したい = 事後分布 `$p_\theta(z_i|x_i)$`）
 
-**各講義の「限界」が次の講義の「動機」になる。** そして第8回の限界 — EM算法では事後分布 $p(\mathbf{z} \mid \mathbf{x}, \theta)$ が解析的に計算できないケースに対応できない — が、第9回（変分推論）の動機になる。
+学習の困難は「事後分布 `$p_\theta(z|x)$` が解析的に計算できないケースが多い」こと。GMM では計算できる（E-step の責任度）が、VAE の非線形 decoder では計算不可能。
 
-### 2.4 松尾研との対比
+### 3.4 完全データと不完全データ
 
-| 項目 | 松尾・岩澤研 | 本シリーズ（第8回） |
-|:-----|:-----------|:----------------|
-| EM算法 | 「EMがあります」程度の紹介 | **完全導出**: Jensen不等式 → ELBO → E-step/M-step → 収束証明 |
-| GMM | 結果のみ | 責任度の導出、Singularity問題、BIC/AIC |
-| HMM | 言及なし | Forward-Backward、Viterbi、Baum-Welch |
-| VAEへの橋 | 唐突にVAE | EM → Variational EM → ELBO → VAE への自然な接続 |
-| Python速度 | 測定なし | Profile結果: **「遅すぎない？」** → 第9回Julia登場の伏線 |
+EM の発想を理解するために、2種類の問題を区別する。
 
-### 2.5 3つの比喩で捉える「潜在変数」
+**完全データ対数尤度** (`$z_i$` も観測された場合):
 
-**比喩1: 氷山**
-
-観測データは水面上の氷山の一角。潜在変数は水面下の巨大な構造。データの裏にある構造を推定することは、水面上の形状から水面下の全体像を復元することに等しい。
-
-**比喩2: 犯罪捜査**
-
-現場の証拠（観測データ $\mathbf{x}$）から犯人（潜在変数 $\mathbf{z}$）を推定する。証拠は直接見えるが、犯人は見えない。EM算法は「まず犯人の候補を絞り（E-step）、次に証拠との整合性を最大化する（M-step）」を繰り返す捜査手法だ。
-
-**比喩3: 楽譜の復元**
-
-演奏（観測データ）を聴いて、楽譜（潜在構造）を復元する。各楽器が何を弾いているか（潜在変数）は直接見えないが、混合音（観測）から推定できる。これは音源分離問題であり、まさにGMMの応用だ。
-
-### 2.6 Trojan Horse — Python の限界が見え始める
-
-:::details Trojan Horse: Python速度の伏線
-Course Iは全編Pythonだが、本講義で「あれ、遅くないか？」という疑念が芽生える。
-
-EM算法の各反復で全データ $N$ 個に対して責任度 $\gamma(z_{nk})$ を計算する。$K$ 個の成分、$T$ 回の反復で $O(NKT)$ 回の密度計算が必要だ。
-
-```python
-import numpy as np
-import time
-
-np.random.seed(42)
-N = 10000
-K = 5
-x = np.concatenate([np.random.normal(k * 3, 1.0, N // K) for k in range(K)])
-
-mu = np.random.randn(K)
-sigma = np.ones(K)
-pi_k = np.ones(K) / K
-
-start = time.perf_counter()
-for step in range(100):
-    # E-step
-    pdf = np.zeros((N, K))
-    for k in range(K):
-        pdf[:, k] = pi_k[k] * np.exp(-0.5*((x - mu[k])/sigma[k])**2) / (sigma[k]*np.sqrt(2*np.pi))
-    gamma = pdf / pdf.sum(axis=1, keepdims=True)
-
-    # M-step
-    N_k = gamma.sum(axis=0)
-    for k in range(K):
-        mu[k] = (gamma[:, k] * x).sum() / N_k[k]
-        sigma[k] = np.sqrt((gamma[:, k] * (x - mu[k])**2).sum() / N_k[k])
-    pi_k = N_k / N
-
-elapsed = time.perf_counter() - start
-print(f"EM (N={N}, K={K}, 100 iterations): {elapsed:.3f} sec")
-print(f"Per iteration: {elapsed/100*1000:.1f} ms")
+```math
+\mathcal{L}_{complete}(\theta) = \sum_{i=1}^N \log p_\theta(x_i, z_i) = \sum_{i=1}^N \log p_\theta(x_i|z_i) + \log p(z_i)
 ```
 
-「100反復で数秒？ これ、データが100万件になったら......？」
+この形は `$\log$` の中に `$\int$` がない。`$\theta$` で微分すると閉じることが多い（GMM、HMM など）。
 
-この疑念が第9回で爆発する。ELBO計算のPython実行時間を計測した瞬間、Juliaの衝撃的な速度が待っている。**覚えておいてください。**
-:::
+**不完全データ対数尤度** (`$z_i$` が観測されない実際の問題):
 
-> **Zone 2 まとめ**: 潜在変数が必要な理由（$\log \sum$ の困難性）を理解し、Course I 全体の中での第8回の位置づけを確認し、EM算法が「見えない原因の推定」であることを3つの比喩で掴んだ。
+```math
+\mathcal{L}(\theta) = \sum_{i=1}^N \log p_\theta(x_i) = \sum_{i=1}^N \log \int p_\theta(x_i, z_i) dz_i
+```
 
-:::message
-**進捗: 20% 完了** 直感ゾーンクリア。「なぜ潜在変数が必要か」「なぜEM算法が必要か」の動機を深く理解した。いよいよ数式修行に入る。準備はいいですか？
-:::
+EMのアイデア: 「`$z_i$` が観測されたと仮定した完全データ対数尤度の事後期待値」を使って不完全データ問題を解く。
+
+### 3.5 EMの直感 — 「見えない積み木」
+
+次の比喩が直感を掴みやすい。
+
+**比喩: バラバラ積み木の高さ測定**
+
+目標: 積み木の山の高さ（`$\log p_\theta(x)$`）を最大化する。
+問題: どの積み木がどの山に属するか分からない（`$z$` が欠損）。
+
+EM の戦略:
+1. **E-step**: 「たぶんこの積み木はこの山にある」と責任度 `$\gamma_{ik}$` で推測（「見えない積み木」を確率的に配置）
+2. **M-step**: 現在の推測通りに積み木が配置されているとして、各山の高さを最大化するパラメータを更新
+
+何回も繰り返すと、推測（`$q$`）とパラメータ（`$\theta$`）が整合していく。
+
+**なぜ EM が直接勾配法より良いか（GMM の場合）**:
+
+```math
+\nabla_\theta \log p_\theta(x) = \nabla_\theta \log \sum_k \pi_k \mathcal{N}(x|\mu_k, \Sigma_k)
+= \frac{\nabla_\theta \sum_k \pi_k \mathcal{N}(x|\mu_k, \Sigma_k)}{\sum_k \pi_k \mathcal{N}(x|\mu_k, \Sigma_k)}
+```
+
+この勾配は `$\Sigma_k \to 0$` のとき数値不安定。EM は代わりに Q 関数（完全データ尤度の期待値）を最大化し、Singularity を自動的に回避できる（`$N_k$` が小さいと `$\Sigma_k$` の更新が安定しなくなるが、EM は "graceful degradation" を持つ）。
+
+> 部屋に積み木が散らばっている（観測データ `$x$`）。積み木の「色」（潜在変数 `$z$`）は分からないが、「もしこの色分けなら」という仮定のもとで整理する（E-step）、次に「この色分けに最も合う箱の配置」を決める（M-step）。これを繰り返すと、だんだん正しい配置（パラメータ `$\theta$`）に近づいていく。
+
+数学的には:
+- E-step = 「色分けの確率分布 `$p(z|x,\theta^{(t)})$` を計算する」
+- M-step = 「その色分けのもとで最尤推定する（`$\arg\max_\theta Q(\theta|\theta^{(t)})$`）」
+
+### 3.6 EMと他の最適化手法の比較
+
+EM は「周辺尤度の直接最大化」の代替として位置づけられる。
+
+| 手法 | 目的関数 | 勾配の形 | 適用場面 |
+|:----|:--------|:-------|:-------|
+| **直接 MLE** | `$\log p_\theta(x)$` | `$\mathbb{E}_{p(z|x)}[\nabla\log p(x,z)]$` | 事後分布が計算可能な場合 |
+| **EM** | Q関数（ELBO） | 解析的（GMMなど） | 完全データ問題が閉じる場合 |
+| **Variational EM** | ELBO（近似） | `$\nabla_\theta \mathbb{E}_{q_\phi}[\log p_\theta(x|z)]$` + `$\nabla_\phi$` | 事後分布が計算不能な場合（VAE） |
+| **Score Matching** | `$J_{SM}(\theta)$` | Jacobian + 数値微分 | 尤度が正規化不能な場合 |
+| **GAN** | Minimax | 識別器の勾配 | 暗黙的尤度モデル |
+
+EMの位置づけ: 「解析的に解ける」という強い前提があるが、その分「単調増加保証」という強い収束性を持つ。
+
+**実践的な手法選択ガイド**:
+
+```
+事後分布 p(z|x,θ) が計算可能？
+  YES → データ量は少ない？
+    YES → EM（単調増加・閉じた形・安定）
+    NO → Mini-batch EM / Stochastic EM
+  NO → 近似族 q(z) を使える？
+    YES → Variational EM / VAE（ELBO 最大化）
+    NO → MCMC / Score Matching / GAN
+```
+
+GMM は「事後分布が計算可能（責任度 `$\gamma_{ik}$` が解析的）」かつ「M-step が閉じた形」という二重の好条件を持つ。これが GMM が EM の「教科書例」として使われる理由だ。
+
+### 3.7 潜在変数モデルの系譜
+
+潜在変数を持つモデルの発展を俯瞰する。
+
+```mermaid
+flowchart TD
+    GMM["GMM<br/>離散潜在 z∈{1,...,K}"] -->|"EMで学習"| HMM["HMM<br/>時系列離散潜在"]
+    GMM -->|"連続潜在に拡張"| FA["Factor Analysis<br/>z∼N(0,I), x=Wz+ε"]
+    FA -->|"非線形decoder"| VAE["VAE<br/>p(x|z)=f_θ(z)"]
+    GMM -->|"soft assignment→attention"| Trans["Transformer<br/>Mixture of Experts"]
+    HMM -->|"EMのamortization"| RNN["RNN/LSTM<br/>（隠れ状態=潜在変数）"]
+    VAE -->|"score matching"| Diffusion["Diffusion Model<br/>連続時間潜在"]
+```
+
+この系譜から分かること: **深層学習の主要モデルは全て「潜在変数モデル + 最適化手法の組み合わせ」として理解できる**。EMはその根底にある数学的フレームワーク。
+
+**理解度チェック**:
+
+1. 「完全データ尤度」と「不完全データ尤度」の違いを1文で説明できるか？
+2. 潜在変数の3つの比喩（ラベル、欠損、座標）それぞれの例を挙げられるか？
+3. EM のどの手法（EM / GAN / MLE / Score Matching）が「単調増加保証」を持つか？
+
+<details><summary>答え</summary>
+
+1. 完全データ尤度: `$\log p_	heta(x_i, z_i)$`（`$z_i$` が観測された場合）、不完全データ尤度: `$\log \int p_	heta(x_i, z_i) dz_i$`（`$z_i$` が観測されない場合）。前者は閉じた最適化が多く、後者は `$\log\int$` の困難がある。
+
+2. ラベル: GMM（どの成分か）、欠損: 欠損値補完（見えない部分が `$z$`）、座標: VAE（潜在空間での位置が `$z$`）。
+
+3. EM のみが単調増加保証を持つ。GAN / Score Matching は保証なし（min-max / 数値最適化）。直接 MLE も勾配法では保証なし（非凸）。
+
+</details>
+
+> Progress: 20%
 
 ---
 
-## 📐 3. 数式修行ゾーン（60分）— EM算法の完全導出
+## ⚔️ Z4. Boss Battle（60分）— EM算法の完全体系
 
-ここが本講義の核心だ。Zone 0-1 で「動く」ことを体感した。Zone 2 で「なぜ必要か」を理解した。ここからは「なぜ動くのか」を数学的に証明する。
+### Topic 1: 潜在変数モデルの定式化
 
-**覚えるな。導出しろ。** 結果を暗記しても応用できない。導出過程を自力で再現できてはじめて、新しい問題に適用できる。
+#### 1.1 周辺尤度とその困難性
 
-```mermaid
-graph TD
-    A["3.1 潜在変数モデルの定式化"] --> B["3.2 完全/不完全データ対数尤度"]
-    B --> C["3.3 Jensen不等式"]
-    C --> D["3.4 ELBO分解"]
-    D --> E["3.5 EM算法の導出"]
-    E --> F["3.6 GMM E-step/M-step"]
-    F --> G["3.7 収束性証明"]
-    G --> H["3.8 ⚔️ Boss Battle"]
+潜在変数モデルの定式化から始める。
 
-    style A fill:#e3f2fd
-    style H fill:#ff5722,color:#fff
+```math
+p_\theta(x) = \int p_\theta(x, z) dz = \int p_\theta(x|z) p(z) dz
 ```
 
-### 3.1 潜在変数モデルの定式化
+データが `$N$` 点のとき、最尤推定は:
 
-まず記法を整理する。紙とペンを用意してほしい。
-
-**設定**:
-- 観測変数: $\mathbf{x} \in \mathcal{X}$ — 実際に測定できるデータ
-- 潜在変数: $\mathbf{z} \in \mathcal{Z}$ — 直接観測できない隠れた変数
-- パラメータ: $\theta \in \Theta$ — 推定したいモデルパラメータ
-
-**同時分布** (joint distribution):
-
-$$
-p(\mathbf{x}, \mathbf{z} \mid \theta)
-$$
-
-これが「完全データ」(complete data) の分布だ。$\mathbf{x}$ と $\mathbf{z}$ の両方が観測されていれば、この分布を直接扱える。
-
-**周辺尤度** (marginal likelihood / evidence):
-
-$$
-p(\mathbf{x} \mid \theta) = \sum_{\mathbf{z}} p(\mathbf{x}, \mathbf{z} \mid \theta)
-$$
-
-$\mathbf{z}$ が連続の場合は:
-
-$$
-p(\mathbf{x} \mid \theta) = \int p(\mathbf{x}, \mathbf{z} \mid \theta) \, d\mathbf{z}
-$$
-
-**事後分布** (posterior distribution):
-
-$$
-p(\mathbf{z} \mid \mathbf{x}, \theta) = \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{p(\mathbf{x} \mid \theta)} = \frac{p(\mathbf{x} \mid \mathbf{z}, \theta) \, p(\mathbf{z} \mid \theta)}{p(\mathbf{x} \mid \theta)}
-$$
-
-これはベイズの定理そのものだ（第4回で学んだ）。分母の $p(\mathbf{x} \mid \theta)$ が計算困難であることが、全ての困難の源泉になる。
-
-| 用語 | 数式 | 直感 |
-|:-----|:-----|:-----|
-| 完全データ尤度 | $p(\mathbf{x}, \mathbf{z} \mid \theta)$ | 「観測」と「隠れ」の両方がわかっていれば簡単 |
-| 周辺尤度 (evidence) | $p(\mathbf{x} \mid \theta) = \sum_{\mathbf{z}} p(\mathbf{x}, \mathbf{z} \mid \theta)$ | 隠れを消すと計算困難 |
-| 事後分布 | $p(\mathbf{z} \mid \mathbf{x}, \theta)$ | 観測が与えられたときの隠れの推定 |
-| 責任度 | $\gamma(z_{nk}) = p(z_n = k \mid x_n, \theta)$ | データ $x_n$ が成分 $k$ から来た確率 |
-
-```python
-import numpy as np
-
-# Concrete example: GMM with K=2
-# Joint: p(x, z=k|θ) = π_k N(x|μ_k, σ_k²)
-# Marginal: p(x|θ) = Σ_k π_k N(x|μ_k, σ_k²)
-# Posterior: p(z=k|x,θ) = π_k N(x|μ_k,σ_k²) / Σ_j π_j N(x|μ_j,σ_j²)
-
-mu = np.array([-2.0, 3.0])
-sigma = np.array([1.0, 1.5])
-pi_k = np.array([0.4, 0.6])
-
-def gaussian_pdf(x, mu, sigma):
-    """N(x|μ,σ²) = (2πσ²)^{-1/2} exp(-(x-μ)²/(2σ²))"""
-    return np.exp(-0.5 * ((x - mu) / sigma)**2) / (sigma * np.sqrt(2 * np.pi))
-
-x_test = np.array([0.0, -2.0, 3.0, 5.0])
-
-print("x     | p(x,z=0|θ) | p(x,z=1|θ) | p(x|θ)  | p(z=0|x,θ) | p(z=1|x,θ)")
-print("-" * 75)
-for x_val in x_test:
-    joint_0 = pi_k[0] * gaussian_pdf(x_val, mu[0], sigma[0])
-    joint_1 = pi_k[1] * gaussian_pdf(x_val, mu[1], sigma[1])
-    marginal = joint_0 + joint_1
-    post_0 = joint_0 / marginal
-    post_1 = joint_1 / marginal
-    print(f"{x_val:5.1f} | {joint_0:10.6f} | {joint_1:10.6f} | {marginal:7.5f} | "
-          f"{post_0:10.4f} | {post_1:10.4f}")
+```math
+\theta^* = \arg\max_\theta \sum_{i=1}^N \log p_\theta(x_i) = \arg\max_\theta \sum_{i=1}^N \log \int p_\theta(x_i, z_i) dz_i
 ```
 
-出力:
-```
-x     | p(x,z=0|θ) | p(x,z=1|θ) | p(x|θ)  | p(z=0|x,θ) | p(z=1|x,θ)
----------------------------------------------------------------------------
-  0.0 |   0.048394 |   0.035994 | 0.08439 |     0.5734 |     0.4266
- -2.0 |   0.159155 |   0.006569 | 0.16572 |     0.9604 |     0.0396
-  3.0 |   0.000036 |   0.159155 | 0.15919 |     0.0002 |     0.9998
-  5.0 |   0.000000 |   0.064759 | 0.06476 |     0.0000 |     1.0000
-```
+なぜ直接最大化できないか、3つの理由がある。
 
-**$x = -2$ のデータは 96% の確率で成分0から、$x = 3$ のデータは 99.98% の確率で成分1から来た** と推定される。これが事後分布 $p(z \mid x, \theta)$ の意味だ。
+**理由1: 数値積分のコスト**
 
-### 3.2 完全データ対数尤度と不完全データの困難性
+連続 `$z \in \mathbb{R}^m$` のとき、`$N$` 点 × 1積分あたり `$O(M^m)$`（格子点 `$M$` 個の場合）。`$m=20$` なら `$M^{20}$` は計算不可能。
 
-**完全データ対数尤度** (complete-data log-likelihood):
+**理由2: 勾配が閉じない**
 
-$\mathbf{x}$ と $\mathbf{z}$ の両方が観測されている場合:
-
-$$
-\log p(\mathbf{x}, \mathbf{z} \mid \theta) = \log p(\mathbf{x} \mid \mathbf{z}, \theta) + \log p(\mathbf{z} \mid \theta)
-$$
-
-GMMの場合、$z_n = k$ がわかっていれば:
-
-$$
-\log p(\mathbf{x}, \mathbf{z} \mid \theta) = \sum_{n=1}^{N} \sum_{k=1}^{K} \mathbb{1}[z_n = k] \left( \log \pi_k + \log \mathcal{N}(x_n \mid \mu_k, \sigma_k^2) \right)
-$$
-
-ここで $\mathbb{1}[z_n = k]$ は指示関数（$z_n = k$ なら1、そうでなければ0）。**$\log$ の中身が単一のガウス分布なので、微分してゼロと置ける。** つまり解析解が存在する。
-
-**不完全データ対数尤度** (incomplete-data log-likelihood):
-
-$\mathbf{z}$ が観測されない場合:
-
-$$
-\log p(\mathbf{x} \mid \theta) = \log \sum_{\mathbf{z}} p(\mathbf{x}, \mathbf{z} \mid \theta)
-$$
-
-**$\log$ の中に $\sum$ がある。** これが解析解を阻む。
-
-```python
-import numpy as np
-
-# Complete-data case: z is known → closed-form MLE
-np.random.seed(42)
-N = 100
-z_true = np.array([0]*40 + [1]*60)
-x = np.where(z_true == 0,
-             np.random.normal(-2, 1, N),
-             np.random.normal(3, 1.5, N))
-
-# When z is known, MLE is trivial
-mask0 = (z_true == 0)
-mask1 = (z_true == 1)
-mu_mle = np.array([x[mask0].mean(), x[mask1].mean()])
-sigma_mle = np.array([x[mask0].std(), x[mask1].std()])
-pi_mle = np.array([mask0.sum() / N, mask1.sum() / N])
-
-print("=== Complete data (z known) → closed-form MLE ===")
-print(f"μ = ({mu_mle[0]:.3f}, {mu_mle[1]:.3f})")
-print(f"σ = ({sigma_mle[0]:.3f}, {sigma_mle[1]:.3f})")
-print(f"π = ({pi_mle[0]:.2f}, {pi_mle[1]:.2f})")
-print("\nNo iteration needed! Just sample statistics.")
-print("\n=== Incomplete data (z unknown) → need EM ===")
-print("Cannot compute sample statistics per component")
-print("because we don't know which component each x_n belongs to.")
+```math
+\frac{\partial}{\partial\theta} \log \int p_\theta(x,z) dz = \mathbb{E}_{p_\theta(z|x)}\left[\frac{\partial}{\partial\theta} \log p_\theta(x,z)\right]
 ```
 
-:::message
-ここが全てのカギだ。**$z$ がわかっていれば簡単に解ける。$z$ がわからないから難しい。** EM算法は「$z$ がわからないなら、推定してしまえ」という発想で、この困難を回避する。
-:::
+勾配の式に事後分布 `$p_\theta(z|x)$` が現れる。非線形モデルでは `$p_\theta(z|x)$` 自体が計算できない（鶏と卵）。
 
-### 3.3 Jensen不等式 — EM算法の数学的基盤
+**理由3: 非凸性**
 
-EM算法の理論的基盤は **Jensen不等式** (Jensen's inequality) だ。第5回で測度論を学んだ読者には馴染みがあるだろう。
+GMM の対数尤度は多峰的（局所最適解多数）。勾配法は初期値依存で信頼できない。
 
-:::message alert
-Jensen不等式の向きを間違える人が非常に多い。凸関数と凹関数で不等号の向きが逆転する。紙に書いて確認してほしい。
-:::
+**EM のアプローチ（3つの理由への回答）**:
 
-**定理 (Jensen不等式)**:  $f$ が凹関数 (concave function) のとき:
+| 困難 | EM の対処 |
+|:----|:--------|
+| 数値積分コスト | E-step で「解析的に」事後期待値を計算（GMM では閉じる）|
+| 勾配が閉じない | Q関数の最大化（M-step）は完全データ問題 → 閉じた解 |
+| 非凸性 | 単調増加保証（局所解への収束は保証されるが、大域解は保証されない）|
 
-$$
-f\left( \mathbb{E}[X] \right) \geq \mathbb{E}[f(X)]
-$$
+EM は「3つ全ての困難に対して、完全な解決ではないが実用的な対処」を提供する。
 
-$\log$ は凹関数だから:
+#### 1.2 完全データ対数尤度の扱いやすさ
 
-$$
-\log \mathbb{E}[X] \geq \mathbb{E}[\log X]
-$$
+`$z_i$` が観測できていたと仮定すると:
 
-**証明のスケッチ**: $f$ が凹関数であるとは、任意の $x_1, x_2$ と $\lambda \in [0, 1]$ に対して $f(\lambda x_1 + (1-\lambda) x_2) \geq \lambda f(x_1) + (1-\lambda) f(x_2)$ が成り立つことだ。これを有限個の点に拡張すると $f(\sum_i \lambda_i x_i) \geq \sum_i \lambda_i f(x_i)$ ($\sum_i \lambda_i = 1$) となり、期待値の定義と組み合わせればJensen不等式が得られる。
-
-```python
-import numpy as np
-
-# Verify Jensen's inequality for log (concave function)
-# log(E[X]) >= E[log(X)]
-
-np.random.seed(42)
-X = np.random.exponential(2.0, 10000)  # positive random variable
-
-lhs = np.log(np.mean(X))       # log(E[X])
-rhs = np.mean(np.log(X))       # E[log(X)]
-gap = lhs - rhs
-
-print(f"log(E[X]) = {lhs:.6f}")
-print(f"E[log(X)] = {rhs:.6f}")
-print(f"Gap       = {gap:.6f} >= 0 ✓ (Jensen's inequality)")
-print(f"\nFor constant X (no gap):")
-X_const = np.full(10000, 3.0)
-print(f"log(E[X]) = {np.log(np.mean(X_const)):.6f}")
-print(f"E[log(X)] = {np.mean(np.log(X_const)):.6f}")
-print(f"Gap       = {np.log(np.mean(X_const)) - np.mean(np.log(X_const)):.6f} (equality when constant)")
+```math
+\log p_\theta(x_i, z_i) = \log p_\theta(x_i|z_i) + \log p(z_i)
 ```
 
-**等号条件**: $X$ が定数のとき（分散がゼロのとき）、Jensen不等式は等号になる。これがEM算法の収束メカニズムを理解する鍵になる。
+GMM では:
+- `$\log p_\theta(x_i|z_i=k) = \log \mathcal{N}(x_i|\mu_k,\Sigma_k)$`（ガウス対数密度）
+- `$\log p(z_i=k) = \log \pi_k$`
 
-### 3.4 ELBO分解 — EM算法の心臓部
+どちらも `$\theta = (\pi, \mu, \Sigma)$` に対して解析的に微分できる。完全データ対数尤度の合計 `$\sum_i \log p_\theta(x_i, z_i)$` は閉じた形の最尤解を持つ。
 
-いよいよEM算法の核心に到達する。ここから先は一行一行、紙の上で追ってほしい。
+### Topic 2: Jensen不等式からELBOへ
 
-**目標**: 不完全データ対数尤度 $\log p(\mathbf{x} \mid \theta)$ の下界 (lower bound) を構成する。
+**Topic 1 → Topic 2 への橋渡し**:
 
-$q(\mathbf{z})$ を $\mathbf{z}$ 上の任意の確率分布とする。以下の分解が成り立つ:
+Topic 1 で「`$\log\int$` が難しい」と分かった。Topic 2 では「`$q(z)$` を挿入して `$\log p(x)$` の下界を作り、その下界を最大化する」というアイデアを導出する。
 
-$$
-\log p(\mathbf{x} \mid \theta) = \mathcal{L}(q, \theta) + \text{KL}[q(\mathbf{z}) \| p(\mathbf{z} \mid \mathbf{x}, \theta)]
-$$
+鍵になる恒等式（先に見せる）:
 
-ここで:
-
-$$
-\mathcal{L}(q, \theta) = \sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})}
-$$
-
-$$
-\text{KL}[q(\mathbf{z}) \| p(\mathbf{z} \mid \mathbf{x}, \theta)] = -\sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{z} \mid \mathbf{x}, \theta)}{q(\mathbf{z})}
-$$
-
-**この $\mathcal{L}(q, \theta)$ が ELBO (Evidence Lower BOund) だ。**
-
-:::message
-この分解は第9回（変分推論）で主役になる。ここではEM算法の導出に必要な部分だけを扱う。
-:::
-
-**導出** — 一行ずつ追う:
-
-Step 1: 対数尤度を変形する。
-
-$$
-\log p(\mathbf{x} \mid \theta) = \log p(\mathbf{x} \mid \theta) \cdot \underbrace{\sum_{\mathbf{z}} q(\mathbf{z})}_{= 1}
-$$
-
-$q(\mathbf{z})$ は確率分布だから和が1。これを利用する。
-
-Step 2: $\log$ の中に $q(\mathbf{z})$ を導入する。
-
-$$
-\log p(\mathbf{x} \mid \theta) = \sum_{\mathbf{z}} q(\mathbf{z}) \log p(\mathbf{x} \mid \theta)
-$$
-
-$\log p(\mathbf{x} \mid \theta)$ は $\mathbf{z}$ に依存しないから、$\sum$ の中に入れられる。
-
-Step 3: $p(\mathbf{x} \mid \theta) = \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{p(\mathbf{z} \mid \mathbf{x}, \theta)}$ を代入する（ベイズの定理の変形）。
-
-$$
-= \sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{p(\mathbf{z} \mid \mathbf{x}, \theta)}
-$$
-
-Step 4: $q(\mathbf{z})$ を分子分母に挿入する（$\times \frac{q(\mathbf{z})}{q(\mathbf{z})} = 1$）。
-
-$$
-= \sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta) \cdot q(\mathbf{z})}{p(\mathbf{z} \mid \mathbf{x}, \theta) \cdot q(\mathbf{z})}
-$$
-
-Step 5: 対数の商を分解する。
-
-$$
-= \sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})} + \sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{q(\mathbf{z})}{p(\mathbf{z} \mid \mathbf{x}, \theta)}
-$$
-
-$$
-= \underbrace{\sum_{\mathbf{z}} q(\mathbf{z}) \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})}}_{\mathcal{L}(q, \theta) \text{ (ELBO)}} + \underbrace{\text{KL}[q(\mathbf{z}) \| p(\mathbf{z} \mid \mathbf{x}, \theta)]}_{\geq 0}
-$$
-
-**KLダイバージェンスは常に非負** (Gibbsの不等式、第6回) だから:
-
-$$
-\log p(\mathbf{x} \mid \theta) \geq \mathcal{L}(q, \theta)
-$$
-
-$\mathcal{L}(q, \theta)$ は対数尤度の **下界** だ。だから Evidence **Lower** Bound と呼ばれる。
-
-```python
-import numpy as np
-
-# Numerical verification of ELBO decomposition
-# log p(x|θ) = L(q,θ) + KL[q||p(z|x,θ)]
-
-# GMM with K=2
-mu = np.array([-2.0, 3.0])
-sigma = np.array([1.0, 1.5])
-pi_k = np.array([0.4, 0.6])
-
-x_val = 1.0
-
-# Compute p(x|θ) = Σ_k π_k N(x|μ_k,σ_k²)
-def norm_pdf(x, mu, sigma):
-    return np.exp(-0.5*((x-mu)/sigma)**2) / (sigma * np.sqrt(2*np.pi))
-
-px = sum(pi_k[k] * norm_pdf(x_val, mu[k], sigma[k]) for k in range(2))
-log_px = np.log(px)
-
-# True posterior: p(z=k|x,θ) = π_k N(x|μ_k,σ_k²) / p(x|θ)
-p_z_given_x = np.array([pi_k[k] * norm_pdf(x_val, mu[k], sigma[k]) / px for k in range(2)])
-
-# Choose q(z) different from true posterior
-q_z = np.array([0.7, 0.3])  # arbitrary distribution
-
-# ELBO: L(q,θ) = Σ_k q(k) log [π_k N(x|μ_k,σ_k²) / q(k)]
-elbo = sum(q_z[k] * np.log(pi_k[k] * norm_pdf(x_val, mu[k], sigma[k]) / q_z[k]) for k in range(2))
-
-# KL[q||p(z|x,θ)] = Σ_k q(k) log [q(k) / p(z=k|x,θ)]
-kl = sum(q_z[k] * np.log(q_z[k] / p_z_given_x[k]) for k in range(2))
-
-print(f"log p(x|θ)     = {log_px:.6f}")
-print(f"ELBO L(q,θ)    = {elbo:.6f}")
-print(f"KL[q||p(z|x)]  = {kl:.6f}")
-print(f"ELBO + KL      = {elbo + kl:.6f}  (should equal log p(x|θ))")
-print(f"Gap (KL >= 0)  = {kl:.6f} >= 0 ✓")
-
-# When q = true posterior → KL = 0, ELBO = log p(x|θ)
-print(f"\nWhen q = true posterior:")
-elbo_tight = sum(p_z_given_x[k] * np.log(pi_k[k] * norm_pdf(x_val, mu[k], sigma[k]) / p_z_given_x[k]) for k in range(2))
-kl_tight = sum(p_z_given_x[k] * np.log(p_z_given_x[k] / p_z_given_x[k]) for k in range(2))
-print(f"ELBO (tight)   = {elbo_tight:.6f}")
-print(f"KL (tight)     = {kl_tight:.6f}  (≈ 0 ✓)")
+```math
+\log p_\theta(x) = \underbrace{\mathbb{E}_{q(z)}\left[\log\frac{p_\theta(x,z)}{q(z)}\right]}_{\mathcal{L}(q,\theta) \text{（ELBO）}} + \underbrace{D_{KL}(q(z) \| p_\theta(z|x))}_{\geq 0}
 ```
 
-:::details Jensen不等式からのELBO導出（別解）
-上の導出はベイズの定理を使ったが、Jensen不等式から直接導出することもできる:
+`$D_{KL} \geq 0$` より `$\log p_\theta(x) \geq \mathcal{L}(q, \theta)$`。ELBO を大きくすることが `$\log p_\theta(x)$` を大きくすることに繋がる。
 
-$$
-\log p(\mathbf{x} \mid \theta) = \log \sum_{\mathbf{z}} p(\mathbf{x}, \mathbf{z} \mid \theta)
-$$
+#### 2.1 Jensen不等式の正確な主張
 
-$q(\mathbf{z})$ を導入:
+**定理（Jensen不等式）**: `$\phi$` が凹関数（`$\phi'' \leq 0$`）で `$Y$` が確率変数のとき:
 
-$$
-= \log \sum_{\mathbf{z}} q(\mathbf{z}) \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})}
-$$
+```math
+\phi(\mathbb{E}[Y]) \geq \mathbb{E}[\phi(Y)]
+```
 
-$$
-= \log \mathbb{E}_{q(\mathbf{z})} \left[ \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})} \right]
-$$
+等号条件: `$Y$` がほぼ確実（a.e.）に定数のとき（または `$\phi$` が線形のとき）。
 
-Jensen不等式（$\log$ は凹関数）を適用:
+`$\log$` は凹関数（`$\frac{d^2}{dy^2} \log y = -\frac{1}{y^2} < 0$`）なので:
 
-$$
-\geq \mathbb{E}_{q(\mathbf{z})} \left[ \log \frac{p(\mathbf{x}, \mathbf{z} \mid \theta)}{q(\mathbf{z})} \right] = \mathcal{L}(q, \theta)
-$$
+```math
+\log\mathbb{E}[Y] \geq \mathbb{E}[\log Y]
+```
 
-この導出の方が短いが、KL項との関係が見えにくい。上のベイズの定理を使う導出の方が、EM算法の構造が明快になる。
-:::
+**証明（一次テイラー展開からの直感）**:
 
-> **ここが本講義最大のポイント**: $\log p(\mathbf{x} \mid \theta) = \mathcal{L}(q, \theta) + \text{KL}[q \| p(\mathbf{z} \mid \mathbf{x}, \theta)]$。この分解がEM算法の全てを支えている。
+凹関数 `$\phi$` は接線の上にある（接線は `$\phi$` の上界ではなく下界からアプローチ）。
 
-### 3.5 EM算法の導出 — 2ステップの天才的構造
+任意の点 `$y_0$` での一次テイラー近似:
 
-ELBO分解をもう一度書く:
+```math
+\phi(y) \leq \phi(y_0) + \phi'(y_0)(y - y_0) \ (\phi \text{ が凹のとき})
+```
 
-$$
-\log p(\mathbf{x} \mid \theta) = \mathcal{L}(q, \theta) + \text{KL}[q(\mathbf{z}) \| p(\mathbf{z} \mid \mathbf{x}, \theta)]
-$$
+`$Y$` で期待値を取り、`$y_0 = \mathbb{E}[Y]$` とすると:
 
-左辺 $\log p(\mathbf{x} \mid \theta)$ を最大化したい。右辺は2項の和だ。
+```math
+\mathbb{E}[\phi(Y)] \leq \phi(\mathbb{E}[Y]) + \phi'(\mathbb{E}[Y])\underbrace{(\mathbb{E}[Y] - \mathbb{E}[Y])}_{=0} = \phi(\mathbb{E}[Y])
+```
 
-**E-step**: $q(\mathbf{z})$ について $\mathcal{L}(q, \theta)$ を最大化する（$\theta$ は固定）。
+よって `$\phi(\mathbb{E}[Y]) \geq \mathbb{E}[\phi(Y)]$` （`$\square$`）。
 
-KLダイバージェンスは非負で、$q(\mathbf{z}) = p(\mathbf{z} \mid \mathbf{x}, \theta)$ のとき、かつそのときに限りゼロになる。したがって:
+**数値例での確認**:
 
-$$
-q^*(\mathbf{z}) = p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})
-$$
+`$Y \in \{1, 9\}$` 等確率。`$\phi(y) = \log y$`。
 
-このとき $\text{KL} = 0$ となり、ELBO が対数尤度に一致する: $\mathcal{L}(q^*, \theta^{(t)}) = \log p(\mathbf{x} \mid \theta^{(t)})$。
+```math
+\phi(\mathbb{E}[Y]) = \log 5 \approx 1.609
+```
 
-**M-step**: $\theta$ について $\mathcal{L}(q^*, \theta)$ を最大化する（$q = q^*$ は固定）。
+```math
+\mathbb{E}[\phi(Y)] = \frac{\log 1 + \log 9}{2} = \frac{0 + 2.197}{2} \approx 1.099
+```
 
-$q^* = p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})$ を代入すると:
+`$\phi(\mathbb{E}[Y]) = 1.609 > 1.099 = \mathbb{E}[\phi(Y)]$` ✅（Jensen不等式が成立）
 
-$$
-\mathcal{L}(q^*, \theta) = \sum_{\mathbf{z}} p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)}) \log p(\mathbf{x}, \mathbf{z} \mid \theta) - \underbrace{\sum_{\mathbf{z}} p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)}) \log p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})}_{\text{entropy, } \theta \text{に依存しない}}
-$$
+**等号成立の確認**: `$Y = c$`（定数）のとき `$\phi(\mathbb{E}[Y]) = \phi(c) = \mathbb{E}[\phi(Y)]$` で等号成立。
 
-$\theta$ に依存するのは第1項だけだから:
+#### 2.2 `$q(z)$` を挿入して Jensen を適用する
 
-$$
-\theta^{(t+1)} = \arg\max_\theta \underbrace{\mathbb{E}_{\mathbf{z} \sim p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})} [\log p(\mathbf{x}, \mathbf{z} \mid \theta)]}_{Q(\theta, \theta^{(t)})}
-$$
+`$p_\theta(x)$` の対数に Jensen を適用するため、任意の分布 `$q(z) > 0$`（`$\text{supp}(q) \supseteq \text{supp}(p_\theta(\cdot|x))$`）を挿入する。
 
-この $Q(\theta, \theta^{(t)})$ が **Q関数** と呼ばれるものだ。Dempster, Laird, Rubin (1977) [^1] はこの関数を中心にEM算法を定式化した。
+```math
+p_\theta(x) = \int p_\theta(x, z) dz = \int q(z) \cdot \frac{p_\theta(x, z)}{q(z)} dz = \mathbb{E}_{q(z)}\left[\frac{p_\theta(x, z)}{q(z)}\right]
+```
 
-**まとめると**:
+対数を取ると:
 
-| ステップ | 操作 | 数式 |
-|:---------|:-----|:-----|
-| **E-step** | 事後分布を計算 | $q(\mathbf{z}) \leftarrow p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})$ |
-| **M-step** | Q関数を最大化 | $\theta^{(t+1)} \leftarrow \arg\max_\theta Q(\theta, \theta^{(t)})$ |
+```math
+\log p_\theta(x) = \log \mathbb{E}_{q(z)}\left[\frac{p_\theta(x, z)}{q(z)}\right]
+```
+
+Jensen を適用（`$\log$` は凹関数、`$Y = p_\theta(x,z)/q(z)$`）:
+
+```math
+\log p_\theta(x) \geq \mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x, z)}{q(z)}\right]
+= \mathbb{E}_{q(z)}\left[\log p_\theta(x, z)\right] - \mathbb{E}_{q(z)}\left[\log q(z)\right]
+```
+
+右辺が ELBO（Evidence Lower Bound）:
+
+```math
+\text{ELBO}(q, \theta) := \mathbb{E}_{q(z)}\left[\log p_\theta(x, z)\right] + H(q)
+```
+
+ここで `$H(q) = -\mathbb{E}_{q(z)}[\log q(z)]$` は `$q$` のエントロピー。
+
+#### 2.3 ELBO = `$\log p_\theta(x)$` - KL という分解
+
+Jensen の下界とのギャップが KL 散逸になることを示す。
+
+```math
+\begin{aligned}
+\log p_\theta(x) - \text{ELBO}(q, \theta)
+&= \log p_\theta(x) - \mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x, z)}{q(z)}\right] \\
+&= \mathbb{E}_{q(z)}\left[\log p_\theta(x)\right] - \mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x, z)}{q(z)}\right] \\
+&= \mathbb{E}_{q(z)}\left[\log p_\theta(x) - \log \frac{p_\theta(x, z)}{q(z)}\right] \\
+&= \mathbb{E}_{q(z)}\left[\log \frac{p_\theta(x) q(z)}{p_\theta(x, z)}\right] \\
+&= \mathbb{E}_{q(z)}\left[\log \frac{q(z)}{p_\theta(z|x)}\right] \\
+&= D_{KL}(q(z) \| p_\theta(z|x))
+\end{aligned}
+```
+
+よって:
+
+```math
+\boxed{\log p_\theta(x) = \text{ELBO}(q, \theta) + D_{KL}(q(z) \| p_\theta(z|x))}
+```
+
+この等式から2つのことが同時に分かる。
+
+1. `$D_{KL} \geq 0$` なので `$\text{ELBO} \leq \log p_\theta(x)$`（ELBOは下界）
+2. `$q(z) = p_\theta(z|x)$` のとき `$D_{KL} = 0$` で等号成立（ELBOは `$\log p$` に一致）
+
+#### 2.4 ELBOの別展開（Q関数 + エントロピー）
+
+```math
+\text{ELBO}(q, \theta) = \underbrace{\mathbb{E}_{q(z)}[\log p_\theta(x, z)]}_{Q(\theta|q)\text{（Q関数）}} - \underbrace{\mathbb{E}_{q(z)}[\log q(z)]}_{-H(q)}
+```
+
+または:
+
+```math
+\text{ELBO}(q, \theta) = \mathbb{E}_{q(z)}[\log p_\theta(x|z)] - D_{KL}(q(z) \| p(z))
+```
+
+後者の展開は VAE の損失関数として有名だ。「再構成誤差 - KL正則化」という形が浮かぶ。
+
+#### 2.5 EM の E-step と M-step を ELBO で再解釈
+
+```math
+\log p_\theta(x) = \text{ELBO}(q, \theta) + D_{KL}(q(z) \| p_\theta(z|x))
+```
+
+この等式から EM の2ステップが自然に導出される。
+
+**E-step**: `$\theta = \theta^{(t)}$` を固定し、`$q$` を最適化する。KL を最小化するには:
+
+```math
+q^{(t+1)}(z) = \arg\min_q D_{KL}(q(z) \| p_{\theta^{(t)}}(z|x)) = p_{\theta^{(t)}}(z|x)
+```
+
+等号成立: ELBO = `$\log p_{\theta^{(t)}}(x)$`（最大化された）
+
+**M-step**: `$q = q^{(t+1)}$` を固定し、`$\theta$` を最適化する。ELBO の `$\theta$` 依存部分は Q 関数:
+
+```math
+\theta^{(t+1)} = \arg\max_\theta \text{ELBO}(q^{(t+1)}, \theta) = \arg\max_\theta Q(\theta | \theta^{(t)})
+```
+
+このとき ELBO が増加 → `$\log p_\theta(x)$` が増加（KL ≥ 0 のため）。
+
+**収束**:
 
 ```mermaid
 sequenceDiagram
-    participant E as E-step
-    participant M as M-step
-    participant L as log p(x|θ)
-
-    Note over E,L: Iteration t
-    E->>E: q(z) = p(z|x, θ^(t))
-    Note over E: KL → 0, ELBO = log p(x|θ^(t))
-    E->>M: Pass q(z) to M-step
-    M->>M: θ^(t+1) = argmax Q(θ, θ^(t))
-    Note over M: ELBO increases
-    M->>L: log p(x|θ^(t+1)) ≥ log p(x|θ^(t))
-    Note over E,L: Iteration t+1
-    L->>E: Use θ^(t+1) for next E-step
+    participant L as log p_θ(x)
+    participant E as ELBO
+    participant KL as D_KL
+    Note over L,KL: E-step後（KL=0）
+    L->>E: 等号成立（ELBO = log p）
+    E->>KL: KL = 0
+    Note over L,KL: M-step後（ELBO増加）
+    E->>E: ELBO上昇（θ更新）
+    KL->>KL: KL再び>0
+    L->>L: log p 増加（KL≥0のため）
 ```
 
-```python
-import numpy as np
+#### 2.6 ELBO の3つの書き方（全て等価）
 
-# EM algorithm as coordinate ascent on ELBO
-# Demonstrating that log-likelihood never decreases
-
-np.random.seed(42)
-N = 200
-z_true = np.random.choice([0, 1], size=N, p=[0.4, 0.6])
-x = np.where(z_true == 0, np.random.normal(-2, 1, N), np.random.normal(3, 1.5, N))
-
-mu = np.array([0.0, 1.0])
-sigma = np.array([2.0, 2.0])
-pi_k = np.array([0.5, 0.5])
-
-def compute_log_likelihood(x, mu, sigma, pi_k):
-    N = len(x)
-    K = len(mu)
-    ll = 0.0
-    for n in range(N):
-        p_xn = sum(pi_k[k] * np.exp(-0.5*((x[n]-mu[k])/sigma[k])**2)
-                   / (sigma[k]*np.sqrt(2*np.pi)) for k in range(K))
-        ll += np.log(p_xn + 1e-300)
-    return ll
-
-def compute_elbo(x, mu, sigma, pi_k, gamma):
-    """ELBO = Σ_n Σ_k γ_nk [log π_k + log N(x_n|μ_k,σ_k²) - log γ_nk]"""
-    N, K = gamma.shape
-    elbo = 0.0
-    for n in range(N):
-        for k in range(K):
-            if gamma[n, k] > 1e-300:
-                log_pdf = -0.5*np.log(2*np.pi) - np.log(sigma[k]) - 0.5*((x[n]-mu[k])/sigma[k])**2
-                elbo += gamma[n, k] * (np.log(pi_k[k]) + log_pdf - np.log(gamma[n, k]))
-    return elbo
-
-print(f"{'Step':>4} | {'log p(x|θ)':>12} | {'ELBO':>12} | {'KL':>10} | {'Δ log-lik':>10}")
-print("-" * 65)
-
-prev_ll = compute_log_likelihood(x, mu, sigma, pi_k)
-
-for step in range(10):
-    # E-step
-    K = len(mu)
-    pdf = np.zeros((N, K))
-    for k in range(K):
-        pdf[:, k] = pi_k[k] * np.exp(-0.5*((x-mu[k])/sigma[k])**2) / (sigma[k]*np.sqrt(2*np.pi))
-    gamma = pdf / (pdf.sum(axis=1, keepdims=True) + 1e-300)
-
-    # After E-step: KL = 0, ELBO = log-likelihood
-    ll = compute_log_likelihood(x, mu, sigma, pi_k)
-    elbo = compute_elbo(x, mu, sigma, pi_k, gamma)
-    kl = ll - elbo
-
-    print(f"{step:4d} | {ll:12.4f} | {elbo:12.4f} | {kl:10.6f} | {ll - prev_ll:10.4f}")
-
-    # M-step
-    N_k = gamma.sum(axis=0)
-    for k in range(K):
-        mu[k] = (gamma[:, k] * x).sum() / N_k[k]
-        sigma[k] = np.sqrt((gamma[:, k] * (x - mu[k])**2).sum() / N_k[k])
-    pi_k = N_k / N
-
-    prev_ll = ll
-
-print(f"\nKey observation: Δ log-lik >= 0 at every step (monotone increase)")
+```math
+\text{ELBO}(q, \theta) = \underbrace{\mathbb{E}_{q(z)}[\log p_\theta(x,z)] + H(q)}_{\text{方式A: Q関数 + エントロピー}}
 ```
 
-:::message
-ここで多くの人が引っかかるポイント: **E-stepの後、KLは正確にゼロになる**（$q = p(\mathbf{z} \mid \mathbf{x}, \theta)$ だから）。**M-stepの後、KLは再びゼロでなくなる**（$\theta$ が変わったから $q \neq p(\mathbf{z} \mid \mathbf{x}, \theta^{\text{new}})$）。次のE-stepで再びKLをゼロにする。この繰り返しが対数尤度を単調に増加させる。
-:::
-
-### 3.6 GMMのE-step / M-step — 完全導出
-
-GMMに対してEM算法を具体的に適用しよう。全ての更新式を一行ずつ導出する。
-
-**E-step**: 責任度 $\gamma(z_{nk})$ の計算
-
-$$
-\gamma(z_{nk}) = p(z_n = k \mid x_n, \theta^{(t)}) = \frac{\pi_k^{(t)} \mathcal{N}(x_n \mid \mu_k^{(t)}, (\sigma_k^{(t)})^2)}{\sum_{j=1}^{K} \pi_j^{(t)} \mathcal{N}(x_n \mid \mu_j^{(t)}, (\sigma_j^{(t)})^2)}
-$$
-
-これはベイズの定理そのものだ。分子は「成分 $k$ から $x_n$ が生成される確率」、分母は「全成分からの確率の和」。
-
-**M-step**: Q関数の最大化
-
-Q関数を書き下す:
-
-$$
-Q(\theta, \theta^{(t)}) = \sum_{n=1}^{N} \sum_{k=1}^{K} \gamma(z_{nk}) \left[ \log \pi_k + \log \mathcal{N}(x_n \mid \mu_k, \sigma_k^2) \right]
-$$
-
-ガウス分布の対数密度を展開する:
-
-$$
-\log \mathcal{N}(x_n \mid \mu_k, \sigma_k^2) = -\frac{1}{2} \log(2\pi) - \log \sigma_k - \frac{(x_n - \mu_k)^2}{2\sigma_k^2}
-$$
-
-**$\mu_k$ の更新**: $\frac{\partial Q}{\partial \mu_k} = 0$ を解く。
-
-$$
-\frac{\partial Q}{\partial \mu_k} = \sum_{n=1}^{N} \gamma(z_{nk}) \frac{x_n - \mu_k}{\sigma_k^2} = 0
-$$
-
-$$
-\sum_{n=1}^{N} \gamma(z_{nk}) x_n = \mu_k \sum_{n=1}^{N} \gamma(z_{nk})
-$$
-
-$N_k = \sum_{n=1}^{N} \gamma(z_{nk})$ と定義すると:
-
-$$
-\boxed{\mu_k^{(t+1)} = \frac{1}{N_k} \sum_{n=1}^{N} \gamma(z_{nk}) \, x_n}
-$$
-
-**「責任度で重み付けした平均」** — 直感的にも自然だ。
-
-**$\sigma_k^2$ の更新**: $\frac{\partial Q}{\partial \sigma_k^2} = 0$ を解く。
-
-$\sigma_k^2 = s$ として:
-
-$$
-\frac{\partial Q}{\partial s} = \sum_{n=1}^{N} \gamma(z_{nk}) \left[ -\frac{1}{2s} + \frac{(x_n - \mu_k)^2}{2s^2} \right] = 0
-$$
-
-$$
-\sum_{n=1}^{N} \gamma(z_{nk}) \frac{1}{s} = \sum_{n=1}^{N} \gamma(z_{nk}) \frac{(x_n - \mu_k)^2}{s^2}
-$$
-
-$$
-\boxed{(\sigma_k^{(t+1)})^2 = \frac{1}{N_k} \sum_{n=1}^{N} \gamma(z_{nk}) (x_n - \mu_k^{(t+1)})^2}
-$$
-
-**「責任度で重み付けした分散」** だ。
-
-**$\pi_k$ の更新**: $\sum_k \pi_k = 1$ の制約付きでラグランジュ未定乗数法を使う。
-
-$$
-\mathcal{L}_{\text{Lagrange}} = Q + \lambda \left( 1 - \sum_{k=1}^{K} \pi_k \right)
-$$
-
-$$
-\frac{\partial}{\partial \pi_k} = \frac{N_k}{\pi_k} - \lambda = 0 \quad \Rightarrow \quad \pi_k = \frac{N_k}{\lambda}
-$$
-
-$\sum_k \pi_k = 1$ から $\lambda = N$:
-
-$$
-\boxed{\pi_k^{(t+1)} = \frac{N_k}{N}}
-$$
-
-**「成分 $k$ に属するデータの割合」** という自然な解釈になる。
-
-```python
-import numpy as np
-
-# Complete GMM EM with all derived formulas
-np.random.seed(42)
-
-# Ground truth
-true_params = {
-    'mu': np.array([-3.0, 0.0, 4.0]),
-    'sigma': np.array([0.8, 1.2, 0.6]),
-    'pi': np.array([0.3, 0.4, 0.3])
-}
-
-# Generate data
-N = 500
-K = 3
-z_true = np.random.choice(K, size=N, p=true_params['pi'])
-x = np.array([np.random.normal(true_params['mu'][z], true_params['sigma'][z]) for z in z_true])
-
-# Initialize
-mu = np.array([-1.0, 0.5, 2.0])
-sigma = np.array([1.0, 1.0, 1.0])
-pi_k = np.ones(K) / K
-
-def norm_pdf(x, mu, sigma):
-    return np.exp(-0.5*((x-mu)/sigma)**2) / (sigma * np.sqrt(2*np.pi))
-
-# EM iterations with derived update formulas
-for t in range(20):
-    # === E-step ===
-    # γ(z_nk) = π_k N(x_n|μ_k,σ_k²) / Σ_j π_j N(x_n|μ_j,σ_j²)
-    pdf = np.zeros((N, K))
-    for k in range(K):
-        pdf[:, k] = pi_k[k] * norm_pdf(x, mu[k], sigma[k])
-    gamma = pdf / pdf.sum(axis=1, keepdims=True)
-
-    # === M-step ===
-    N_k = gamma.sum(axis=0)  # effective number of points per component
-
-    for k in range(K):
-        # μ_k = (1/N_k) Σ_n γ_nk x_n
-        mu[k] = (gamma[:, k] * x).sum() / N_k[k]
-        # σ_k² = (1/N_k) Σ_n γ_nk (x_n - μ_k)²
-        sigma[k] = np.sqrt((gamma[:, k] * (x - mu[k])**2).sum() / N_k[k])
-    # π_k = N_k / N
-    pi_k = N_k / N
-
-print("Estimated vs True parameters:")
-print(f"μ:  est=({mu[0]:6.3f}, {mu[1]:6.3f}, {mu[2]:6.3f})")
-print(f"    true=({true_params['mu'][0]:6.3f}, {true_params['mu'][1]:6.3f}, {true_params['mu'][2]:6.3f})")
-print(f"σ:  est=({sigma[0]:6.3f}, {sigma[1]:6.3f}, {sigma[2]:6.3f})")
-print(f"    true=({true_params['sigma'][0]:6.3f}, {true_params['sigma'][1]:6.3f}, {true_params['sigma'][2]:6.3f})")
-print(f"π:  est=({pi_k[0]:5.3f}, {pi_k[1]:5.3f}, {pi_k[2]:5.3f})")
-print(f"    true=({true_params['pi'][0]:5.3f}, {true_params['pi'][1]:5.3f}, {true_params['pi'][2]:5.3f})")
+```math
+= \underbrace{\mathbb{E}_{q(z)}[\log p_\theta(x|z)] - D_{KL}(q(z) \| p(z))}_{\text{方式B: 再構成誤差 - KL}（\text{VAE の形}）}
 ```
 
-### 3.7 EM算法の収束性証明
-
-EM算法が**対数尤度を単調に増加させる**ことを証明する。Wu (1983) [^3] の収束性定理の核心部分だ。
-
-**定理 (EM単調性)**: EM算法の各反復で、不完全データ対数尤度は非減少である:
-
-$$
-\log p(\mathbf{x} \mid \theta^{(t+1)}) \geq \log p(\mathbf{x} \mid \theta^{(t)})
-$$
-
-**証明**:
-
-ELBO分解より:
-
-$$
-\log p(\mathbf{x} \mid \theta) = \mathcal{L}(q, \theta) + \text{KL}[q \| p(\mathbf{z} \mid \mathbf{x}, \theta)]
-$$
-
-E-stepで $q = p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})$ と設定すると $\text{KL} = 0$ だから:
-
-$$
-\log p(\mathbf{x} \mid \theta^{(t)}) = \mathcal{L}(q^{(t)}, \theta^{(t)}) \tag{1}
-$$
-
-M-stepで $\theta^{(t+1)} = \arg\max_\theta \mathcal{L}(q^{(t)}, \theta)$ とするから:
-
-$$
-\mathcal{L}(q^{(t)}, \theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t)}) \tag{2}
-$$
-
-一方、新しい $\theta^{(t+1)}$ に対しても ELBO分解は成り立つ:
-
-$$
-\log p(\mathbf{x} \mid \theta^{(t+1)}) = \mathcal{L}(q^{(t)}, \theta^{(t+1)}) + \underbrace{\text{KL}[q^{(t)} \| p(\mathbf{z} \mid \mathbf{x}, \theta^{(t+1)})]}_{\geq 0} \tag{3}
-$$
-
-(3) より:
-
-$$
-\log p(\mathbf{x} \mid \theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t+1)}) \tag{4}
-$$
-
-(1), (2), (4) を組み合わせると:
-
-$$
-\log p(\mathbf{x} \mid \theta^{(t+1)}) \stackrel{(4)}{\geq} \mathcal{L}(q^{(t)}, \theta^{(t+1)}) \stackrel{(2)}{\geq} \mathcal{L}(q^{(t)}, \theta^{(t)}) \stackrel{(1)}{=} \log p(\mathbf{x} \mid \theta^{(t)})
-$$
-
-$$
-\therefore \log p(\mathbf{x} \mid \theta^{(t+1)}) \geq \log p(\mathbf{x} \mid \theta^{(t)}) \quad \blacksquare
-$$
-
-```python
-import numpy as np
-
-# Empirical verification of monotone convergence
-np.random.seed(42)
-N = 300
-x = np.concatenate([np.random.normal(-2, 1, 120),
-                     np.random.normal(3, 1.5, 180)])
-
-mu = np.array([-5.0, 8.0])  # intentionally bad initialization
-sigma = np.array([3.0, 3.0])
-pi_k = np.array([0.5, 0.5])
-
-def compute_ll(x, mu, sigma, pi_k):
-    ll = 0.0
-    for xn in x:
-        p = sum(pi_k[k] * np.exp(-0.5*((xn-mu[k])/sigma[k])**2)/(sigma[k]*np.sqrt(2*np.pi))
-                for k in range(len(mu)))
-        ll += np.log(p + 1e-300)
-    return ll
-
-lls = []
-for t in range(30):
-    lls.append(compute_ll(x, mu, sigma, pi_k))
-
-    pdf = np.zeros((N, 2))
-    for k in range(2):
-        pdf[:, k] = pi_k[k] * np.exp(-0.5*((x-mu[k])/sigma[k])**2)/(sigma[k]*np.sqrt(2*np.pi))
-    gamma = pdf / (pdf.sum(axis=1, keepdims=True) + 1e-300)
-
-    N_k = gamma.sum(axis=0)
-    for k in range(2):
-        mu[k] = (gamma[:, k] * x).sum() / N_k[k]
-        sigma[k] = np.sqrt((gamma[:, k] * (x - mu[k])**2).sum() / N_k[k])
-    pi_k = N_k / N
-
-# Verify monotone increase
-diffs = [lls[i+1] - lls[i] for i in range(len(lls)-1)]
-print(f"All increments >= 0: {all(d >= -1e-10 for d in diffs)}")
-print(f"Min increment: {min(diffs):.2e}")
-print(f"Max increment: {max(diffs):.4f}")
-print(f"Final - Initial: {lls[-1] - lls[0]:.4f}")
-print(f"\nConvergence trace (first 10 steps):")
-for i in range(min(10, len(lls))):
-    print(f"  t={i:2d}: log-lik = {lls[i]:10.4f}" + (f"  (Δ = {diffs[i]:+.4f})" if i < len(diffs) else ""))
+```math
+= \underbrace{\log p_\theta(x) - D_{KL}(q(z) \| p_\theta(z|x))}_{\text{方式C: 対数尤度 - KLギャップ}}
 ```
 
-:::message alert
-EM算法は**局所最適解**に収束する保証しかない。大域最適解への到達は保証されていない。初期値に依存するため、実務では複数の初期値で実行して最良の結果を選ぶ (multiple restarts) のが標準的な対策だ。
-:::
+方式A は EM の実装で使う（Q関数の最大化）。方式B は VAE で使う（勾配法で最適化）。方式C は ELBO が「どれほど tight か」の評価に使う。
 
-:::details EM収束速度について
-EM算法の収束速度は一般に**線形収束** (linear convergence) だ。Newton法のような二次収束ではない。具体的には、情報行列の欠測情報 (missing information) の比率が収束速度を支配する。
+#### 2.7 ELBO の数値検証（1次元 K=1 の場合）
 
-完全データのFisher情報行列を $I_c(\theta)$、観測データのFisher情報行列を $I_o(\theta)$ とすると、EM算法の収束レート $r$ は:
+最小の例で ELBO 分解が正しいことを手計算で確認する。
 
-$$
-r \approx \lambda_{\max}\left( I_c(\theta^*)^{-1} (I_c(\theta^*) - I_o(\theta^*)) \right)
-$$
+`$K=1, N=1, x=2, \mu=0, \sigma^2=4$`:
 
-「欠測情報が多いほど収束が遅い」— 直感に合う結果だ。欠測が多いほど潜在変数の推定が不確実になり、E-stepの情報量が減るからだ。
-:::
-
-### 3.8 Boss Battle — Dempster, Laird, Rubin (1977) のQ関数を完全分解する
-
-さあ、ボス戦だ。EM算法の原論文 [^1] で定義されたQ関数を、GMMの場合に完全に展開し、全ての記号と次元を追跡する。
-
-**ボス**: Q関数
-
-$$
-Q(\theta, \theta^{(t)}) = \mathbb{E}_{\mathbf{z} \sim p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})} \left[ \log p(\mathbf{x}, \mathbf{z} \mid \theta) \right]
-$$
-
-**多変量GMMへの展開**:
-
-データ $\mathbf{x}_n \in \mathbb{R}^D$、$K$ 個の成分とする。
-
-$$
-Q(\theta, \theta^{(t)}) = \sum_{n=1}^{N} \sum_{k=1}^{K} \gamma(z_{nk}) \Bigg[ \underbrace{\log \pi_k}_{\text{(A) 混合重み}} + \underbrace{\left( -\frac{D}{2}\log(2\pi) - \frac{1}{2}\log|\boldsymbol{\Sigma}_k| - \frac{1}{2}(\mathbf{x}_n - \boldsymbol{\mu}_k)^\top \boldsymbol{\Sigma}_k^{-1} (\mathbf{x}_n - \boldsymbol{\mu}_k) \right)}_{\text{(B) 多変量ガウスの対数密度}} \Bigg]
-$$
-
-| 項 | 記号 | 次元 | 意味 |
-|:---|:-----|:-----|:-----|
-| (A) | $\log \pi_k$ | スカラー | 成分 $k$ の事前確率の対数 |
-| (B1) | $-\frac{D}{2}\log(2\pi)$ | スカラー | 正規化定数（$\theta$ に依存しない） |
-| (B2) | $-\frac{1}{2}\log|\boldsymbol{\Sigma}_k|$ | スカラー | 共分散行列の行列式の対数 |
-| (B3) | $(\mathbf{x}_n - \boldsymbol{\mu}_k)^\top \boldsymbol{\Sigma}_k^{-1} (\mathbf{x}_n - \boldsymbol{\mu}_k)$ | スカラー (二次形式) | マハラノビス距離の二乗 |
-| $\gamma(z_{nk})$ | $p(z_n = k \mid x_n, \theta^{(t)})$ | スカラー $\in [0, 1]$ | E-stepで計算済みの責任度 |
-| $N$ | データ数 | 整数 | 観測データの個数 |
-| $K$ | 成分数 | 整数 | 混合成分の数 |
-| $D$ | 次元数 | 整数 | データの次元 |
-
-**多変量M-step更新式**:
-
-$\frac{\partial Q}{\partial \boldsymbol{\mu}_k} = \mathbf{0}$ を解くと:
-
-$$
-\boldsymbol{\mu}_k^{(t+1)} = \frac{\sum_{n=1}^{N} \gamma(z_{nk}) \, \mathbf{x}_n}{\sum_{n=1}^{N} \gamma(z_{nk})} = \frac{1}{N_k} \sum_{n=1}^{N} \gamma(z_{nk}) \, \mathbf{x}_n
-$$
-
-$\frac{\partial Q}{\partial \boldsymbol{\Sigma}_k^{-1}} = \mathbf{0}$ を解くと（行列微分 — 第3回で学んだ技術が活きる）:
-
-$$
-\boldsymbol{\Sigma}_k^{(t+1)} = \frac{1}{N_k} \sum_{n=1}^{N} \gamma(z_{nk}) \, (\mathbf{x}_n - \boldsymbol{\mu}_k^{(t+1)})(\mathbf{x}_n - \boldsymbol{\mu}_k^{(t+1)})^\top
-$$
-
-```python
-import numpy as np
-
-# Multivariate GMM EM — Boss Battle implementation
-np.random.seed(42)
-
-# 2D data, K=3 components
-D, K, N = 2, 3, 500
-true_mus = [np.array([-3, -2]), np.array([0, 3]), np.array([4, -1])]
-true_covs = [np.array([[1, 0.3],[0.3, 0.8]]),
-             np.array([[1.2, -0.5],[-0.5, 1.0]]),
-             np.array([[0.6, 0],[0, 0.6]])]
-true_pi = [0.3, 0.4, 0.3]
-
-# Generate multivariate data
-data = []
-z_true = []
-for n in range(N):
-    k = np.random.choice(K, p=true_pi)
-    z_true.append(k)
-    data.append(np.random.multivariate_normal(true_mus[k], true_covs[k]))
-X = np.array(data)  # (N, D)
-
-# Initialize
-mus = [np.random.randn(D) for _ in range(K)]
-covs = [np.eye(D) for _ in range(K)]
-pis = np.ones(K) / K
-
-def mvn_pdf(x, mu, cov):
-    """Multivariate Gaussian PDF: N(x|μ,Σ)"""
-    D = len(mu)
-    diff = x - mu
-    cov_inv = np.linalg.inv(cov)
-    det = np.linalg.det(cov)
-    exponent = -0.5 * diff @ cov_inv @ diff
-    norm = 1.0 / ((2 * np.pi)**(D/2) * np.sqrt(det))
-    return norm * np.exp(exponent)
-
-# EM iterations
-for t in range(30):
-    # E-step: γ(z_nk) = π_k N(x_n|μ_k,Σ_k) / Σ_j π_j N(x_n|μ_j,Σ_j)
-    gamma = np.zeros((N, K))
-    for k in range(K):
-        for n in range(N):
-            gamma[n, k] = pis[k] * mvn_pdf(X[n], mus[k], covs[k])
-    gamma /= gamma.sum(axis=1, keepdims=True) + 1e-300
-
-    # M-step
-    N_k = gamma.sum(axis=0)
-    for k in range(K):
-        # μ_k = (1/N_k) Σ_n γ_nk x_n
-        mus[k] = (gamma[:, k:k+1] * X).sum(axis=0) / N_k[k]
-        # Σ_k = (1/N_k) Σ_n γ_nk (x_n - μ_k)(x_n - μ_k)^T
-        diff = X - mus[k]  # (N, D)
-        covs[k] = (gamma[:, k:k+1] * diff).T @ diff / N_k[k]
-    pis = N_k / N
-
-print("=== Boss Battle Result: Multivariate GMM EM ===\n")
-for k in range(K):
-    print(f"Component {k}:")
-    print(f"  μ_est  = [{mus[k][0]:6.3f}, {mus[k][1]:6.3f}]")
-    print(f"  μ_true = [{true_mus[k][0]:6.3f}, {true_mus[k][1]:6.3f}]")
-    print(f"  π_est  = {pis[k]:.3f},  π_true = {true_pi[k]:.3f}")
-    print(f"  Σ_est  = [[{covs[k][0,0]:.3f}, {covs[k][0,1]:.3f}],")
-    print(f"             [{covs[k][1,0]:.3f}, {covs[k][1,1]:.3f}]]")
-    print()
+```math
+\log p_\theta(x) = \log \mathcal{N}(2|0, 4) = -\frac{1}{2}\log(8\pi) - \frac{4}{8} = -\frac{1}{2}\log(8\pi) - 0.5 \approx -2.113
 ```
 
-:::message
-ボス撃破。Q関数を全ての項に分解し、多変量GMMの更新式を導出・実装した。ここで獲得した技術は:
-1. Q関数の構造理解（完全データ対数尤度の期待値）
-2. 行列微分による多変量更新式の導出（第3回の知識が活きた）
-3. 責任度 → 重み付き統計量という計算パターン
-:::
+`$q(z) = p(z|x) = 1$`（`$K=1$ では `$z$` は定数、`$D_{KL}=0$`）。
 
-### 3.9 EMの幾何学的解釈 — e-射影とm-射影
+ELBO:
 
-EM算法には美しい幾何学的解釈がある。情報幾何学（Amari, 1985）の視点から見ると、EM算法は統計多様体上の **交互射影** (alternating projection) だ。
-
-確率分布の空間を考えよう。この空間には2つの重要な部分多様体がある:
-
-- **e-族** (exponential family): 指数型分布族のパラメータで張られる多様体
-- **m-族** (mixture family): 混合分布のパラメータで張られる多様体
-
-$$
-\text{E-step} = \text{m-射影}: q \to p(\mathbf{z} \mid \mathbf{x}, \theta^{(t)})
-$$
-
-$$
-\text{M-step} = \text{e-射影}: \theta \to \arg\max_\theta Q(\theta, \theta^{(t)})
-$$
-
-Neal & Hinton (1998) [^5] はこの視点を自由エネルギーの最小化として再定式化した。EM算法の各ステップは、自由エネルギー $F(q, \theta) = -\mathcal{L}(q, \theta)$ を $q$ と $\theta$ について交互に最小化する座標降下法に他ならない。
-
-```python
-import numpy as np
-
-# Geometric view: EM as coordinate descent on free energy
-# F(q, θ) = -L(q, θ) = -Σ_z q(z) log [p(x,z|θ)/q(z)]
-
-def free_energy(x_val, q_z, mu, sigma, pi_k):
-    """Compute negative ELBO (free energy)."""
-    K = len(mu)
-    F = 0.0
-    for k in range(K):
-        if q_z[k] > 1e-300:
-            log_joint = np.log(pi_k[k] + 1e-300) + \
-                        (-0.5*np.log(2*np.pi) - np.log(sigma[k]) - 0.5*((x_val-mu[k])/sigma[k])**2)
-            F -= q_z[k] * (log_joint - np.log(q_z[k]))
-    return F
-
-# Track free energy during EM
-np.random.seed(42)
-x_val = 1.5
-mu = np.array([-2.0, 3.0])
-sigma = np.array([1.0, 1.5])
-pi_k = np.array([0.4, 0.6])
-
-print(f"{'Step':>6} | {'q(z=0)':>8} | {'q(z=1)':>8} | {'F(q,θ)':>10} | {'Action':>12}")
-print("-" * 55)
-
-for step in range(5):
-    # Before E-step: use arbitrary q
-    q_z = np.array([0.5, 0.5]) if step == 0 else q_z
-    F_before = free_energy(x_val, q_z, mu, sigma, pi_k)
-
-    # E-step (m-projection): minimize F over q → q = p(z|x,θ)
-    def norm_pdf(x, m, s):
-        return np.exp(-0.5*((x-m)/s)**2)/(s*np.sqrt(2*np.pi))
-    pdf = np.array([pi_k[k] * norm_pdf(x_val, mu[k], sigma[k]) for k in range(2)])
-    q_z = pdf / pdf.sum()
-    F_after_E = free_energy(x_val, q_z, mu, sigma, pi_k)
-
-    print(f"{step*2:6d} | {q_z[0]:8.4f} | {q_z[1]:8.4f} | {F_before:10.4f} | {'E-step':>12}")
-    print(f"{step*2+1:6d} | {q_z[0]:8.4f} | {q_z[1]:8.4f} | {F_after_E:10.4f} | {'(after E)':>12}")
-
-print(f"\nFree energy decreases at each E-step (coordinate descent on q)")
+```math
+\text{ELBO} = \mathbb{E}_{q}[\log p(x, z)] - \mathbb{E}_{q}[\log q(z)] = \log p(x) - 0 = \log p(x)
 ```
 
-この幾何学的視点の完全な展開は第27回（情報幾何）で行う。ここでは「EM = 交互射影 = 座標降下」という直感だけ持ち帰ってほしい。
+等号成立確認 ✅。
 
-### 3.10 Generalized EM と ECM
+さらに `$q(z) \neq p(z|x)$` の場合（E-step 前の初期 `$q$`）:
 
-実際の応用では、M-stepの解析解が得られないことがある。**Generalized EM** (GEM) は、M-stepで $Q(\theta, \theta^{(t)})$ を完全に最大化する代わりに、$Q(\theta^{(t+1)}, \theta^{(t)}) > Q(\theta^{(t)}, \theta^{(t)})$ を満たす任意の $\theta^{(t+1)}$ を選べばよい。
+`$q(z=1) = 1$`（`$K=1$ では変動なし）。一般には `$D_{KL}(q \| p_\theta(z|x)) > 0$` → ELBO < `$\log p$`（E-step で縮む）。
 
-単調性の証明は同様に成り立つ。M-stepでELBOが**増加**しさえすれば、対数尤度の非減少は保証される。
+### Topic 3: GMMのEM完全導出
 
-$$
-\text{GEM}: \quad \theta^{(t+1)} = \theta^{(t)} + \eta \nabla_\theta Q(\theta, \theta^{(t)}) \Big|_{\theta = \theta^{(t)}}
-$$
+**Topic 2 → Topic 3 への橋渡し**:
 
-つまり、勾配降下法で数ステップ $Q$ を改善するだけでもよい。
+Topic 2 で「ELBO を E-step と M-step で交互最大化する」ことが分かった。Topic 3 では GMM で、抽象的な `$q(z)$` が「責任度 `$\gamma_{ik}$`」という具体的な数になる瞬間を体感する。
 
-**ECM** (Expectation Conditional Maximization) は、パラメータ $\theta$ を分割して各ブロックを順に最大化する変種だ。多変量GMMで共分散行列が制約を持つ場合に有用。
+#### 3.1 GMMのモデル定義
 
-```python
-import numpy as np
+観測 `$x \in \mathbb{R}^d$`、成分数 `$K$`、パラメータ `$\theta = (\pi, \mu, \Sigma) = (\{\pi_k\}, \{\mu_k\}, \{\Sigma_k\})$`。
 
-# Generalized EM: gradient step instead of full maximization
-def gem_m_step(x, gamma, mu, sigma, pi_k, lr=0.1):
-    """GEM M-step: one gradient step on Q(θ, θ^(t)) instead of full maximization."""
-    N = len(x)
-    K = len(mu)
-    N_k = gamma.sum(axis=0)
-
-    # Gradient of Q w.r.t. μ_k
-    for k in range(K):
-        grad_mu = (gamma[:, k] * (x - mu[k])).sum() / (sigma[k]**2)
-        mu[k] += lr * grad_mu / N  # gradient step (not closed-form!)
-
-        # Gradient w.r.t. σ_k (through log σ for positivity)
-        grad_log_sigma = -N_k[k] + (gamma[:, k] * (x - mu[k])**2).sum() / sigma[k]**2
-        sigma[k] *= np.exp(lr * grad_log_sigma / N)
-        sigma[k] = max(sigma[k], 1e-6)
-
-    pi_k[:] = N_k / N  # this part still has closed form
-    return mu, sigma, pi_k
-
-# Compare EM vs GEM convergence speed
-np.random.seed(42)
-N = 200
-x = np.concatenate([np.random.normal(-2, 1, 80), np.random.normal(3, 1.5, 120)])
-
-# Standard EM
-mu_em = np.array([0.0, 1.0])
-sigma_em = np.array([2.0, 2.0])
-pi_em = np.array([0.5, 0.5])
-
-# GEM
-mu_gem = np.array([0.0, 1.0])
-sigma_gem = np.array([2.0, 2.0])
-pi_gem = np.array([0.5, 0.5])
-
-def compute_ll_1d(x, mu, sigma, pi_k):
-    ll = 0.0
-    for xn in x:
-        p = sum(pi_k[k]*np.exp(-0.5*((xn-mu[k])/sigma[k])**2)/(sigma[k]*np.sqrt(2*np.pi))
-                for k in range(len(mu)))
-        ll += np.log(p + 1e-300)
-    return ll
-
-print(f"{'Iter':>4} | {'EM log-lik':>12} | {'GEM log-lik':>12}")
-print("-" * 35)
-
-for t in range(20):
-    ll_em = compute_ll_1d(x, mu_em, sigma_em, pi_em)
-    ll_gem = compute_ll_1d(x, mu_gem, sigma_gem, pi_gem)
-    if t % 4 == 0:
-        print(f"{t:4d} | {ll_em:12.4f} | {ll_gem:12.4f}")
-
-    # EM: E-step + full M-step
-    pdf = np.zeros((N, 2))
-    for k in range(2):
-        pdf[:, k] = pi_em[k]*np.exp(-0.5*((x-mu_em[k])/sigma_em[k])**2)/(sigma_em[k]*np.sqrt(2*np.pi))
-    gamma_em = pdf / (pdf.sum(axis=1, keepdims=True) + 1e-300)
-    N_k = gamma_em.sum(axis=0)
-    for k in range(2):
-        mu_em[k] = (gamma_em[:, k] * x).sum() / N_k[k]
-        sigma_em[k] = np.sqrt((gamma_em[:, k] * (x - mu_em[k])**2).sum() / N_k[k]) + 1e-6
-    pi_em = N_k / N
-
-    # GEM: E-step + gradient M-step
-    pdf_g = np.zeros((N, 2))
-    for k in range(2):
-        pdf_g[:, k] = pi_gem[k]*np.exp(-0.5*((x-mu_gem[k])/sigma_gem[k])**2)/(sigma_gem[k]*np.sqrt(2*np.pi))
-    gamma_gem = pdf_g / (pdf_g.sum(axis=1, keepdims=True) + 1e-300)
-    mu_gem, sigma_gem, pi_gem = gem_m_step(x, gamma_gem, mu_gem, sigma_gem, pi_gem, lr=0.5)
-
-print(f"\nEM converges faster (closed-form M-step),")
-print(f"but GEM is more flexible (works when no closed form exists).")
+```math
+p_\theta(x) = \sum_{k=1}^K \pi_k \mathcal{N}(x | \mu_k, \Sigma_k), \quad \sum_k \pi_k = 1,\ \pi_k \geq 0
 ```
 
-### 3.11 Missing Data理論 — EMの原点
+潜在変数 `$z \in \{1, \ldots, K\}$`（どの成分から来たか）として:
 
-EM算法の原論文 [^1] のタイトルは "Maximum Likelihood from **Incomplete Data**" だ。潜在変数は欠損データの一般化であり、EMの原点は欠損値処理にある。
-
-**欠損メカニズムの分類** (Rubin, 1976):
-
-| メカニズム | 定義 | EM適用 |
-|:---------|:-----|:-------|
-| **MCAR** (Missing Completely At Random) | 欠損は完全にランダム | EM有効 |
-| **MAR** (Missing At Random) | 欠損は観測値に依存するが欠損値には依存しない | EM有効 |
-| **MNAR** (Missing Not At Random) | 欠損が欠損値自体に依存 | EMだけでは不十分 |
-
-$$
-\text{MCAR}: \quad p(R \mid \mathbf{x}_{\text{obs}}, \mathbf{x}_{\text{mis}}) = p(R)
-$$
-
-$$
-\text{MAR}: \quad p(R \mid \mathbf{x}_{\text{obs}}, \mathbf{x}_{\text{mis}}) = p(R \mid \mathbf{x}_{\text{obs}})
-$$
-
-$$
-\text{MNAR}: \quad p(R \mid \mathbf{x}_{\text{obs}}, \mathbf{x}_{\text{mis}}) \text{ depends on } \mathbf{x}_{\text{mis}}
-$$
-
-ここで $R$ は欠損パターンを表す確率変数（$R_{nd} = 1$ なら $x_{nd}$ は観測、$R_{nd} = 0$ なら欠損）。
-
-MAR以下の仮定が成り立つとき、EM算法は欠損を「潜在変数」として扱い、完全データ尤度の期待値を最大化することで一貫したパラメータ推定が可能になる。Zone 5 のチャレンジ2で実装した欠損値補完は、まさにこの理論に基づいている。
-
-### 3.12 Identifiabilityとlabel switching問題
-
-GMMには本質的な **非識別可能性** (non-identifiability) がある。
-
-$K$ 個の成分に対して、成分のラベルを並べ替えても同じ分布になる:
-
-$$
-\sum_{k=1}^{K} \pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2) = \sum_{k=1}^{K} \pi_{\tau(k)} \mathcal{N}(x \mid \mu_{\tau(k)}, \sigma_{\tau(k)}^2)
-$$
-
-ここで $\tau$ は $\{1, \ldots, K\}$ 上の任意の置換。つまり $K!$ 個の等価な最適解が存在する。
-
-これは **label switching問題** と呼ばれ、ベイズ推論でGMMを扱う際に特に深刻になる。EM算法では初期値で1つの解に「固定」されるため実用上は問題にならないが、理論的には最適解の一意性が保証されないことを意味する。
-
-```python
-import numpy as np
-
-# Label switching: permuting components gives same distribution
-mu = np.array([-2.0, 3.0])
-sigma = np.array([1.0, 1.5])
-pi_k = np.array([0.4, 0.6])
-
-x = np.array([0.0, 1.0, -1.0, 4.0])
-
-def gmm_pdf_1d(x, mu, sigma, pi_k):
-    return sum(pi_k[k] * np.exp(-0.5*((x-mu[k])/sigma[k])**2)/(sigma[k]*np.sqrt(2*np.pi))
-               for k in range(len(mu)))
-
-# Original order
-pdf_original = np.array([gmm_pdf_1d(xi, mu, sigma, pi_k) for xi in x])
-
-# Swapped labels (permutation τ = (1, 0))
-mu_swap = mu[::-1]
-sigma_swap = sigma[::-1]
-pi_swap = pi_k[::-1]
-pdf_swapped = np.array([gmm_pdf_1d(xi, mu_swap, sigma_swap, pi_swap) for xi in x])
-
-print("Original vs Swapped labels (should be identical):")
-for i, xi in enumerate(x):
-    print(f"  x={xi:5.1f}: p_original={pdf_original[i]:.6f}, p_swapped={pdf_swapped[i]:.6f}, "
-          f"diff={abs(pdf_original[i]-pdf_swapped[i]):.2e}")
-print(f"\nK=2 components → {np.math.factorial(2)} equivalent optima (label switching)")
-print(f"K=5 components → {np.math.factorial(5)} equivalent optima")
+```math
+p(z = k) = \pi_k, \qquad p_\theta(x|z=k) = \mathcal{N}(x|\mu_k, \Sigma_k)
 ```
 
-:::message
-**進捗: 50% 完了** 数式修行ゾーンクリア。EM算法をJensen不等式から完全に導出し、収束性を証明し、GMMの全更新式を導出した。幾何学的解釈、GEM、欠損データ理論、label switching問題まで網羅。後半戦は実装と応用に進む。
-:::
+完全データ対数尤度（one-hot表現 `$z_k = \mathbf{1}[z=k]$` を使う）:
+
+```math
+\log p_\theta(x, z) = \sum_{k=1}^K z_k \left(\log \pi_k + \log \mathcal{N}(x|\mu_k, \Sigma_k)\right)
+```
+
+この形は `$\log$` が `$\int$` の外に出た。M-step で閉じる理由はここにある。
+
+#### 3.2 E-step: 責任度の導出
+
+**動機**: E-step の目標は「`$q(z_i)$` を `$p_{\theta^{(t)}}(z_i|x_i)$` に設定してKL=0にする」こと。GMM では事後分布がベイズの定理で閉じた形になる。
+
+Q関数を計算するために事後分布 `$p_\theta(z_i|x_i)$` が必要。
+
+**ベイズの定理の明示的展開**（途中を一切省かない版）:
+
+```math
+p_{\theta^{(t)}}(z_i=k|x_i) = \frac{p_{\theta^{(t)}}(z_i=k) \cdot p_{\theta^{(t)}}(x_i|z_i=k)}{p_{\theta^{(t)}}(x_i)}
+```
+
+分子: `$p(z_i=k) = \pi_k^{(t)}$`、`$p(x_i|z_i=k) = \mathcal{N}(x_i|\mu_k^{(t)}, \Sigma_k^{(t)})$`
+
+分母: `$p(x_i) = \sum_{j=1}^K \pi_j^{(t)} \mathcal{N}(x_i|\mu_j^{(t)}, \Sigma_j^{(t)})$`（全成分の和 = 周辺化）
+
+結合すると:
+
+```math
+\gamma_{ik} := p_{\theta^{(t)}}(z_i = k | x_i)
+= \frac{p_{\theta^{(t)}}(x_i|z_i=k) \cdot p(z_i=k)}{\sum_{j=1}^K p_{\theta^{(t)}}(x_i|z_i=j) \cdot p(z_i=j)}
+= \frac{\pi_k^{(t)} \mathcal{N}(x_i|\mu_k^{(t)}, \Sigma_k^{(t)})}{\sum_{j=1}^K \pi_j^{(t)} \mathcal{N}(x_i|\mu_j^{(t)}, \Sigma_j^{(t)})}
+```
+
+`$\gamma_{ik}$` を「責任度（responsibility）」と呼ぶ。「成分 `$k$` がデータ `$x_i$` の生成に『責任』を持つ割合」。
+
+shape: `$\gamma \in \mathbb{R}^{N \times K}$`、性質:
+- `$\gamma_{ik} \geq 0$`
+- `$\sum_{k=1}^K \gamma_{ik} = 1$`（各データ点に対する正規化）
+
+#### 3.3 Q関数の展開
+
+```math
+Q(\theta|\theta^{(t)}) = \sum_{i=1}^N \mathbb{E}_{z_i \sim p(z_i|x_i,\theta^{(t)})}[\log p_\theta(x_i, z_i)]
+= \sum_{i=1}^N \sum_{k=1}^K \gamma_{ik} \left(\log \pi_k + \log \mathcal{N}(x_i|\mu_k, \Sigma_k)\right)
+```
+
+`$\mathbb{E}[z_{ik}] = \gamma_{ik}$` を使った。
+
+ガウス対数密度を展開:
+
+```math
+\log \mathcal{N}(x_i|\mu_k, \Sigma_k) = -\frac{d}{2}\log(2\pi) - \frac{1}{2}\log\det\Sigma_k - \frac{1}{2}(x_i - \mu_k)^\top \Sigma_k^{-1}(x_i - \mu_k)
+```
+
+Q関数全体:
+
+```math
+Q(\theta|\theta^{(t)}) = \sum_{k=1}^K \underbrace{N_k \log \pi_k}_{\text{混合比項}} + \sum_{k=1}^K \left(-\frac{N_k}{2}\log\det\Sigma_k - \frac{1}{2}\sum_{i=1}^N \gamma_{ik}(x_i-\mu_k)^\top \Sigma_k^{-1}(x_i-\mu_k)\right)
+```
+
+ここで `$N_k := \sum_{i=1}^N \gamma_{ik}$`（成分 `$k$` の「有効データ数」）。
+
+#### 3.4 M-step: `$\pi_k$` の更新（ラグランジュ法）
+
+**M-step の目標**: `$\theta^{(t+1)} = \arg\max_\theta Q(\theta|\theta^{(t)})$`。Q 関数は `$\pi, \mu, \Sigma$` の3グループで独立に最適化できる（Q関数が各グループの和に分解されるため）。
+
+制約 `$\sum_k \pi_k = 1$` のもとで `$Q$` を `$\pi$` について最大化する。
+
+ラグランジュ汎関数:
+
+```math
+\mathcal{J}(\pi, \lambda) = \sum_{k=1}^K N_k \log \pi_k + \lambda\left(\sum_k \pi_k - 1\right)
+```
+
+微分条件 `$\partial \mathcal{J}/\partial \pi_k = 0$`:
+
+```math
+\frac{N_k}{\pi_k} + \lambda = 0 \implies \pi_k = -\frac{N_k}{\lambda}
+```
+
+`$\sum_k \pi_k = 1$` を代入: `$\sum_k (-N_k/\lambda) = 1 \implies \lambda = -\sum_k N_k = -N$`。
+
+よって:
+
+```math
+\boxed{\pi_k \leftarrow \frac{N_k}{N}}
+```
+
+**検算**: `$\sum_k \pi_k = \sum_k N_k/N = N/N = 1$ ✅`（確率の規格化条件）
+
+**解釈**: 混合重みは「全データに対する各成分の平均責任度」。`$N_k = \sum_i \gamma_{ik}$` は成分 `$k$` の「有効データ数」— 各データ点が持つ「成分 `$k$` への所属確率」の総和。
+
+#### 3.5 M-step: `$\mu_k$` の更新
+
+Q関数の `$\mu_k$` に関する部分:
+
+```math
+Q_{\mu_k} = -\frac{1}{2}\sum_{i=1}^N \gamma_{ik}(x_i-\mu_k)^\top \Sigma_k^{-1}(x_i-\mu_k)
+```
+
+微分して 0:
+
+```math
+\frac{\partial Q_{\mu_k}}{\partial \mu_k} = \sum_{i=1}^N \gamma_{ik} \Sigma_k^{-1}(x_i - \mu_k) = 0
+```
+
+`$\Sigma_k^{-1}$` は正定値なので逆行列が存在し:
+
+```math
+\sum_{i=1}^N \gamma_{ik}(x_i - \mu_k) = 0 \implies \boxed{\mu_k \leftarrow \frac{\sum_{i=1}^N \gamma_{ik} x_i}{N_k}}
+```
+
+これは「責任度で重み付けた加重平均」。
+
+#### 3.6 M-step: `$\Sigma_k$` の更新
+
+`$\mu_k = \mu_k^{new}$` を代入済みの Q 関数を `$\Sigma_k^{-1} =: \Lambda_k$`（精度行列）で書き直す:
+
+```math
+Q_{\Sigma_k} = \frac{N_k}{2}\log\det\Lambda_k - \frac{1}{2}\text{tr}\left(\Lambda_k S_k\right)
+```
+
+ここで `$S_k = \sum_i \gamma_{ik}(x_i-\mu_k)(x_i-\mu_k)^\top$` は重み付き散布行列。
+
+行列微分 `$\partial Q_{\Sigma_k}/\partial \Lambda_k = 0$`（`$\partial \log\det A / \partial A = A^{-T}$` を使う）:
+
+```math
+\frac{N_k}{2}\Lambda_k^{-T} - \frac{1}{2}S_k = 0 \implies \Lambda_k^{-1} = \Sigma_k = \frac{S_k}{N_k}
+```
+
+よって:
+
+```math
+\boxed{\Sigma_k \leftarrow \frac{1}{N_k}\sum_{i=1}^N \gamma_{ik}(x_i-\mu_k)(x_i-\mu_k)^\top}
+```
+
+「責任度で重み付けた共分散行列」。
+
+**数値例（`$K=2, D=1$`）**: `$x_1=-2, x_2=1$`, `$\gamma_{11}=0.8, \gamma_{21}=0.3$`.
+`$N_1 = 1.1$`, `$\mu_1^{new} = (0.8 \cdot (-2) + 0.3 \cdot 1)/1.1 = (-1.6+0.3)/1.1 = -1.3/1.1 \approx -1.18$`
+
+`$\Sigma_1^{new} = (0.8 \cdot (-2-(-1.18))^2 + 0.3 \cdot (1-(-1.18))^2)/1.1 = (0.8 \cdot 0.67 + 0.3 \cdot 4.75)/1.1 = (0.54 + 1.43)/1.1 \approx 1.79$`
+
+検算: `$\Sigma_1^{new} > 0$ ✅`（分散は常に正）
+
+#### 3.7 M-step の共通パターン — 「重み付き MLE」
+
+M-step の3つの更新式（`$\pi_k, \mu_k, \Sigma_k$`）を統一的に見ると、全て「重み付き MLE」だ。
+
+| パラメータ | 重み付き MLE | 対応する単純 MLE（`$\gamma_{ik}=1/K$`のとき） |
+|:---------|:-----------|:------------------------------------------|
+| `$\pi_k = N_k/N$` | 重み付き頻度（加重カウント） | `$1/K$`（等確率）|
+| `$\mu_k = \frac{\sum_i \gamma_{ik}x_i}{N_k}$` | 重み付き標本平均 | 普通の標本平均 |
+| `$\Sigma_k = \frac{\sum_i \gamma_{ik}(x_i-\mu_k)(x_i-\mu_k)^\top}{N_k}$` | 重み付き標本分散 | 普通の標本分散 |
+
+これは「GMM の E-step が責任度を計算し、M-step が責任度で重み付けた MLE をやっている」という解釈を与える。EM の M-step は常に「完全データ問題の重み付き MLE」になっている。
+
+#### 3.8 責任度の行列形式
+
+```math
+x_i \in \mathbb{R}^d,\quad \mu_k \in \mathbb{R}^d,\quad \Sigma_k \in \mathbb{R}^{d\times d},\quad \gamma \in \mathbb{R}^{N\times K}
+```
+
+| 計算 | 入力shape | 出力shape |
+|:----|:---------|:---------|
+| `$\gamma_{ik}$`（責任度） | `$x: (N,d), \mu: (K,d), \Sigma: (K,d,d)$` | `$(N,K)$` |
+| `$N_k = \sum_i \gamma_{ik}$` | `$(N,K)$` | `$(K,)$` |
+| `$\mu_k^{new}$`（加重平均） | `$\gamma: (N,K), x: (N,d)$` | `$(K,d)$`（`$\gamma^\top x / N_k$`） |
+| `$(x_i-\mu_k)$`（残差） | `$x: (N,d), \mu_k: (d,)$` | `$(N,d)$` |
+| `$\Sigma_k$`（加重散布） | `$\gamma_k: (N,), \text{residual}: (N,d)$` | `$(d,d)$`（`$\text{einsum}$`） |
+
+実装で最もよく壊れるのは `$\Sigma_k$` の計算。`$\gamma_{ik}(x_i-\mu_k)(x_i-\mu_k)^\top$` は `$(d,d)$` の行列を `$N$` 個足す操作:
+
+```math
+\Sigma_k = \frac{1}{N_k}\sum_{i=1}^N \gamma_{ik} \underbrace{(x_i-\mu_k)(x_i-\mu_k)^\top}_{d \times d}
+```
+
+**発見**: 責任度の計算はまさに softmax 関数だ。Transformer の attention と同じ形をしている。
+
+```math
+\text{attention}(Q,K,V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
+```
+
+vs.
+
+```math
+\gamma_i = \text{softmax}(A_i) \in \Delta^{K-1}
+```
+
+Transformer の attention が各トークンを K 個の「専門家（head）」に割り当てる操作と、GMM が各データ点を K 個の成分に soft-assign する操作は数学的に同型だ。
+
+#### 3.9 1次元GMMのEM：解析的な E-step と M-step
+
+1次元（`$d=1$`）、2成分（`$K=2$`）のとき、E-step の責任度は:
+
+```math
+\gamma_{i1} = \frac{\pi_1 \cdot \frac{1}{\sqrt{2\pi\sigma_1^2}}\exp\left(-\frac{(x_i-\mu_1)^2}{2\sigma_1^2}\right)}{\pi_1 \cdot \frac{1}{\sqrt{2\pi\sigma_1^2}}\exp\left(-\frac{(x_i-\mu_1)^2}{2\sigma_1^2}\right) + \pi_2 \cdot \frac{1}{\sqrt{2\pi\sigma_2^2}}\exp\left(-\frac{(x_i-\mu_2)^2}{2\sigma_2^2}\right)}
+```
+
+M-step:
+
+```math
+N_1 = \sum_i \gamma_{i1}, \quad \pi_1 = \frac{N_1}{N}, \quad \mu_1 = \frac{\sum_i \gamma_{i1}x_i}{N_1}, \quad \sigma_1^2 = \frac{\sum_i \gamma_{i1}(x_i-\mu_1)^2}{N_1}
+```
+
+数値例: `$x = \{-3, -2, -1, 1, 2, 3\}$`, 初期 `$(\mu_1, \mu_2) = (0, 0)$`, `$(\sigma_1^2, \sigma_2^2) = (1, 1)$`, `$(\pi_1, \pi_2) = (0.5, 0.5)$`.
+
+初期の責任度: 全データで `$\gamma_{i1} = \gamma_{i2} = 0.5$`（対称なので）。
+
+1回目の M-step 後:
+- `$\mu_1 = \frac{0.5((-3)+(-2)+(-1)+1+2+3)}{3} = 0$`（変わらない、対称なので）
+
+対称な初期値から破対称するには、微小な perturbation か K-means++ 初期化が必要。
+
+### Topic 4: EMの単調増加性証明
+
+**Topic 3 → Topic 4 への橋渡し**:
+
+Topic 3 で GMM の E/M-step の更新式を導出した。Topic 4 では「なぜ EM が収束するか」を証明する。鍵は「ELBO 分解」と「KL ≥ 0」の組み合わせだ。
+
+直感: EM は「下界（ELBO）を反復で押し上げる操作」と見なせる。E-step は KL = 0（下界をタイトに）、M-step は下界を最大化。この交互操作で元の対数尤度が単調非減少になる。
+
+#### 4.1 単調性定理の主張
+
+**定理（EM単調増加性, Dempster-Laird-Rubin 1977）**[^1][^2]: EM の各反復で:
+
+```math
+\mathcal{L}(\theta^{(t+1)}) \geq \mathcal{L}(\theta^{(t)})
+```
+
+すなわち、対数尤度は単調非減少。
+
+#### 4.2 証明
+
+ELBO 分解を使う。`$t$` 回目の反復後のパラメータ `$\theta^{(t)}$` と補助分布 `$q^{(t)}(z) = p_{\theta^{(t)}}(z|x)$` に対し:
+
+```math
+\mathcal{L}(\theta^{(t)}) = \text{ELBO}(q^{(t)}, \theta^{(t)}) + D_{KL}(q^{(t)} \| p_{\theta^{(t)}}(z|x)) = \text{ELBO}(q^{(t)}, \theta^{(t)})
+```
+
+E-step で `$q^{(t)} = p_{\theta^{(t)}}(z|x)$` としたので、`$D_{KL} = 0$`（等号成立）。
+
+M-step では `$\theta^{(t+1)} = \arg\max_\theta \text{ELBO}(q^{(t)}, \theta)$` なので:
+
+```math
+\text{ELBO}(q^{(t)}, \theta^{(t+1)}) \geq \text{ELBO}(q^{(t)}, \theta^{(t)}) = \mathcal{L}(\theta^{(t)})
+```
+
+新しいパラメータ `$\theta^{(t+1)}$` での対数尤度:
+
+```math
+\mathcal{L}(\theta^{(t+1)}) = \text{ELBO}(q^{(t)}, \theta^{(t+1)}) + \underbrace{D_{KL}(q^{(t)} \| p_{\theta^{(t+1)}}(z|x))}_{\geq\, 0} \geq \text{ELBO}(q^{(t)}, \theta^{(t+1)}) \geq \mathcal{L}(\theta^{(t)})
+```
+
+等号から不等号、また不等号と連鎖して `$\mathcal{L}(\theta^{(t+1)}) \geq \mathcal{L}(\theta^{(t)})$` が成立。`$\square$`
+
+#### 4.3 収束先の限界
+
+単調増加性は「最適解への収束」を保証しない。保証するのは:
+
+- `$\mathcal{L}(\theta)$` が上界を持つ（例: `$\leq 0$`）ならば `$\mathcal{L}(\theta^{(t)})$` は収束値に到達する
+- Wu (1983) [^2]: 定常点（`$\nabla_\theta \mathcal{L} = 0$`）に収束することが示されている
+- ただし「大域最適解」ではなく「局所最適解または鞍点」が収束先になり得る
+
+GMM では局所最適解が多数あり（`$K!$` 個のラベル置換 + 局所的な成分の配置）、初期値が重要。
+
+**初期化戦略の比較**:
+
+| 初期化手法 | 特徴 | 収束への影響 |
+|:---------|:----|:-----------|
+| ランダム初期化 | 実装簡単 | 局所解・発散リスク大 |
+| K-means 初期化 | 平均に良い初期点 | 局所解リスク中程度 |
+| K-means++ 初期化 | 分散した初期点を確率的選択 | 局所解リスク小 [^4] |
+| 複数回実行（best of M） | M 個の初期化から最良を選ぶ | 最も確実（計算コストあり）|
+
+Arthur & Vassilvitskii (2007) [^4] の K-means++ は「既存の中心から最も遠い点を確率的に選ぶ」ことで、期待コストが O(log K) 倍以内に収まることを証明した。実用的な GMM 実装では K-means++ 初期化が標準だ。
+
+#### 4.4 収束速度
+
+EM の収束速度は**線形収束**（geometric convergence）だ。誤差が各ステップで定数倍される:
+
+```math
+\|\theta^{(t+1)} - \theta^*\| \leq r \cdot \|\theta^{(t)} - \theta^*\|, \quad 0 < r < 1
+```
+
+収束率 `$r$` は Dempster et al. (1977) の「欠損情報の割合」で決まる:
+
+```math
+r = 1 - \frac{I_{obs}(\theta^*)}{I_{comp}(\theta^*)}
+```
+
+ここで `$I_{obs}$` は観測データの Fisher 情報量、`$I_{comp}$` は完全データの Fisher 情報量。
+
+**直感**: 欠損情報が多い（`$I_{obs}/I_{comp}$` が小さい）ほど収束が遅い。GMM で成分が大きく重なっているとき、「どの成分からのサンプルか」という情報がほぼ欠損するため、EM は遅くなる。
+
+#### 4.5 K-means は EM の特殊ケース
+
+K-means アルゴリズムは GMM-EM の「hard assignment」版だ。
+
+責任度 `$\gamma_{ik}$` を hard-assign（softmax → argmax）:
+
+```math
+\gamma_{ik}^{hard} = \mathbf{1}[k = \arg\max_j \pi_j\mathcal{N}(x_i|\mu_j,\sigma^2 I)]
+\to \mathbf{1}[k = \arg\min_j \|x_i - \mu_j\|^2] \ (\pi_j = 1/K, \sigma^2 \to 0)
+```
+
+これが K-means の assignment step。M-step では単純平均:
+
+```math
+\mu_k \leftarrow \frac{\sum_i \gamma_{ik}^{hard} x_i}{\sum_i \gamma_{ik}^{hard}}
+```
+
+K-means = GMM-EM with (1) equal mixing weights, (2) spherical equal covariance, (3) hard assignment。
+
+**温度との関係**: `$\gamma_{ik} = \text{softmax}(A_i / T)_k$` とすると、`$T \to 0$` で K-means、`$T = 1$` で通常の GMM。Annealing EM はこの `$T$` を徐々に下げる手法。
+
+**重要な実用的洞察**:
+
+| ケース | 挙動 | 原因 | 対策 |
+|:------|:----|:----|:----|
+| 成分が完全分離 | EM が超高速収束（5〜10回） | 欠損情報が少ない（`$r \approx 0$`） | そのまま OK |
+| 成分が大きく重なる | EM が数百回かかる | 欠損情報が多い（`$r \approx 0.9$`） | K-means++ 初期化 + 多数回実行 |
+| Singularity 発生 | 尤度が `$+\infty$` に飛ぶ | `$\Sigma_k \to 0$` | `reg_covar` で下限を設定 |
+| Label Switching | 収束先が実行ごとに異なる | 対称性（`$K!$` 通りの等価解）| 最良 BIC の解を選ぶ |
+
+### Topic 5: EMの拡張と幾何学的解釈
+
+**Topic 4 → Topic 5 への橋渡し**:
+
+Topic 4 で「EM は単調増加する」ことが証明された。Topic 5 では「EM がどのような一般化に対して有効か」を探索する。具体的には: (1) M-step が閉じない場合（GEM/ECM）、(2) 統計的な解釈（情報幾何学）、(3) 実用的な落とし穴（Singularity/Label Switching）、(4) 重要な派生手法（PPCA/HMM/MoE）。
+
+#### 5.1 Generalized EM（GEM）
+
+M-step で厳密な最大化ができない場合、「少なくとも増やす」だけでも単調性が維持される。
+
+```math
+\text{GEM 条件:} \quad Q(\theta^{(t+1)}|\theta^{(t)}) \geq Q(\theta^{(t)}|\theta^{(t)})
+```
+
+**なぜ GEM が重要か？**
+
+通常の EM では M-step が閉じた形（closed-form）で解けることが前提だ。しかし多くの実用モデルでは M-step が非線形方程式になり、厳密な最大化が計算不可能になる。GEM は「完全な最大化でなくても、少し増やすだけで単調増加性が保たれる」という緩和条件を提供する。
+
+**GEM の実用例**:
+
+| モデル | GEM の実装 | 理由 |
+|:------|:---------|:----|
+| Mixed Effects Model | 1回の勾配ステップで GEM 条件を満たす | M-step が非線形 |
+| 混合 DNN モデル | E-step は解析的、M-step は SGD 1回 | DNN パラメータは閉じた形なし |
+| 半教師あり GMM | ラベル付き/なし合わせた Q 関数 | 制約付き最適化が難しい |
+
+GEM は VAE への橋渡しでもある。VAE のデコーダ更新（M-step の代わりに勾配 1 ステップ）は GEM 条件を満たす（保証はないが実用的）。
+
+なぜ: ELBO 分解の証明で M-step の部分だけ `$\geq$` が必要だったので、厳密最大化は不要。
+
+応用: ニューラルネットワークの EM（M-step = 1-step gradient）、Variational EM。
+
+#### 5.2 ECM（Expectation-Conditional Maximization）
+
+`$\theta = (\theta_1, \theta_2, \ldots)$` をブロックに分割し、1つずつ条件付き最大化する。
+
+**ECM の形式的定義**:
+
+M-step を `$S$` 個のサブステップに分割し、`$s$` 番目のサブステップで `$\theta_s$` を最大化（他の `$\theta_{s' \neq s}$` を固定）:
+
+```math
+\theta_s^{(t+1)} = \arg\max_{\theta_s} Q(\theta_1^{(t+1)}, \ldots, \theta_{s-1}^{(t+1)}, \theta_s, \theta_{s+1}^{(t)}, \ldots | \theta^{(t)})
+```
+
+各サブステップで Q が増加するため、M-step 全体で単調増加性が保たれる。
+
+GMM への応用: `$\mu_k$` と `$\Sigma_k$` を別々に最大化する（実際には同じ解が出るが、数値的に安定しやすい）。また `$K$` 成分を順番に更新する「成分ごとの ECM」も実用的だ。
+
+#### 5.3 情報幾何学的解釈（e-射影・m-射影）
+
+Amari (1985, 2007) の情報幾何学では、EM の E/M-step は統計多様体上の「交互射影」として解釈できる。
+
+**統計多様体の基礎**:
+
+確率分布全体の空間 `$\mathcal{P}$` を微分多様体として扱う。接続（Fisher 計量）を定めると、2種類の測地線（e-geodesic, m-geodesic）と2種類の射影が定義される。
+
+| 概念 | 数学的定義 | EM の対応 |
+|:----|:---------|:---------|
+| e-flat（指数型族の部分空間） | 十分統計量 `$T(x)$` で張られる | `$p_\theta(x,z)$` が属する（指数型族のとき）|
+| m-flat（周辺化の部分空間） | 周辺化で閉じる部分空間 | `$q(z)$` が属する（変分分布）|
+| e-射影 `$\Pi^{(e)}$` | KL（前向き）最小化 | M-step（`$\theta$` 更新）|
+| m-射影 `$\Pi^{(m)}$` | KL（後ろ向き）最小化 | E-step（`$q(z)$` 更新）|
+
+**収束の幾何学的保証**:
+
+e-flat と m-flat が「直交補空間」になっているとき（指数型族 + 完全十分統計量）、EM の収束は「ピタゴラスの定理」から保証される:
+
+```math
+D_{KL}(q^* \| p_\theta) = D_{KL}(q^* \| q) + D_{KL}(q \| p_\theta)
+```
+
+`$q$` を更新（E-step）すると右辺第1項が0になり、KL が単調減少する。これは情報幾何学的な EM 収束証明の骨格だ。
+
+```mermaid
+flowchart TD
+    P["p(x,z|θ) の多様体 M"]
+    Q["q(z) の多様体 Q"]
+    A["初期点 (q^(0), θ^(0))"]
+    B["E-step: m-射影<br/>q → p(z|x,θ^(0))<br/>(KL最小化 = m-flat 上に射影)"]
+    C["M-step: e-射影<br/>θ → argmax ELBO<br/>(Q最大化 = e-flat 上に射影)"]
+    A --> B --> C --> B
+```
+
+- **e-射影**: `$\theta$` を固定して `$q$` を最適化（KL最小化方向）
+- **m-射影**: `$q$` を固定して `$\theta$` を最適化（期待対数尤度最大化）
+
+この幾何学的視点から、EM の収束速度は「2つの多様体の角度」で決まることが分かる。直交するほど速く、平行するほど遅い。
+
+#### 5.4 Missing Data 理論との接続
+
+Rubin (1976) の missing data 分類:
+
+| 分類 | 定義 | EM 適用 |
+|:----|:----|:------|
+| **MCAR** (Missing Completely At Random) | `$p(z_{miss}|x_{obs}, z_{obs}) = p(z_{miss})$` | 適用可（bias なし） |
+| **MAR** (Missing At Random) | `$p(z_{miss}|x_{obs}, z_{obs}) = p(z_{miss}|x_{obs})$` | 適用可（条件付きで bias なし） |
+| **MNAR** (Missing Not At Random) | `$p(z_{miss}|x_{obs}, z_{obs}) \neq p(z_{miss}|x_{obs})$` | 非適用（欠損の仕組みをモデル化が必要） |
+
+GMM の潜在変数 `$z_i$`（どの成分か）は MCAR に相当。
+
+#### 5.5 Singularity（尤度発散）
+
+GMM の対数尤度は `$+\infty$` に発散できる。1成分の `$\Sigma_k \to 0$` かつ `$\mu_k = x_j$`（あるデータ点に一致）のとき:
+
+```math
+\log \mathcal{N}(x_j | \mu_k, \Sigma_k) = -\frac{d}{2}\log(2\pi) - \frac{1}{2}\log\det\Sigma_k - 0 \to +\infty \quad (\det\Sigma_k \to 0)
+```
+
+これは「尤度の超局所的な最大化」であり、汎化性能とは無関係。
+
+**Singularity の発生パターン**:
+
+1. **1データ点に成分が収縮**: `$\mu_k \to x_j$`, `$\Sigma_k \to 0$`（最も典型的）
+2. **成分が消失**: `$\pi_k \to 0$`（Degenerate component）
+3. **K-means と異なる超局所解**: EM が KL から逸脱したパスを取る
+
+**対策（優先度順）**:
+
+- **対策1**: `$\Sigma_k$` に下限を設ける: `$\Sigma_k \geq \epsilon I$`（実装では `min_covar` パラメータ）
+- **対策2**: MAP-EM with Wishart prior `$W(\Sigma_k^{-1} | \Psi, \nu)$`（ベイズ的正則化）
+- **対策3**: 責任度 `$N_k < N_{\min}$` になった成分を削除して再初期化
+
+sklearn の GaussianMixture でデフォルト `reg_covar=1e-6` が対策1に相当。
+
+#### 5.6 Label Switching（識別可能性）
+
+GMM では `$K!$` 通りのラベル置換が同一の `$p_\theta(x)$` を生成する:
+
+```math
+(\pi_1, \mu_1, \Sigma_1, \ldots, \pi_K, \mu_K, \Sigma_K) \equiv (\pi_{\sigma(1)}, \mu_{\sigma(1)}, \Sigma_{\sigma(1)}, \ldots) \quad \forall \sigma \in S_K
+```
+
+**問題**: 複数回の EM を走らせてパラメータを比較するとき、ラベルの割り当てが変わると「収束先が異なる」ように見える。
+
+**実用上の対策**:
+
+| 状況 | 推奨対策 |
+|:----|:-------|
+| 点推定（最尤 EM）| 識別可能性問題は無関係（最良の1解を使う）|
+| 複数 EM 実行の比較 | ハンガリアン法で成分を対応付けてから比較 |
+| ベイズ推論（MCMC）| Post-hoc alignment（Stephens 2000）または 制約法 |
+| BIC/AIC モデル選択 | 尤度は置換不変なので問題なし |
+
+**評価**: 尤度、BIC/AIC、生成サンプルの品質で評価し、ラベルの一致を要求しない。
+
+#### 5.7 Probabilistic PCA — EM で解く線形潜在変数モデル
+
+Tipping & Bishop (1999) [^6] による PPCA は、ガウス潜在変数の線形モデルで EM が閉じた形で解ける例だ。
+
+モデル: `$x = Wz + \mu + \epsilon$`, `$z \sim \mathcal{N}(0,I_m)$`, `$\epsilon \sim \mathcal{N}(0,\sigma^2 I_d)$`
+
+周辺分布は解析的に積分できる:
+
+```math
+p(x) = \mathcal{N}(x | \mu, C), \quad C = WW^\top + \sigma^2 I_d
+```
+
+E-step: 事後分布 `$p(z|x)$` もガウスで閉じる。
+
+```math
+q(z_i) = \mathcal{N}(z_i | M^{-1}W^\top(x_i - \mu), \sigma^2 M^{-1}), \quad M = W^\top W + \sigma^2 I_m
+```
+
+M-step: 期待十分統計量を使って `$W, \mu, \sigma^2$` を更新:
+
+```math
+W^{new} = \left(\sum_i x_i \mathbb{E}[z_i]^\top\right)\left(\sum_i \mathbb{E}[z_iz_i^\top]\right)^{-1}
+```
+
+**接続**: `$\sigma^2 \to 0$` の極限で、PPCA は通常の PCA（主成分分析）に一致する。EM を使うことで「線形潜在変数モデル = 確率的 PCA」という解釈が得られる。
+
+#### 5.8 HMM と Baum-Welch — 時系列版EM
+
+Hidden Markov Model (HMM) は時系列潜在変数モデルで、Baum-Welch アルゴリズムが EM に相当する。
+
+```math
+p(x_{1:T}, z_{1:T}) = p(z_1)\prod_{t=2}^T p(z_t|z_{t-1})\prod_{t=1}^T p(x_t|z_t)
+```
+
+**GMM-EM vs HMM-EM の対応**:
+
+| GMM-EM | HMM（Baum-Welch） |
+|:-------|:----------------|
+| `$\gamma_{ik} = p(z_i=k \| x_i)$`（責任度） | `$\gamma_t(k) = p(z_t=k \| x_{1:T})$`（Forward-Backward 出力）|
+| E-step: 条件付き事後 `$p(z \| x, \theta)$` | E-step: Forward-Backward アルゴリズム `$O(TK^2)$` |
+| M-step: 閉じた形 `$\mu_k, \Sigma_k$` | M-step: 遷移行列・観測分布の更新（閉じた形）|
+| 独立データ `$\{x_i\}_{i=1}^N$` | 時系列データ `$x_1, \ldots, x_T$`（依存あり）|
+
+**アーキテクチャの接続**:
+
+HMM → CRF（条件付き確率場）→ 双方向 LSTM → Transformer（注意機構は「ソフト HMM」と見なせる）。Baum-Welch の時代から、現代 NLP の注意機構まで直系の系譜がある。
+
+**Forward-Backward アルゴリズムの概略**:
+
+E-step の核心は「全系列を考慮した事後確率 `$\gamma_t(k) = p(z_t=k | x_{1:T})$`」の計算。直接計算すると `$O(K^T)$`（指数的）だが、グラフィカルモデルの条件付き独立性を使うと `$O(TK^2)$` に削減できる。
+
+```math
+\alpha_t(k) = p(x_{1:t}, z_t=k) \quad \text{（Forward: 前から後ろへ）}
+```
+
+```math
+\beta_t(k) = p(x_{t+1:T} | z_t=k) \quad \text{（Backward: 後ろから前へ）}
+```
+
+```math
+\gamma_t(k) = \frac{\alpha_t(k)\beta_t(k)}{\sum_j \alpha_t(j)\beta_t(j)}
+```
+
+この再帰的計算が `$O(TK^2)$` を実現する。GMM の E-step（`$O(NK)$`）の時系列版だと考えると分かりやすい。
+
+E-step は Forward-Backward アルゴリズム（動的計画法）:
+
+```math
+\alpha_t(j) = p(x_{1:t}, z_t = j) = \sum_k \alpha_{t-1}(k) A_{kj} B_j(x_t)
+```
+
+M-step は遷移確率行列 `$A$` と発光確率 `$B$` の更新。
+
+**GMM との違い**: GMM では `$z_i$` が i.i.d.（独立）。HMM では `$z_t$` が Markov 連鎖を成す（時系列依存）。動的計画法が必要になるため、計算量は `$O(TK^2)$`（`$T$` ステップ、`$K$` 状態）。
+
+#### 5.9 Mixture of Experts — EMの現代的復活
+
+Mixture of Experts (MoE) は GMM の「ガウス成分」を「専門家ネットワーク `$f_k(x;\theta_k)$`」に置き換えたモデルだ。
+
+**MoE の確率モデル**:
+
+```math
+p(y|x, z=k, \theta_k) = f_k(x; \theta_k)
+```
+
+```math
+p(z=k|x) = g_k(x; W_g) = \frac{e^{W_g^{(k)\top} x}}{\sum_j e^{W_g^{(j)\top} x}}
+```
+
+GMM と比べると「混合重み `$\pi_k$`」が「入力依存のゲート `$g_k(x)$`」に一般化されている。
+
+```math
+p(y|x;\theta) = \sum_{k=1}^K g_k(x;W_g) \cdot p(y|f_k(x;\theta_k))
+```
+
+`$g_k(x;W_g) = \text{softmax}(W_g x)_k$` は Gating Network（責任度 `$\gamma_{ik}$` に相当）。
+
+**現代の sparse MoE** (Mixtral-8x7B):
+- `$K=8$` 専門家の中から `$\text{top-k}=2$` を選択（hard routing）
+- hard routing = K-means の assignment step に相当
+- 全専門家を活性化するのと比べて、推論コストを `$K/2$` 倍削減
+
+```mermaid
+flowchart LR
+    x["入力トークン x"] --> G["Gating Network g(x)<br/>softmax → top-2選択"]
+    G --> E1["Expert 1<br/>FFN_1(x)"]
+    G --> E2["Expert 2<br/>FFN_2(x)"]
+    G -.-> Ek["Expert k<br/>（非活性化）"]
+    E1 --> Y["出力: g1·FFN1(x) + g2·FFN2(x)"]
+    E2 --> Y
+```
+
+Dempster-Laird-Rubin (1977) の EM が2020年代の最先端 LLM の中核にある。「古い」のではなく「基盤」だ。
+
+**5トピックの総まとめ（Topic 1〜5 + 拡張）**:
+
+```mermaid
+flowchart TD
+    P1["潜在変数 z の定式化<br/>（完全/不完全データ）"] --> P2["ELBO = log p - KL<br/>（Jensen不等式）"]
+    P2 --> P3["GMM-EM 完全導出<br/>（責任度 γ, Q関数）"]
+    P3 --> P4["単調増加性証明<br/>（収束保証）"]
+    P4 --> P5["拡張: GEM / ECM<br/>情報幾何 / PPCA / HMM"]
+    P5 --> BB["Boss Battle: Q関数<br/>行列微分・Cholesky"]
+    BB --> VAE["Course II: VAE<br/>Amortized E-step"]
+```
+
+**理解度チェック — Topic 1-4 まとめ**:
+
+1. GMM の E-step で `$\gamma_{ik}$` の分母が成分数 `$K$` の和になる理由は？
+2. ELBO が常に `$\log p(x)$` 以下であることを、KL 非負性から示せるか？
+3. EM の各ステップで対数尤度が「減少しない」ことを、Q関数を使って1文で説明できるか？
+
+<details><summary>答え</summary>
+
+1. 全事後確率 `$\sum_k p(z=k|x) = 1$` を保証するため。`$\sum_k \gamma_{ik} = 1$` は確率の規格化条件。分母はその規格化定数 `$\sum_j \pi_j \mathcal{N}(x_i | \mu_j, \Sigma_j)$`。
+
+2. `$\log p(x) = \mathcal{L}(q, \theta) + D_{KL}(q \| p)$`（分解式）で、`$D_{KL}(q \| p) \geq 0$` なので `$\mathcal{L} \leq \log p(x)$`。
+
+3. M-step で `$Q(\theta | \theta^{\text{old}}) \geq Q(\theta^{\text{old}} | \theta^{\text{old}})$` を達成するため、ELBO が増加し、KL は非負より `$\log p(x)$` も非減少。
+
+</details>
+
+> Progress: 50%
+
+---
+
+### Topic 5 (Boss Battle): Q関数完全分解と多変量GMM
+
+> **⚠️ Warning:** このセクションは計算量が多い。線形代数の準備（行列微分、Cholesky分解）が必要。
+
+**Boss Battle の目標**: 多変量ガウス混合の EM を「全ステップ手で追える」状態にする。
+
+**なぜ難しいか？** スカラー GMM は簡単だが、多変量（`$x_i \in \mathbb{R}^D, D > 1$`）になると:
+- `$\Sigma_k \in \mathbb{R}^{D \times D}$` の行列微分が必要
+- 対数尤度の `$\log|\Sigma_k|$` の微分
+- `$\Sigma_k$` が半正定値になる保証（制約付き最適化）
+
+これら全てを今から導出する。
+
+#### 5b.1 多変量ガウスの対数密度を分解する
+
+多変量 GMM の Boss Battle は、行列式・二次形式・Cholesky の三重苦を制することだ。
+
+多変量ガウスの対数密度:
+
+```math
+\log \mathcal{N}(x|\mu, \Sigma) = -\frac{d}{2}\log(2\pi) - \frac{1}{2}\log\det\Sigma - \frac{1}{2}(x-\mu)^\top \Sigma^{-1}(x-\mu)
+```
+
+3つの部分を個別に制する:
+
+**Part A: `$\log\det\Sigma$`**
+
+`$\Sigma = LL^\top$`（Cholesky 分解、`$L$` は下三角行列）とすると:
+
+```math
+\det\Sigma = \det(LL^\top) = (\det L)^2, \qquad \log\det\Sigma = 2\log\det L = 2\sum_{j=1}^d \log L_{jj}
+```
+
+なぜ Cholesky を使うか: `$\det\Sigma$` を直接計算すると桁落ちが起きやすい。`$\log\det\Sigma = \text{logabsdet}(\Sigma)$` を安定に計算するには Cholesky が信頼できる。
+
+**Part B: 二次形式 `$(x-\mu)^\top\Sigma^{-1}(x-\mu)$`**
+
+`$\Sigma^{-1} = (LL^\top)^{-1} = L^{-\top}L^{-1}$` なので:
+
+```math
+(x-\mu)^\top\Sigma^{-1}(x-\mu) = \|L^{-1}(x-\mu)\|_2^2
+```
+
+`$y = L^{-1}(x-\mu)$` は `$Ly = (x-\mu)$` を解く（前進代入: `$O(d^2)$`）。
+
+`$\Sigma^{-1}$` を明示的に作ることを避ける。`$d=2048$`（LLM の hidden dim）では `$\Sigma^{-1}$` の計算コストが `$O(d^3)$` になる。
+
+**Part C: `$d\log(2\pi)$` の定数**
+
+`$d$` 次元のとき `$d\log(2\pi)$` は定数（`$\theta$` に依存しない）。M-step では無視してよいが、対数尤度の計算（モデル選択など）では必要。
+
+#### 5b.2 Q関数を成分ごとに展開する
+
+全データ、全成分に対する Q関数:
+
+```math
+Q(\theta|\theta^{(t)}) = \sum_{i=1}^N\sum_{k=1}^K \gamma_{ik}\left[\log\pi_k - \frac{d}{2}\log(2\pi) - \frac{1}{2}\log\det\Sigma_k - \frac{1}{2}(x_i-\mu_k)^\top\Sigma_k^{-1}(x_i-\mu_k)\right]
+```
+
+`$\pi, \mu, \Sigma$` の3パターンに分解して最大化する:
+
+```math
+Q = Q_\pi + Q_\mu + Q_\Sigma + \text{const}
+```
+
+```math
+Q_\pi = \sum_{k=1}^K N_k \log\pi_k \quad (\text{Topic 3.4 で最大化})
+```
+
+```math
+Q_\mu = -\frac{1}{2}\sum_{k=1}^K\sum_{i=1}^N \gamma_{ik}(x_i-\mu_k)^\top\Sigma_k^{-1}(x_i-\mu_k) \quad (\text{Topic 3.5 で最大化})
+```
+
+```math
+Q_\Sigma = -\frac{1}{2}\sum_{k=1}^K N_k\log\det\Sigma_k - \frac{1}{2}\sum_{k=1}^K\text{tr}\left(\Sigma_k^{-1}S_k\right) \quad (\text{Topic 3.6 で最大化})
+```
+
+ここで `$S_k = \sum_i\gamma_{ik}(x_i-\mu_k^{new})(x_i-\mu_k^{new})^\top$`（`$\mu_k^{new}$` を代入済み）。
+
+#### 5b.3 対角共分散の特殊ケース
+
+計算量を減らすため、`$\Sigma_k = \text{diag}(\sigma_{k1}^2, \ldots, \sigma_{kd}^2)$` と仮定すると:
+
+```math
+\log\det\Sigma_k = \sum_{j=1}^d \log\sigma_{kj}^2, \qquad (x-\mu_k)^\top\Sigma_k^{-1}(x-\mu_k) = \sum_{j=1}^d \frac{(x_j-\mu_{kj})^2}{\sigma_{kj}^2}
+```
+
+パラメータ数: full → `$K \cdot d(d+1)/2$`, diagonal → `$K \cdot d$`。高次元（`$d > 10$`）では対角近似が現実的。
+
+M-step 更新式（対角ケース）:
+
+```math
+\sigma_{kj}^2 \leftarrow \frac{\sum_{i=1}^N \gamma_{ik}(x_{ij} - \mu_{kj})^2}{N_k}
+```
+
+#### 5b.4 Q関数の勾配を確認する（Bishop 2006 との整合性）
+
+`$Q_\Sigma$` を精度行列 `$\Lambda_k = \Sigma_k^{-1}$` で書く:
+
+```math
+Q_{\Lambda_k} = \frac{N_k}{2}\log\det\Lambda_k - \frac{1}{2}\text{tr}(\Lambda_k S_k) + \text{const}
+```
+
+行列微分 `$\partial\log\det A/\partial A = A^{-T}$`, `$\partial\text{tr}(AB)/\partial A = B^\top$` を使うと:
+
+```math
+\frac{\partial Q_{\Lambda_k}}{\partial\Lambda_k} = \frac{N_k}{2}\Lambda_k^{-T} - \frac{1}{2}S_k = 0
+```
+
+`$\Lambda_k$` は対称行列なので `$\Lambda_k^{-T} = \Lambda_k^{-1} = \Sigma_k$`。よって:
+
+```math
+\frac{N_k}{2}\Sigma_k = \frac{1}{2}S_k \implies \Sigma_k = \frac{S_k}{N_k}
+```
+
+Topic 3.6 の結果と一致（`$\square$`）。
+
+#### 5b.5 EM の反復計算量
+
+| ステップ | 計算量 | ボトルネック |
+|:--------|:------|:-----------|
+| E-step: `$\gamma_{ik}$` | `$O(NKd^2)$` | Cholesky solve per `$(i,k)$` |
+| M-step: `$\mu_k$` | `$O(NKd)$` | 行列積 `$\gamma^\top X$` |
+| M-step: `$\Sigma_k$` | `$O(NKd^2)$` | outer product の和 |
+| loglik 評価 | `$O(NKd^2)$` | E-step と同程度 |
+
+全体: 1反復 `$O(NKd^2)$`。GPT-4 相当の `$d=16384$` なら GMM は非現実的（→ 対角近似 or EM を使わない手法）。
+
+#### 5b.6 多変量ガウスの完全展開（Bishop 2006 式 9.49 との整合確認）
+
+`$K=2, d=2$` のとき、Q関数の `$\Sigma_1$` に関する部分を完全展開する。
+
+```math
+Q_{\Sigma_1} = -\frac{N_1}{2}\log\det\Sigma_1 - \frac{1}{2}\sum_{i=1}^N \gamma_{i1}(x_i-\mu_1)^\top\Sigma_1^{-1}(x_i-\mu_1)
+```
+
+`$d=2, \Sigma_1 = \begin{pmatrix}\sigma_{11}^2 & \rho\sigma_{11}\sigma_{12}\\ \rho\sigma_{11}\sigma_{12} & \sigma_{12}^2\end{pmatrix}$`（相関係数 `$\rho$`）とすると:
+
+```math
+\det\Sigma_1 = \sigma_{11}^2\sigma_{12}^2(1-\rho^2)
+```
+
+```math
+\Sigma_1^{-1} = \frac{1}{1-\rho^2}\begin{pmatrix}1/\sigma_{11}^2 & -\rho/(\sigma_{11}\sigma_{12})\\ -\rho/(\sigma_{11}\sigma_{12}) & 1/\sigma_{12}^2\end{pmatrix}
+```
+
+これを代入して最大化すると、`$\mu_k, \sigma_k^2$` の更新式が出る。full covariance の M-step の解が「責任度による加重散布行列」になることが確認できる。
+
+**数値例（`$K=2, D=2, N=3$`）**:
+
+データ: `$x_1=(-2, 0), x_2=(0.5, -0.5), x_3=(3, 1)$`
+責任度（E-step後）: `$\gamma_{11}=0.9, \gamma_{21}=0.4, \gamma_{31}=0.1$`（成分1に対して）
+
+```math
+N_1 = 0.9 + 0.4 + 0.1 = 1.4
+```
+
+```math
+\mu_1^{new} = \frac{0.9 \cdot (-2, 0) + 0.4 \cdot (0.5, -0.5) + 0.1 \cdot (3, 1)}{1.4}
+= \frac{(-1.8+0.2+0.3,\ 0-0.2+0.1)}{1.4} = \frac{(-1.3, -0.1)}{1.4} \approx (-0.929, -0.071)
+```
+
+検算: 全ての `$\gamma_{i1}$` の和 = `$1.4 > 0$`（分母ゼロ問題なし）、`$\mu_1^{new}$` は成分1の責任が高い `$x_1$` 寄りに引き寄せられている（直感と一致）。
+
+#### 5b.7 Q関数の等号条件と次回への接続
+
+Q関数の最大化が M-step だが、等号条件を確認する。
+
+E-step 後: `$q^{(t+1)}(z) = p_{\theta^{(t)}}(z|x)$` だから ELBO = `$\log p_{\theta^{(t)}}(x)$`（等号成立）。
+
+M-step では `$\theta^{(t+1)}$` を動かして ELBO を上げる。しかしこのとき `$q^{(t+1)}(z) = p_{\theta^{(t)}}(z|x)$` と `$p_{\theta^{(t+1)}}(z|x)$` が一般には等しくないので、再び `$D_{KL} > 0$` のギャップが生まれる。
+
+```mermaid
+flowchart LR
+    A["ELBO = log p_θ(t)(x)<br/>（E-step後: KL=0）"] -->|"M-step<br/>θ上昇"| B["ELBO(q^(t+1), θ^(t+1))<br/>（KLギャップが再生）"]
+    B --> C["log p_θ(t+1)(x) ≥ ELBO<br/>（対数尤度は必ず増加）"]
+    C --> D["次のE-step: KL=0に戻す"]
+    D --> A
+```
+
+**次回（変分推論）への接続**: GMM では E-step が「閉じる」（`$p_\theta(z|x)$` が解析的）。しかし VAE の非線形 decoder では `$p_\theta(z|x)$` が計算不能。解決策は「近似族 `$q_\phi$` の中でKLを最小化する変分 E-step」 — これが Course II の出発点。
+
+**理解度チェック — Boss Battle**:
+
+> **Note:** ここまで来たら、EMの「完全体」が見えているはずだ。以下の問いに答えられれば第8回のパート1は完全理解。
+
+1. `$\Sigma_k = LL^\top$` の Cholesky 分解を使うと `$\log\det\Sigma_k$` の計算コストが `$O(D^3)$` から何になるか？
+2. Q関数の `$\Sigma_k$` 微分で「精度行列 `$\Lambda_k = \Sigma_k^{-1}$` で書いた方が楽」な理由は？
+3. 多変量 GMM の M-step で `$\Sigma_k^{new}$` が半正定値になることはなぜ保証されているか？
+
+<details><summary>答え</summary>
+
+1. `$\log\det\Sigma = 2\sum_j \log L_{jj}$`（対角成分の和）なので `$O(D)$` に削減。Cholesky 分解自体は `$O(D^3)$` だが、分解済みなら評価は `$O(D)$`。
+
+2. `$\partial\log\det A/\partial A = A^{-T}$` と `$\partial \text{tr}(AB)/\partial A = B^\top$` を直接使えるため。`$\Sigma_k$` で微分すると chain rule が複雑（逆行列の微分が必要）。
+
+3. `$\Sigma_k^{new} = \frac{1}{N_k}\sum_i \gamma_{ik}(x_i - \mu_k^{new})(x_i - \mu_k^{new})^\top$` は外積の正の線形和。各 `$(x_i - \mu_k^{new})(x_i - \mu_k^{new})^\top$` は PSD（半正定値）であり、正の重みでの和も PSD。
+
+</details>
+
+> Progress: 90%
+
+---
+
+## PB 💀 パラダイム転換の問い
+
+> **EMは「古い手法」か？ VAEも Diffusion も EM の子孫だとしたら、「新しさ」とは何か？**
+
+これは単純な問いではない。3つの視点から考えてみてほしい。
+
+1. **構造的継続性**: VAE の ELBO `$\mathcal{L} = \mathbb{E}_{q_\phi(z|x)}[\log p_\theta(x|z)] - D_{KL}(q_\phi(z|x) \| p(z))$` は、EM の ELBO の Amortized 版だ。E-step（事後分布の計算）を推論ネットワーク `$q_\phi$` で置き換えることで「データ点ごとの最適化」から「全データへの汎化」を達成した。
+
+2. **スケールとの戦い**: EM が力を失う局面は「事後分布が解析的に計算できないとき」と「データが大規模すぎてバッチ処理できないとき」だ。SGD ベースの変分推論（SGVB）と Amortized Inference は、この2つを同時に克服した。しかし「下界を最大化する」という数学的骨格は EM と同一。
+
+3. **Mixture of Experts との接続**: 最近の LLM（GPT-4, Mixtral）に使われる MoE（Mixture of Experts）は、GMM の「混合成分」を「専門家ネットワーク」に置き換えた構造だ。Routing（`$\gamma_{ik}$` に相当）の学習が E-step の Soft Assignment と数学的に対応する。Dempster-Laird-Rubin (1977) の EM が2020年代の大規模言語モデルの中核にある — これは「古い手法」か？
+
+<details><summary>歴史的文脈: EM算法の誕生と影響</summary>
+
+Dempster, Laird, Rubin の 1977年論文「Maximum likelihood from incomplete data via the EM algorithm」は、統計学の歴史で最も引用された論文の一つ（引用数 > 90,000）。
+
+この論文が革命的だった理由: 「不完全データ問題」を「完全データ問題に還元する」という思想の一般化。それまでは問題ごとに個別のアルゴリズムがあったが、EM はそれらを E-step / M-step の統一フレームワークで包んだ。
+
+その後の系譜:
+- Neal & Hinton (1998) [^3]: EM の変分的解釈（`$q(z)$` を自由に選ぶ）
+- Kingma & Welling (2013) [^5]: VAE（M-step = gradient descent, E-step = amortized）
+- Ho et al. (2020): DDPM の訓練目標は Score Matching (= Denoising EM の一形態)
+- Jiang et al. (2024): Mixtral の MoE training = Soft EM の大規模適用
+
+</details>
+
+<details><summary>思考実験: 「事後分布が計算できない」とは何が起きているのか</summary>
+
+GMM の E-step は「事後分布 `$p(z|x,\theta)$` を解析的に計算できる」から成立する。しかし VAE の decoder `$p_\theta(x|z) = \mathcal{N}(x|f_\theta(z), \sigma^2I)$`（`$f_\theta$` は非線形 NN）のとき:
+
+```math
+p_\theta(z|x) = \frac{p_\theta(x|z)p(z)}{p_\theta(x)} = \frac{p_\theta(x|z)p(z)}{\int p_\theta(x|z')p(z')dz'}
+```
+
+分母の `$\int p_\theta(x|z')p(z')dz'$` は `$f_\theta$` が非線形なら解析不能。Variational EM では `$q_\phi(z|x) \approx p_\theta(z|x)$` という近似分布を使い、KL 最小化で `$\phi$` を学習する。これが VAE の「エンコーダ」の数学的正体だ。
+
+</details>
+
+<details><summary>思考実験: 「EM と MCMC、どちらが根本的な手法か？」</summary>
+
+EM は点推定（MAP か MLE）を求める最適化手法だ。しかしベイズ推論では「パラメータの事後分布 `$p(\theta|x)$` 全体」が欲しい。MCMC（Markov Chain Monte Carlo）はこれを近似するサンプリング手法。
+
+根本的な問いは「最適化（EM）とサンプリング（MCMC）のどちらが良いか」ではなく、「何を求めたいか」だ。
+
+- 予測精度の最大化が目的 → EM（点推定 + 決定論的）が計算効率良い
+- 不確かさの定量化が目的 → MCMC（事後分布）が必要
+- スケールの問題 → Variational Inference（ELBO 最大化 = EM の変分版）が MCMC より速い
+
+現代 ML では「変分推論（VI）= EM を非線形に一般化」が主流。VAE は変分 E-step（エンコーダ）と変分 M-step（デコーダの勾配更新）の組み合わせだ。
+
+</details>
+
+---
+
+## 第8回の地図 — 数式・定理・アルゴリズムの完全索引
+
+この回で登場した主要な数式・定理・アルゴリズムの索引。Part2 でどこに実装が対応するかも記す。
+
+**5トピックの核心（ワンライナー）**:
+
+| # | 核心の1行 |
+|:-|:--------|
+| T1 | `$p(x) = \int p(x|z)p(z)dz$` の `$\log\int$` が EM を必要とする |
+| T2 | `$q(z)$` を挿入すると `$\log p(x) = \text{ELBO} + D_{KL}$`（分解が全て） |
+| T3 | E-step = 責任度（Bayes）、M-step = 重み付き MLE（代数） |
+| T4 | `$D_{KL} \geq 0$` + M-step で ELBO 増加 → 単調性（情報理論 → 解析） |
+| T5 | e/m-射影の交互操作、GEM/ECM/PPCA/HMM/MoE に一般化 |
+
+| 番号 | 名称 | 核心の式 | Part2 での対応 |
+|:----|:----|:-------|:------------|
+| F1 | 潜在変数の周辺化 | `$p(x) = \int p(x|z)p(z)dz$` | Z5: log-sum-exp で計算 |
+| F2 | ELBO 分解 | `$\log p(x) = \text{ELBO} + D_{KL}$` | Z5: convergence plot |
+| F3 | E-step（責任度） | `$\gamma_{ik} = \frac{\pi_k \mathcal{N}(x_i|\mu_k,\Sigma_k)}{\sum_j \pi_j \mathcal{N}(x_i|\mu_j,\Sigma_j)}$` | Z5: `e_step()` 関数 |
+| F4 | M-step（混合比） | `$\pi_k = N_k/N$` | Z5: `m_step()` 関数 |
+| F5 | M-step（平均） | `$\mu_k = \frac{\sum_i \gamma_{ik}x_i}{N_k}$` | Z5: `m_step()` 関数 |
+| F6 | M-step（共分散） | `$\Sigma_k = \frac{\sum_i \gamma_{ik}(x_i-\mu_k)(x_i-\mu_k)^\top}{N_k}$` | Z5: `m_step()` 関数 |
+| F7 | Q関数 | `$Q(\theta|\theta^{(t)}) = \sum_{i,k}\gamma_{ik}\log p_\theta(x_i,z_i=k)$` | Z5: `q_function()` |
+| F8 | EM 単調増加 | `$\mathcal{L}(\theta^{(t+1)}) \geq \mathcal{L}(\theta^{(t)})$` | Z5: 収束プロット |
+| F9 | Cholesky 安定化 | `$\log\det\Sigma = 2\sum_j \log L_{jj}$` | Z5: 数値安定化 |
+| F10 | ELBO 3形式 | 方式A/B/C（等価） | Z5: 各形式の数値確認 |
 
 ---
 
 ## 参考文献
 
-### 主要論文
+[^1]: Dempster, A. P., Laird, N. M., Rubin, D. B. (1977). "Maximum Likelihood from Incomplete Data via the EM Algorithm." *Journal of the Royal Statistical Society, Series B*, 39(1), 1–38. [arXiv survey: 0710.5696](https://arxiv.org/abs/0710.5696)
+[^2]: Wu, C. F. J. (1983). "On the Convergence Properties of the EM Algorithm." *The Annals of Statistics*, 11(1), 95–103. [arXiv:cs/0412015](https://arxiv.org/abs/cs/0412015)
+[^3]: Neal, R. M., Hinton, G. E. (1998). "A View of the EM Algorithm that Justifies Incremental, Sparse, and Other Variants." *Learning in Graphical Models*. [arXiv:1105.1476](https://arxiv.org/abs/1105.1476)
+[^4]: Arthur, D., Vassilvitskii, S. (2007). "k-means++: The Advantages of Careful Seeding." *SODA 2007*. [arXiv:0712.4273](https://arxiv.org/abs/0712.4273)
+[^5]: Kingma, D. P., Welling, M. (2013). "Auto-Encoding Variational Bayes." *ICLR 2014*. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114)
+[^6]: Tipping, M. E., Bishop, C. M. (1999). "Probabilistic Principal Component Analysis." *Journal of the Royal Statistical Society, Series B*. [arXiv:1601.00670](https://arxiv.org/abs/1601.00670)
+[^7]: Minka, T. (2001). "Expectation Propagation for Approximate Bayesian Inference." *UAI 2001*. [arXiv:1301.2294](https://arxiv.org/abs/1301.2294)
+[^8]: Amari, S. (1985). "Differential-Geometrical Methods in Statistics." Springer. (第27回で詳述) [arXiv survey: 1301.3810](https://arxiv.org/abs/1301.3810)
 
-[^1]: Dempster, A.P., Laird, N.M., Rubin, D.B. (1977). "Maximum Likelihood from Incomplete Data via the EM Algorithm." *Journal of the Royal Statistical Society, Series B*, 39(1), 1-38.
-@[card](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x)
+## 著者リンク
 
-[^2]: Kingma, D.P., Welling, M. (2013). "Auto-Encoding Variational Bayes." *arXiv preprint*.
-@[card](https://arxiv.org/abs/1312.6114)
-
-[^3]: Wu, C.F.J. (1983). "On the Convergence Properties of the EM Algorithm." *The Annals of Statistics*, 11(1), 95-103.
-@[card](https://doi.org/10.1214/aos/1176346060)
-
-[^4]: Baum, L.E., Petrie, T., Soules, G., Weiss, N. (1970). "A Maximization Technique Occurring in the Statistical Analysis of Probabilistic Functions of Markov Chains." *The Annals of Mathematical Statistics*, 41(1), 164-171.
-@[card](https://doi.org/10.1214/aoms/1177697196)
-
-[^5]: Neal, R.M., Hinton, G.E. (1998). "A View of the EM Algorithm that Justifies Incremental, Sparse, and other Variants." *Learning in Graphical Models*, Springer.
-@[card](https://www.cs.toronto.edu/~hinton/absps/emk.pdf)
-
-[^6]: Arthur, D., Vassilvitskii, S. (2007). "k-means++: The Advantages of Careful Seeding." *SODA '07*.
-
-[^7]: Jacobs, R.A., Jordan, M.I., Nowlan, S.J., Hinton, G.E. (1991). "Adaptive Mixtures of Local Experts." *Neural Computation*, 3(1), 79-87.
-@[card](https://doi.org/10.1162/neco.1991.3.1.79)
-
-[^11]: Bishop, C.M. (2006). *Pattern Recognition and Machine Learning*. Springer.
-@[card](https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf)
-
-[^12]: Minka, T.P. (2001). "Expectation Propagation for Approximate Bayesian Inference." *UAI 2001*.
-@[card](https://arxiv.org/abs/1301.2294)
-
-### 教科書
-
-- Bishop, C.M. (2006). *Pattern Recognition and Machine Learning*. Springer. [Ch.9: Mixture Models and EM] [公式PDF無料]
-- Murphy, K.P. (2012). *Machine Learning: A Probabilistic Perspective*. MIT Press. [Ch.11]
-- MacKay, D.J.C. (2003). *Information Theory, Inference, and Learning Algorithms*. Cambridge University Press. [Ch.22, 33] [公式PDF無料]
-
----
-
-## 記法規約
-
-| 記号 | 読み | 意味 | 初出 |
-|:-----|:-----|:-----|:-----|
-| $\mathbf{x}$ | エックス (太字) | 観測データ（ベクトル） | 第2回 |
-| $\mathbf{z}$ | ゼット (太字) | 潜在変数（ベクトル） | **第8回** |
-| $\theta$ | シータ | モデルパラメータ | 第6回 |
-| $\phi$ | ファイ | 変分パラメータ（第9回で本格登場） | — |
-| $\pi_k$ | パイ ケー | 混合重み（$\sum_k \pi_k = 1$） | **第8回** |
-| $\mu_k$ | ミュー ケー | 成分 $k$ の平均ベクトル | 第4回 |
-| $\boldsymbol{\Sigma}_k$ | シグマ ケー | 成分 $k$ の共分散行列 | 第4回 |
-| $\gamma(z_{nk})$ | ガンマ | 責任度（事後確率） | **第8回** |
-| $N_k$ | エヌ ケー | 成分 $k$ の実効データ数 | **第8回** |
-| $Q(\theta, \theta^{(t)})$ | キュー | Q関数（完全データ対数尤度の期待値） | **第8回** |
-| $\mathcal{L}(q, \theta)$ | エル | ELBO | **第8回**（第9回で主役） |
-| $\text{KL}[q \| p]$ | ケーエル | KLダイバージェンス | 第6回 |
-| $\mathcal{N}(\cdot \mid \mu, \sigma^2)$ | ノーマル | ガウス分布 | 第4回 |
-| $\mathbb{E}[\cdot]$ | エクスペクテーション | 期待値 | 第4回 |
-| $\mathbb{1}[\cdot]$ | インジケーター | 指示関数 | 第1回 |
-| $K$ | ケー | 混合成分数 / 隠れ状態数 | **第8回** |
-| $\log |\boldsymbol{\Sigma}|$ | ログ デット シグマ | 共分散行列の行列式の対数 | 第3回 |
-| $\mathbf{A}$ | エー | 状態遷移行列（HMM） | **第8回** |
-| $\alpha_t(k)$ | アルファ ティー ケー | 前向き確率（Forward algorithm） | **第8回** |
-| $\beta_t(k)$ | ベータ ティー ケー | 後向き確率（Backward algorithm） | **第8回** |
-| $\mathbf{W}$ | ダブリュー | 因子負荷行列（Factor Analysis） | **第8回** |
-| $\boldsymbol{\Psi}$ | プサイ | 固有ノイズ共分散（Factor Analysis） | **第8回** |
-| $g_k(x)$ | ジー ケー | ゲーティング関数（MoE） | **第8回** |
-| $f({\mathbb{E}}[X]) \geq \mathbb{E}[f(X)]$ | — | Jensen不等式（凹関数） | **第8回** |
-| $\text{BIC}$ | ビーアイシー | ベイズ情報量基準 | **第8回** |
-| $\text{AIC}$ | エーアイシー | 赤池情報量基準 | **第8回** |
-| $R$ | アール | 欠損パターン指示変数 | **第8回** |
-| $d$ | ディー | モデルのパラメータ数（BIC/AIC） | **第8回** |
-
----
-
-## 補遺 — EM算法の収束理論と変分推論への橋渡し
-
-:::message
-**EM算法の本質**: 潜在変数 $\mathbf{z}$ を導入することで、難しい最適化問題を2つの簡単なステップ（E-step: 期待値計算、M-step: 最大化）に分割。変分推論（第9回）の原型となる。
-:::
-
-### EM算法の収束保証
-
-**定理**: EM algorithm は対数尤度 $\log p(\mathbf{x}|\theta)$ を単調増加させる。
-
-**証明**: Jensen 不等式により、任意の分布 $q(\mathbf{z})$ に対し:
-
-$$
-\log p(\mathbf{x}|\theta) \geq \mathbb{E}_{q(\mathbf{z})} \left[ \log \frac{p(\mathbf{x}, \mathbf{z}|\theta)}{q(\mathbf{z})} \right] =: \mathcal{L}(q, \theta)
-$$
-
-E-step で $q^{(t)}(\mathbf{z}) = p(\mathbf{z}|\mathbf{x}, \theta^{(t)})$ と選ぶと、等号成立（tightness）:
-
-$$
-\mathcal{L}(q^{(t)}, \theta^{(t)}) = \log p(\mathbf{x}|\theta^{(t)})
-$$
-
-M-step で $\theta^{(t+1)} = \arg\max_\theta \mathcal{L}(q^{(t)}, \theta)$ とすると:
-
-$$
-\log p(\mathbf{x}|\theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t+1)}) \geq \mathcal{L}(q^{(t)}, \theta^{(t)}) = \log p(\mathbf{x}|\theta^{(t)})
-$$
-
-よって単調増加。 □
-
-### EM算法の収束速度
-
-**線形収束**: 通常の EM は線形収束（1次収束）:
-
-$$
-\|\theta^{(t+1)} - \theta^*\| \leq c \|\theta^{(t)} - \theta^*\|, \quad c < 1
-$$
-
-**収束定数 $c$ の計算**:
-
-$$
-c = \lambda_{\max}\left( \mathbf{I} - \mathcal{I}_{\text{observed}}(\theta^*) \mathcal{I}_{\text{complete}}(\theta^*)^{-1} \right)
-$$
-
-ここで:
-- $\mathcal{I}_{\text{observed}}$: 観測データの Fisher 情報
-- $\mathcal{I}_{\text{complete}}$: 完全データ（観測＋潜在）の Fisher 情報
-
-**含意**: 潜在変数が観測変数と強く相関するほど、$c \to 1$（収束が遅い）。
-
-### 高速化手法1: Incremental EM（オンライン学習）
-
-大規模データ $\{\mathbf{x}_1, \ldots, \mathbf{x}_N\}$ に対し、全データを使わずに逐次更新:
-
-$$
-\theta^{(t+1)} = \theta^{(t)} + \alpha_t \mathbb{E}_{p(\mathbf{z}_i|\mathbf{x}_i, \theta^{(t)})} [\nabla_\theta \log p(\mathbf{x}_i, \mathbf{z}_i|\theta^{(t)})]
-$$
-
-ここで $\alpha_t$ は学習率（例: $\alpha_t = 1/t$）。
-
-**利点**: メモリ効率 $O(1)$（バッチサイズ固定）、大規模データに対応。
-
-### 高速化手法2: Variational EM（Mean-Field近似）
-
-E-step を閉形式で解けない場合、$q(\mathbf{z})$ を制約:
-
-$$
-q(\mathbf{z}) = \prod_{i=1}^d q_i(z_i) \quad \text{(Mean-Field)}
-$$
-
-各 $q_i$ を交互に更新（Coordinate Ascent VI）:
-
-$$
-q_i^*(z_i) \propto \exp\left( \mathbb{E}_{q_{-i}} [\log p(\mathbf{x}, \mathbf{z}|\theta)] \right)
-$$
-
-**応用**: Latent Dirichlet Allocation (LDA), Variational Autoencoders (VAE)。
-
-### EM算法の限界と対策
-
-| 問題 | 原因 | 対策 |
-|:---|:---|:---|
-| 局所最適解に収束 | 非凸性 | 複数の初期値 / MCMC-EM |
-| 収束が遅い | 強い相関 | 加速 EM (Accelerated EM) |
-| M-step が困難 | 閉形式解なし | GEM (Generalized EM): 1ステップだけ改善 |
-| 高次元潜在変数 | 計算コスト | Variational EM / Sampling-based EM |
-
-### EM算法から変分推論へ
-
-**EM** と **変分推論** の関係:
-
-| 項目 | EM | 変分推論 (VI) |
-|:---|:---|:---|
-| 目的 | $\max_\theta \log p(\mathbf{x}\|\theta)$ | $\min_{q} D_{\text{KL}}(q \| p)$ |
-| E-step | $q(\mathbf{z}) = p(\mathbf{z}\|\mathbf{x}, \theta)$ (exact) | $q(\mathbf{z})$ を近似族から選択 |
-| M-step | $\theta = \arg\max \mathbb{E}_q [\log p(\mathbf{x}, \mathbf{z}\|\theta)]$ | $\theta$ も $q$ と同時最適化 (VAE) |
-| 適用範囲 | 潜在変数が離散 or 低次元 | 高次元連続潜在変数 |
-
-**変分推論 (第9回)** では、$q(\mathbf{z})$ をニューラルネットでパラメトライズし、$\theta$ と同時最適化する **Amortized Inference** へと発展。
-
-### 実例: ガウス混合モデルの収束定数
-
-$K=2$ 成分の GMM で、2つのクラスタが十分に離れている場合:
-
-$$
-c \approx 0.1 \quad \text{(高速収束)}
-$$
-
-逆に、クラスタが重なる場合:
-
-$$
-c \approx 0.9 \quad \text{(収束が遅い)}
-$$
-
-**実験的検証**: $\theta^{(t)}$ と $\theta^*$ の距離をプロットし、指数的減衰を確認。
-
----
-
----
+- Blog: https://fumishiki.dev
+- X: https://x.com/fumishiki
+- LinkedIn: https://www.linkedin.com/in/fumitakamurakami
+- GitHub: https://github.com/fumishiki
+- Hugging Face: https://huggingface.co/fumishiki
 
 ## ライセンス
 
