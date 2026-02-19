@@ -599,7 +599,7 @@ sequenceDiagram
 \log p_\theta(x) = \log \mathcal{N}(2|0, 4) = -\frac{1}{2}\log(8\pi) - \frac{4}{8} = -\frac{1}{2}\log(8\pi) - 0.5 \approx -2.113
 ```
 
-`$q(z) = p(z|x) = 1$`（`$K=1$ では `$z$` は定数、`$D_{KL}=0$`）。
+`$q(z) = p(z|x) = 1$`（`$K=1$` では `$z$` は定数、`$D_{KL}=0$`）。
 
 ELBO:
 
@@ -611,7 +611,7 @@ ELBO:
 
 さらに `$q(z) \neq p(z|x)$` の場合（E-step 前の初期 `$q$`）:
 
-`$q(z=1) = 1$`（`$K=1$ では変動なし）。一般には `$D_{KL}(q \| p_\theta(z|x)) > 0$` → ELBO < `$\log p$`（E-step で縮む）。
+`$q(z=1) = 1$`（`$K=1$` では変動なし）。一般には `$D_{KL}(q \| p_\theta(z|x)) > 0$` → ELBO < `$\log p$`（E-step で縮む）。
 
 ### Topic 3: GMMのEM完全導出
 
