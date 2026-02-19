@@ -1041,7 +1041,9 @@ p_\theta(\mathbf{x}) = \int p_\theta(\mathbf{x},\mathbf{z})\, d\mathbf{z}
       \left[\frac{p_\theta(\mathbf{x},\mathbf{z})}{q_\phi(\mathbf{z}\mid\mathbf{x})}\right]
 ```
 
-ここで Jensen の不等式（` \log \mathbb{E}[\cdot] \ge \mathbb{E}[\log(\cdot)] `）を使うと、
+ここで **Jensen の不等式**（凹関数版: ` \log \mathbb{E}[\cdot] \ge \mathbb{E}[\log(\cdot)] `）を使うと、
+
+> **Note:** Jensenの不等式の直感: `log` は**上に凸（凹）な関数**。凸の帽子を被っているグラフでは、「平均をとってからlogをとる」と「logをとってから平均をとる」を比べると、前者の方が常に大きい（または等しい）。不等号の向きはこの「凸形状」から来ている。等号成立は `q_\phi(\mathbf{z}\mid\mathbf{x}) = p_\theta(\mathbf{z}\mid\mathbf{x})` のとき（近似分布が真の事後分布に一致したとき）。
 
 ```math
 \log p_\theta(\mathbf{x})
@@ -1050,6 +1052,8 @@ p_\theta(\mathbf{x}) = \int p_\theta(\mathbf{x},\mathbf{z})\, d\mathbf{z}
 ```
 
 右辺を ELBO（evidence lower bound）と呼ぶ。
+
+> **Note:** なぜ `\log p_\theta(\mathbf{x},\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})` が「再構成+KL」に変形できるのか？ `p_\theta(\mathbf{x},\mathbf{z}) = p_\theta(\mathbf{x}|\mathbf{z})p(\mathbf{z})` と分解すると、対数は和になる: `\log p_\theta(\mathbf{x}|\mathbf{z}) + \log p(\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})`。期待値の線形性を使ってまとめると、後ろ2項が `$-D_{\text{KL}}(q_\phi \| p)$` に対応する。
 
 ```math
 \mathcal{L}_{\text{ELBO}}(\theta,\phi;\mathbf{x})
@@ -1130,6 +1134,8 @@ q(\mathbf{x}_t\mid \mathbf{x}_{t-1})
 
 なぜ「ノイズ予測」になるのか。理由は、forward がガウスで閉じているからだ。` \mathbf{x}_t ` が ` \mathbf{x}_0 ` と ` \epsilon ` の線形結合として書ける。
 
+ここで `$\bar{\alpha}_t = \prod_{s=1}^{t}(1-\beta_s)$` はノイズスケジュール `$\beta_1,\ldots,\beta_T$` の累積積（`$t$` ステップ分を一気にまとめた係数）。`$t$` が大きいほど `$\bar{\alpha}_t \to 0$` になり、元データ `$\mathbf{x}_0$` の情報が消えてほぼ純粋なノイズになる。
+
 ```math
 \mathbf{x}_t = \sqrt{\bar{\alpha}_t}\mathbf{x}_0 + \sqrt{1-\bar{\alpha}_t}\boldsymbol{\epsilon},
 \quad \boldsymbol{\epsilon}\sim \mathcal{N}(0,I)
@@ -1160,7 +1166,7 @@ Flow は「単純な分布から複雑な分布へ」写像で運ぶ。
   = \log p(\mathbf{z}) - \log \left|\det \frac{\partial f_\theta}{\partial \mathbf{z}}\right|
 ```
 
-この `\det`（行列式）が、計算量と設計の制約を生む。ここでも線形代数が支配する。
+この `\det`（行列式）が、計算量と設計の制約を生む。行列式は「写像が体積をどれだけ拡大・縮小するか」を表す量。これがゼロになると逆変換が存在しなくなるし、大きな行列の行列式を計算するのはコストが高い。ここでも線形代数が支配する。
 
 Flow Matching は、この棚を「確率の変換」よりも「ベクトル場の一致」に寄せる発想だ（原典の一つが Lipman らの Flow Matching[^6]）。
 
