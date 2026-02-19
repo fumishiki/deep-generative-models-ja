@@ -2,8 +2,11 @@
 title: "「東大松尾研の講義は3年遅れ」- 現役AIエンジニアが教える、東大講義の完全上位互換・全50講義（無料公開）"
 emoji: "🔥"
 type: "tech"
-topics: ["AI", "機械学習", "深層学習", "教育", "大学"]
+topics: ["machinelearning", "deeplearning", "python", "math", "statistics"]
 published: true
+slug: "ml-lecture-00"
+difficulty: "beginner"
+keywords: ["生成AI", "松尾研", "深層学習", "全50回", "arXiv"]
 ---
 
 ## 導入: なぜこの記事を書くのか
@@ -324,8 +327,8 @@ Flow Matching（2022年〜）の統一理論をJuliaで実装できない。DiT�
 | **Route A: 使いこなす** | 非エンジニア | 全8回 | AIツールを業務に導入できる |
 | **Route B: 理解して作る** | エンジニア・研究者 | 全50回 | arXiv論文を1週間で実装・デプロイできる |
 
-→ [非エンジニア向けスピンオフ（全8回）](https://zenn.dev/fumi_shiki/articles/ml-spinoff-01)
-→ [AIエンジニア向け本編（全50回）](https://zenn.dev/fumi_shiki/articles/ml-lecture-01-part1)
+- [非エンジニア向けスピンオフ（全8回）](https://zenn.dev/fumi_shiki/articles/ml-spinoff-01)
+- [AIエンジニア向け本編（全50回）](/articles/ml-lecture-01-part1)
 
 迷ったらRoute Aから。S8で本編に進むか判断できる。
 
@@ -356,6 +359,14 @@ arXiv とGitHub がある今、個人が大学を超えることは可能だ。�
 数字が出せないなら、それが答えだ。
 
 ---
+
+## 著者リンク
+
+- Blog: https://fumishiki.dev
+- X: https://x.com/fumishiki
+- LinkedIn: https://www.linkedin.com/in/fumitakamurakami
+- GitHub: https://github.com/fumishiki
+- Hugging Face: https://huggingface.co/fumishiki
 
 ## ライセンス
 
