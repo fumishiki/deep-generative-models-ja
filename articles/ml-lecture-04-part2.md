@@ -13,7 +13,7 @@ keywords: ["確率分布実装", "MLE実装", "ベイズ推論", "SciPy", "統�
 
 # 第4回: 確率論・統計学【後編】
 
-> **理論編へのリンク**: 本記事の理論的背景は [【前編】理論編](/articles/ml-lecture-04-part1) で解説しています。
+> 理論編は [【前編】第4回: 確率論・統計学](/articles/ml-lecture-04-part1) をご覧ください。
 
 ## Learning Objectives
 
@@ -1442,6 +1442,9 @@ Nucleus sampling（Top-p）は累積確率 `$\sum_{k \in \text{top-p}} p(k) \geq
 > Progress: 100%
 
 ---
+> **📖 前編もあわせてご覧ください**
+> [【前編】第4回: 確率論・統計学](/articles/ml-lecture-04-part1) では、確率論・ベイズの定理・指数型分布族の理論を学びました。
+
 ## 参考文献
 
 ### 主要論文
@@ -1524,7 +1527,6 @@ Nucleus sampling（Top-p）は累積確率 `$\sum_{k \in \text{top-p}} p(k) \geq
 
 ---
 
-> **理論編へ**: 本記事の理論的背景は [【前編】理論編](/articles/ml-lecture-04-part1) で解説しています。
 
 ---
 

@@ -11,8 +11,7 @@ languages: ["Python"]
 keywords: ["EM算法", "Jensen不等式", "ELBO", "GMM", "変分推論"]
 ---
 
-> **前編リンク**: [第7回 Part2（最尤推定 実装編）](/articles/ml-lecture-07-part2)
-> **後編リンク**: [第8回 Part2（EM算法 実装編）](/articles/ml-lecture-08-part2)
+> 実装編は [【後編】第8回: 潜在変数モデル & EM算法](/articles/ml-lecture-08-part2) をご覧ください。
 
 ## Learning Objectives
 
@@ -1535,6 +1534,9 @@ EM は点推定（MAP か MLE）を求める最適化手法だ。しかしベイ
 | F10 | ELBO 3形式 | 方式A/B/C（等価） | Z5: 各形式の数値確認 |
 
 ---
+
+> **📖 続きは後編へ**
+> [【後編】第8回: 潜在変数モデル & EM算法](/articles/ml-lecture-08-part2) では、GMM・EM算法・潜在変数モデルを完全実装します。
 
 ## 参考文献
 

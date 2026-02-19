@@ -13,7 +13,7 @@ keywords: ["SVD", "低ランク近似", "行列微分", "自動微分", "LoRA"]
 
 # 第3回: 線形代数 II — SVD・行列微分・テンソル【後編：実装編】
 
-> **理論編へのリンク**: [第3回 Part1（理論編）](/articles/ml-lecture-03-part1)
+> 理論編は [【前編】第3回: 線形代数 II](/articles/ml-lecture-03-part1) をご覧ください。
 
 ## Learning Objectives
 
@@ -1528,6 +1528,9 @@ LoRAの登場（2022年）は、「LLMの fine-tuning は低次元多様体上�
 
 ---
 
+> **📖 前編もあわせてご覧ください**
+> [【前編】第3回: 線形代数 II](/articles/ml-lecture-03-part1) では、SVD・行列微分・テンソルの理論を学びました。
+
 ## 📚 参考文献
 
 [^1]: Halko, N., Martinsson, P.-G., & Tropp, J. A. (2011). Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. *SIAM Review*, 53(2), 217–288. [arXiv:0909.4061](https://arxiv.org/abs/0909.4061)
@@ -1548,7 +1551,6 @@ LoRAの登場（2022年）は、「LLMの fine-tuning は低次元多様体上�
 
 ---
 
-> **前編へのリンク**: [第3回 Part1（理論編）](/articles/ml-lecture-03-part1)
 
 ---
 

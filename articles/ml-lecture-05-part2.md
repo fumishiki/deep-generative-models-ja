@@ -11,7 +11,7 @@ languages: ["Python"]
 keywords: ["MCMC", "importance sampling", "SDE", "Langevin dynamics", "Fokker-Planck equation"]
 ---
 
-> **📘 本記事は後編（実装編）です**: [前編（理論編）はこちら](/articles/ml-lecture-05-part1)
+> 理論編は [【前編】第5回: 測度論・確率過程](/articles/ml-lecture-05-part1) をご覧ください。
 
 ## Learning Objectives
 
@@ -1526,6 +1526,9 @@ D_{\mathrm{KL}}(P \| Q) = \int \frac{dP}{dQ} \log \frac{dP}{dQ} \, dQ
 > Progress: 100%
 
 ---
+
+> **📖 前編もあわせてご覧ください**
+> [【前編】第5回: 測度論・確率過程](/articles/ml-lecture-05-part1) では、測度論的確率論・確率過程の理論を学びました。
 
 ## 参考文献
 

@@ -11,7 +11,7 @@ languages: ["Python"]
 keywords: ["最尤推定", "MLE", "Fisher情報量", "KLダイバージェンス", "生成モデル"]
 ---
 
-> **後編はこちら**: [第7回 Part2（実装編）](/articles/ml-lecture-07-part2)
+> 実装編は [【後編】第7回: 最尤推定と統計的推論](/articles/ml-lecture-07-part2) をご覧ください。
 
 ## Learning Objectives
 
@@ -1550,6 +1550,9 @@ R(D) = \min_{p(z \mid x): \mathbb{E}[d(x, \hat{x})] \leq D} I(X; Z)
 > Progress: 90%
 
 ---
+> **📖 続きは後編へ**
+> [【後編】第7回: 最尤推定と統計的推論](/articles/ml-lecture-07-part2) では、MLE・Fisher情報行列・KL最小化を完全実装します。
+
 ## 参考文献
 
 ### 歴史的基礎
