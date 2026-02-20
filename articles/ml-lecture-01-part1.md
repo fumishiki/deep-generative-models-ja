@@ -622,7 +622,7 @@ $$
 | $\partial$ | パーシャル/デル | `\partial` | 偏微分。$\frac{\partial f}{\partial x}$ |
 | $\alpha$ | アルファ | `\alpha` | 学習率。$\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}$ |
 | $\epsilon$ | イプシロン | `\epsilon` | 微小量。数値安定化の $\log(p + \epsilon)$ や、ノイズ $\epsilon \sim \mathcal{N}(0, I)$ |
-| $\lambda$ | ラムダ | `\lambda` | 正則化係数。$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{main}} + \lambda \mathcal{L}_{\text{reg}}$ |
+| $\lambda$ | ラムダ | `\lambda` | 正則化係数。$\mathcal{L} = \mathcal{L}_0 + \lambda R$ のように損失に正則化項を加算 |
 | $\eta$ | イータ | `\eta` | 学習率（$\alpha$ の代替）。文献によって $\alpha$ か $\eta$ のどちらか |
 | $\gamma$ | ガンマ | `\gamma` | 割引率（強化学習）、モメンタム係数 |
 
@@ -1540,9 +1540,10 @@ $$
 **Step 2: 式の構造 — 1行翻訳**
 
 $$
-\underbrace{\mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})}\!\left[\log p_\theta(\mathbf{x}|\mathbf{z})\right]}_{\text{再構成項（大きいほどよい）}}
--
-\underbrace{D_{\mathrm{KL}}\!\left(q_\phi(\mathbf{z}|\mathbf{x}) \,\|\, p(\mathbf{z})\right)}_{\text{正則化項（小さいほどよい）}}
+\begin{aligned}
+&\underbrace{\mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})}\!\left[\log p_\theta(\mathbf{x}|\mathbf{z})\right]}_{\text{再構成項（大きいほどよい）}} \\[16pt]
+&\quad -\; \underbrace{D_{\mathrm{KL}}\!\left(q_\phi(\mathbf{z}|\mathbf{x}) \,\|\, p(\mathbf{z})\right)}_{\text{正則化項（小さいほどよい）}}
+\end{aligned}
 $$
 
 「エンコーダ $q_\phi$ が推定した潜在変数 $\mathbf{z}$ からデータを再現する対数確率の期待値（再構成項）から、エンコーダ分布と事前分布のズレ（正則化項）を引いたもの」。最大化することで、データをよく再現しつつ潜在空間が構造を持つモデルを学習する。
