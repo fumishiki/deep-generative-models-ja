@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 **← Part1（理論編）**: [第15回 Part1](./ml-lecture-15-part1)
 
-## 💻 4. 実装ゾーン（45分）— Julia & Rust で全て実装
+## 💻 Z5. 試練（実装）（45分）— Julia & Rust で全て実装
 
 ### 4.1 FlashAttention Julia実装 — Tiling + Online Softmax
 
@@ -341,7 +341,7 @@ mod tests {
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 速度・メモリ・精度のトレードオフ
+### 🔬 実験・検証（30分）— 速度・メモリ・精度のトレードオフ
 
 ### 5.1 ベンチマーク設定
 
@@ -1017,7 +1017,7 @@ plot(p1, p2, layout=(1, 2), size=(1000, 400))
 > 1. FlashAttention Julia実装で、タイルサイズ$B_r, B_c$を変えると何が変わるか？ SRAMサイズとの関係を述べよ。
 > 2. Sparse AttentionのLocal+Global WindowパターンはO(N√N)計算量を達成する。その直感的な理由を述べよ。
 
-## 🎓 6. 振り返りゾーン（30分）— まとめ・発展・問い
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 SageAttention — FP4量子化で2-3倍高速化
 
@@ -1229,6 +1229,9 @@ graph TD
     style O fill:#fff9c4,color:#000
     style P fill:#b3e5fc,color:#000
 ```
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.8 用語集
 

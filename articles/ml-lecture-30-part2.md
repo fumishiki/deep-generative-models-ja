@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > **📖 前編（理論編）**: [第30回前編: エージェント理論編](./ml-lecture-30-part1) | **← 理論・数式ゾーンへ**
 
-## 💻 4. 実装ゾーン（60分）— Production Agent System
+## 💻 Z5. 試練（実装）（60分）— Production Agent System
 
 **ゴール**: Rust / Elixir / Juliaを組み合わせた本番品質のエージェントシステムを構築する。
 
@@ -474,7 +474,7 @@ end
 > 1. RustのTool Registryで、ToolをHashMapで動的登録する設計と静的enum設計のトレードオフを、型安全性とランタイム柔軟性の観点から説明せよ。
 > 2. ElixirのGenServer + Supervision Treeを使ったMulti-Agent設計で、プロセスクラッシュ時の自動回復が実現できる仕組み（let it crash哲学）を説明せよ。
 
-## 🔬 5. 実験ゾーン（30分）— エージェントベンチマーク
+### 🔬 実験・検証（30分）— エージェントベンチマーク
 
 **ゴール**: AgentBenchで性能を評価し、Planning手法を比較する。
 
@@ -806,7 +806,7 @@ benchmark_multi_agent_debate()
 > 1. Voyager（Minecraft Agent）がReActと比べて長期スキル獲得に優れている理由を、Skill LibraryとCurriculum Agentの仕組みから論じよ。
 > 2. Multi-Agent Debate（MAD）における合意形成プロセスが単一エージェントのself-consistencyより高精度を達成できる条件と限界を説明せよ。
 
-## 🎓 6. 振り返りと発展ゾーン（30分）— まとめと最新研究動向
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 **ゴール**: 2024-2026年のエージェント研究動向を把握する。
 
@@ -1412,6 +1412,9 @@ AgentBench以降、評価手法が多様化:
 - LLMは"行動する"エージェント
 - Tool Use / Planning / Memoryで複雑なタスクを遂行
 - Multi-Agentで協調・討論
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.8 FAQ
 

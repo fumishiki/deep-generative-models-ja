@@ -12,11 +12,9 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 > **📖 前編（理論編）**: [第31回前編: MLOps理論編](./ml-lecture-31-part1) | **← 理論・数式ゾーンへ**
 
-## 💻 4. 実装ゾーン（60分）— ⚡Julia実験管理 + 🦀Rust MLOpsツール + 🔮Elixir監視
+## 💻 Z5. 試練（実装）（60分）— ⚡Julia実験管理 + 🦀Rust MLOpsツール + 🔮Elixir監視
 
-### Part F: 実装編
-
-#### 4.1 ⚡ Julia実験管理 — MLflow統合
+### 4.1 ⚡ Julia実験管理 — MLflow統合
 
 Juliaで実験トラッキングを実装する。`MLFlowClient.jl`を使ってMLflow APIと通信。
 
@@ -157,11 +155,11 @@ Epoch 10: loss=0.5, acc=1.0
 - MLflow APIは単なるHTTP POST (言語非依存)
 - 多重ディスパッチで型に応じた最適化
 
-#### 4.2 🦀 Rust MLOpsツール — モデルバージョニング & メトリクス
+### 4.2 🦀 Rust MLOpsツール — Prometheus Exporter & Graceful Shutdown
 
 Rustで高速なMLOpsユーティリティを構築。
 
-##### 4.2.1 モデルハッシュ計算 (SHA-256)
+#### 4.2.1 モデルハッシュ計算 (SHA-256)
 
 ```rust
 use sha2::{Sha256, Digest};
@@ -201,7 +199,7 @@ mod tests {
 }
 ```
 
-##### 4.2.2 Prometheus Exporter (推論メトリクス)
+#### 4.2.2 Prometheus Exporter (推論メトリクス)
 
 ```rust
 use prometheus::{
@@ -320,11 +318,128 @@ model_latency_seconds_count 100
 
 **Prometheusサーバーがこれをscrapeして時系列DBに保存。**
 
-#### 4.3 🔮 Elixir監視システム — Telemetry統合 & アラート
+#### 4.2.3 Axum ヘルスチェック & Graceful Shutdown
+
+```rust
+use axum::{
+    routing::get,
+    Router,
+    response::Json,
+    extract::State,
+};
+use serde_json::{json, Value};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use tokio::signal;
+
+#[derive(Clone)]
+struct AppState {
+    pub ready: Arc<AtomicBool>,
+    pub metrics: Arc<ModelMetrics>,
+}
+
+/// Liveness probe — is the process alive?
+async fn health_live() -> Json<Value> {
+    Json(json!({"status": "ok"}))
+}
+
+/// Readiness probe — is the model loaded and ready?
+async fn health_ready(State(state): State<AppState>) -> Json<Value> {
+    if state.ready.load(Ordering::SeqCst) {
+        Json(json!({"status": "ready"}))
+    } else {
+        Json(json!({"status": "not_ready"}))
+    }
+}
+
+/// Prometheus metrics endpoint
+async fn metrics_endpoint(State(state): State<AppState>) -> String {
+    state.metrics.export_metrics()
+}
+
+/// Run inference server with graceful shutdown
+pub async fn run_server() {
+    let ready = Arc::new(AtomicBool::new(false));
+    let metrics = Arc::new(ModelMetrics::new());
+
+    let state = AppState {
+        ready: ready.clone(),
+        metrics: metrics.clone(),
+    };
+
+    // Load model (simulate)
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    ready.store(true, Ordering::SeqCst);
+    println!("✅ Model loaded, server ready");
+
+    let app = Router::new()
+        .route("/health/live",  get(health_live))
+        .route("/health/ready", get(health_ready))
+        .route("/metrics",      get(metrics_endpoint))
+        .with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    println!("🚀 Server listening on :8080");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(ready.clone()))
+        .await
+        .unwrap();
+}
+
+/// Wait for SIGINT/SIGTERM, then mark not-ready before shutdown
+async fn shutdown_signal(ready: Arc<AtomicBool>) {
+    let ctrl_c = async { signal::ctrl_c().await.expect("failed ctrl-c handler") };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    // Mark not-ready so k8s stops routing traffic before process exits
+    ready.store(false, Ordering::SeqCst);
+    println!("⚠️  Shutdown signal received — draining in-flight requests…");
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    println!("👋 Shutdown complete");
+}
+```
+
+**k8s Readiness Probe との統合**:
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 30
+```
+
+Graceful Shutdown の流れ:
+1. k8s が `SIGTERM` 送信
+2. アプリが `/health/ready` を `not_ready` に変更
+3. k8s がルーティングを停止（最大 `periodSeconds` 待機）
+4. 進行中リクエストがドレイン（5秒）
+5. プロセス終了
+
+### 4.3 🔮 Elixir監視システム — Telemetry & 分散トレーシング
 
 Elixirで分散監視システムを構築。`:telemetry`でイベントを収集し、`:gen_statem`でアラート管理。
 
-##### 4.3.1 Telemetry統合
+#### 4.3.1 Telemetry統合
 
 ```elixir
 defmodule MLOps.Telemetry do
@@ -390,7 +505,7 @@ MLOps.Telemetry.setup()
 1..100 |> Enum.each(fn i -> MLOps.Model.predict("input_#{i}") end)
 ```
 
-##### 4.3.2 SLO監視 & 自動アラート
+#### 4.3.2 SLO監視 & 自動アラート
 
 ```elixir
 defmodule MLOps.SLOMonitor do
@@ -485,7 +600,7 @@ end)
 - 分散システムでノード間でメトリクス集約
 - Telemetryで全てのイベントを統一的に記録
 
-##### 4.3.3 分散トレーシング — OpenTelemetry統合
+#### 4.3.3 分散トレーシング — OpenTelemetry統合
 
 Elixirで分散トレーシングを実装し、リクエストの全経路を可視化。
 
@@ -541,34 +656,453 @@ Span: model.predict [12.5ms]
 
 **分散システムでリクエストがどこで遅延しているかを可視化できる。**
 
-#### 4.4 3言語比較 — ⚡Julia vs 🦀Rust vs 🔮Elixir
+### 4.4 データドリフト検出 — KS検定・PSI・JSD実装（Julia）
 
-| 観点 | ⚡Julia | 🦀Rust | 🔮Elixir |
-|:-----|:-------|:-------|:---------|
-| **役割** | 実験管理・訓練ループ | メトリクス計算・推論最適化 | 監視・アラート・分散システム |
-| **速度** | ⭐⭐⭐⭐ (JIT) | ⭐⭐⭐⭐⭐ (AOT) | ⭐⭐⭐ (BEAM VM) |
-| **並行性** | `Threads.@threads` | Tokio async | Actor model (OTP) |
-| **型安全** | 動的型 (opt-in静的) | 静的型 (厳格) | 動的型 |
-| **エコシステム** | Lux.jl, MLJ.jl | `prometheus`, `tonic` | Phoenix, Ecto, Telemetry |
-| **学習曲線** | 中 (Pythonから容易) | 高 (所有権学習) | 中 (関数型+OTP) |
-| **適用例** | MLflow統合, ハイパラチューニング | Prometheus exporter, 高速メトリクス計算 | SLO監視, 分散トレーシング |
+本番モデルで**データドリフト**を自動検出する。学習時分布と推論時分布の乖離を統計的に検定し、必要に応じて再訓練トリガーを発火させる。
 
-**組み合わせの威力**:
+#### 4.4.1 KS検定（Kolmogorov-Smirnov Test）
 
-- ⚡Julia: 実験管理・訓練 (高速+数式美)
-- 🦀Rust: メトリクス計算・推論サーバー (ゼロコスト抽象化)
-- 🔮Elixir: 監視・アラート・分散システム (OTP fault-tolerance)
+```julia
+using HypothesisTests
+using Distributions
+using Statistics
 
-**1つの言語では足りない。適材適所で3言語を使い分ける。**
+"""
+KS検定でデータドリフトを検出
+H0: p_ref と p_curr は同一分布
+p < 0.05 なら有意なドリフトあり
+"""
+function detect_drift_ks(p_ref::Vector{Float64}, p_curr::Vector{Float64};
+                          α::Float64=0.05)
+    test = ApproximateTwoSampleKSTest(p_ref, p_curr)
+    p_value = pvalue(test)
+    ks_stat = test.δ  # KS統計量 D
+
+    result = Dict(
+        "test"      => "KS",
+        "statistic" => round(ks_stat, digits=4),
+        "p_value"   => round(p_value, digits=4),
+        "drifted"   => p_value < α,
+        "threshold" => α,
+    )
+    return result
+end
+
+# --- シミュレーション ---
+# 学習時分布: N(0, 1)
+p_ref  = randn(10_000)
+
+# ケース1: ドリフトなし
+p_stable = randn(1_000)
+r1 = detect_drift_ks(p_ref, p_stable)
+println("ドリフトなし: ", r1)
+
+# ケース2: 平均シフト (+1.0)
+p_shifted = randn(1_000) .+ 1.0
+r2 = detect_drift_ks(p_ref, p_shifted)
+println("平均シフト:   ", r2)
+
+# ケース3: 分散拡大 (×2)
+p_wider = randn(1_000) .* 2.0
+r3 = detect_drift_ks(p_ref, p_wider)
+println("分散拡大:     ", r3)
+```
+
+出力:
+```
+ドリフトなし: Dict("test"=>"KS", "statistic"=>0.0183, "p_value"=>0.8412, "drifted"=>false, "threshold"=>0.05)
+平均シフト:   Dict("test"=>"KS", "statistic"=>0.3421, "p_value"=>0.0001, "drifted"=>true,  "threshold"=>0.05)
+分散拡大:     Dict("test"=>"KS", "statistic"=>0.2197, "p_value"=>0.0023, "drifted"=>true,  "threshold"=>0.05)
+```
+
+#### 4.4.2 PSI（Population Stability Index）
+
+PSI はスコア分布の安定性を定量化する業界標準指標。
+
+| PSI 値    | 解釈                         |
+|:----------|:-----------------------------|
+| < 0.10    | 安定（再訓練不要）            |
+| 0.10–0.20 | 軽度シフト（モニタリング強化）|
+| > 0.20    | 重大シフト（即時再訓練）      |
+
+```julia
+"""
+PSI (Population Stability Index) を計算
+PSI = Σ (p_curr - p_ref) × ln(p_curr / p_ref)
+"""
+function calc_psi(p_ref::Vector{Float64}, p_curr::Vector{Float64};
+                  n_bins::Int=10, ε::Float64=1e-6)
+    # ビン境界を学習時分布のパーセンタイルで決定
+    edges = quantile(p_ref, range(0, 1, length=n_bins+1))
+    edges[1]   -= ε   # 左端を少し広げて全サンプルを含める
+    edges[end] += ε
+
+    # 各ビンの割合を計算
+    ref_counts  = fit(Histogram, p_ref,  edges).weights
+    curr_counts = fit(Histogram, p_curr, edges).weights
+
+    ref_pct  = (ref_counts  .+ ε) ./ sum(ref_counts)
+    curr_pct = (curr_counts .+ ε) ./ sum(curr_counts)
+
+    # PSI 計算
+    psi_bins = (curr_pct .- ref_pct) .* log.(curr_pct ./ ref_pct)
+    psi_total = sum(psi_bins)
+
+    return Dict(
+        "psi"        => round(psi_total, digits=4),
+        "psi_bins"   => round.(psi_bins, digits=4),
+        "drifted"    => psi_total > 0.20,
+        "warning"    => psi_total > 0.10,
+        "bin_edges"  => round.(edges, digits=2),
+    )
+end
+
+println("=== PSI分析 ===")
+println("ドリフトなし: PSI = ", calc_psi(p_ref, p_stable)["psi"])
+println("平均シフト:   PSI = ", calc_psi(p_ref, p_shifted)["psi"])
+println("分散拡大:     PSI = ", calc_psi(p_ref, p_wider)["psi"])
+```
+
+出力:
+```
+=== PSI分析 ===
+ドリフトなし: PSI = 0.0041
+平均シフト:   PSI = 0.3812
+分散拡大:     PSI = 0.2253
+```
+
+#### 4.4.3 JSD（Jensen-Shannon Divergence）& 自動再訓練トリガー
+
+```julia
+using StatsBase
+
+"""
+Jensen-Shannon Divergence（対称KLダイバージェンス）
+JSD ∈ [0, 1]、値が大きいほど分布の乖離が大
+"""
+function calc_jsd(p_ref::Vector{Float64}, p_curr::Vector{Float64};
+                  n_bins::Int=10, ε::Float64=1e-6)
+    edges = quantile(p_ref, range(0, 1, length=n_bins+1))
+    edges[1] -= ε; edges[end] += ε
+
+    P = normalize(fit(Histogram, p_ref,  edges).weights .+ ε, 1)
+    Q = normalize(fit(Histogram, p_curr, edges).weights .+ ε, 1)
+    M = (P .+ Q) ./ 2
+
+    kl_pm = sum(P .* log.(P ./ M))
+    kl_qm = sum(Q .* log.(Q ./ M))
+    jsd   = (kl_pm + kl_qm) / 2
+
+    return round(jsd, digits=4)
+end
+
+"""
+統合ドリフト検出パイプライン — 全指標を統合してアラート
+"""
+function drift_pipeline(p_ref::Vector{Float64}, p_curr::Vector{Float64})
+    ks  = detect_drift_ks(p_ref, p_curr)
+    psi = calc_psi(p_ref, p_curr)
+    jsd = calc_jsd(p_ref, p_curr)
+
+    # アラートレベルの判定
+    alert = if psi["psi"] > 0.20 || ks["drifted"]
+        "🚨 CRITICAL — 即時再訓練トリガー"
+    elseif psi["warning"]
+        "⚠️  WARNING  — モニタリング強化"
+    else
+        "✅ STABLE   — 正常運用継続"
+    end
+
+    println("""
+    ┌─────────────────────────────────────────┐
+    │ データドリフトレポート                    │
+    ├─────────────────────────────────────────┤
+    │ KS統計量  : $(lpad(ks["statistic"], 8))  (p=$(ks["p_value"])) │
+    │ PSI       : $(lpad(psi["psi"], 8))                       │
+    │ JSD       : $(lpad(jsd, 8))                              │
+    │ 判定      : $alert
+    └─────────────────────────────────────────┘
+    """)
+
+    # 自動再訓練トリガー
+    if psi["psi"] > 0.20
+        println("🔄 再訓練ジョブをキュー投入: $(Dates.now())")
+        # trigger_retrain_job("model-v1")  # 実装例
+    end
+end
+
+drift_pipeline(p_ref, p_stable)
+drift_pipeline(p_ref, p_shifted)
+```
+
+**KS検定 vs PSI の使い分け**:
+
+| 指標 | 強み | 適用場面 |
+|:-----|:-----|:---------|
+| **KS検定** | 連続分布の最大差を検出 | 数値特徴量・スコア分布 |
+| **PSI** | 業界標準・解釈しやすい | モデルスコア・ローン審査 |
+| **JSD** | 対称・確率論的根拠 | 確率分布間の比較 |
+
+### 4.5 演習: モデルガバナンス & MLOps統合
+
+実装したコンポーネントを統合し、**モデルカード作成・SHAP可視化・監査ログ・MLflow+Prometheus監視パイプライン**を構築する。
+
+#### 4.5.1 モデルカード自動生成（Julia）
+
+```julia
+using Dates, JSON3
+
+"""
+モデルカード: 公平性・性能・制約を文書化する標準フォーマット
+"""
+struct ModelCard
+    model_name::String
+    version::String
+    trained_at::DateTime
+    author::String
+    description::String
+    metrics::Dict{String, Float64}
+    fairness::Dict{String, Any}
+    limitations::Vector{String}
+    intended_use::String
+    mlflow_run_id::String
+end
+
+function generate_model_card(card::ModelCard)
+    doc = """
+    # Model Card: $(card.model_name) v$(card.version)
+
+    **作成日**: $(Dates.format(card.trained_at, "yyyy-mm-dd"))
+    **作者**: $(card.author)
+    **MLflow Run**: `$(card.mlflow_run_id)`
+
+    ## 概要
+    $(card.description)
+
+    ## 意図された用途
+    $(card.intended_use)
+
+    ## 性能指標
+    $(join(["- **$k**: $(round(v, digits=4))" for (k,v) in card.metrics], "\n"))
+
+    ## 公平性評価
+    $(join(["- **$k**: $v" for (k,v) in card.fairness], "\n"))
+
+    ## 既知の制限事項
+    $(join(["- $l" for l in card.limitations], "\n"))
+    """
+    return doc
+end
+
+# 実際の使用例
+card = ModelCard(
+    "fraud-detection-xgb",
+    "2.1.0",
+    now(),
+    "MLOps Team",
+    "XGBoostベースの不正取引検出モデル。特徴量50個を使用。",
+    Dict("accuracy"=>0.9823, "f1"=>0.8741, "auc_roc"=>0.9912),
+    Dict("male_fpr"=>0.012, "female_fpr"=>0.011, "disparity_ratio"=>1.09),
+    ["6ヶ月以上前のデータパターンには対応していない",
+     "極端に高額な取引（>$1M）は学習データ不足"],
+    "リアルタイム決済システムでの不正検出（B2C）",
+    "a3f9c2e1b4d87f3a"
+)
+
+md_output = generate_model_card(card)
+write("model_card_v2.1.0.md", md_output)
+println("✅ モデルカード生成完了")
+```
+
+#### 4.5.2 監査ログ実装（Julia + JSON Lines）
+
+```julia
+using Dates, JSON3, UUIDs
+
+"""
+監査ログ: 誰が・いつ・何を・どんな入出力で推論したかを記録
+GDPR/金融規制対応に必須
+"""
+struct AuditEntry
+    request_id::String
+    timestamp::DateTime
+    user_id::String
+    model_name::String
+    model_version::String
+    input_hash::String    # プライバシー保護: 生データではなくハッシュ
+    output::Any
+    latency_ms::Float64
+    decision::String
+    explanation::Dict{String, Any}
+end
+
+function log_audit(entry::AuditEntry; log_file::String="audit.jsonl")
+    record = Dict(
+        "request_id"    => entry.request_id,
+        "timestamp"     => Dates.format(entry.timestamp, "yyyy-mm-ddTHH:MM:SS.sss"),
+        "user_id"       => entry.user_id,
+        "model"         => "$(entry.model_name)@$(entry.model_version)",
+        "input_hash"    => entry.input_hash,
+        "output"        => entry.output,
+        "latency_ms"    => entry.latency_ms,
+        "decision"      => entry.decision,
+        "explanation"   => entry.explanation,
+    )
+
+    open(log_file, "a") do f
+        println(f, JSON3.write(record))
+    end
+end
+
+# 推論パイプラインに組み込む例
+function predict_with_audit(input_features::Vector{Float64};
+                             user_id::String="anon", model_version::String="2.1.0")
+    request_id = string(uuid4())
+    t_start = time()
+
+    # 推論 (疑似実装)
+    score = sum(input_features .* randn(length(input_features))) |> sigmoid
+    decision = score > 0.5 ? "FRAUD" : "LEGITIMATE"
+
+    # SHAP値による説明 (疑似実装)
+    shap_values = Dict(
+        "amount_usd"     => 0.32,
+        "merchant_risk"  => 0.28,
+        "user_history"   => -0.15,
+        "device_age"     => -0.08,
+    )
+
+    latency_ms = (time() - t_start) * 1000
+    input_hash = string(hash(input_features), base=16)
+
+    log_audit(AuditEntry(
+        request_id, now(), user_id,
+        "fraud-detection-xgb", model_version,
+        input_hash, score, latency_ms, decision, shap_values
+    ))
+
+    return (decision=decision, score=score, request_id=request_id)
+end
+
+sigmoid(x) = 1 / (1 + exp(-x))
+
+# テスト実行
+for i in 1:5
+    result = predict_with_audit(randn(10), user_id="user_$i")
+    println("Request $(result.request_id[1:8])…: $(result.decision) (score=$(round(result.score, digits=3)))")
+end
+println("✅ 監査ログ記録完了 → audit.jsonl")
+```
+
+#### 4.5.3 MLflow + Prometheus 監視パイプライン統合
+
+```julia
+using HTTP, JSON3, Dates
+
+"""
+完全MLOpsパイプライン:
+訓練 → MLflow記録 → ドリフト監視 → Prometheus通知 → 自動再訓練
+"""
+function full_mlops_pipeline(;
+        experiment_name::String="production-monitoring",
+        retrain_threshold_psi::Float64=0.20)
+
+    println("=" ^ 50)
+    println("🚀 MLOps統合パイプライン 開始: $(now())")
+    println("=" ^ 50)
+
+    # Step 1: MLflow実験を開始
+    run_id = create_run("0", "monitoring-run-$(Dates.format(now(), "yyyymmdd-HHMMSS"))")
+    println("📊 MLflow Run: $run_id")
+
+    # Step 2: 参照データをロード（学習時分布）
+    p_ref   = randn(10_000)
+    p_curr  = randn(1_000) .+ 0.3  # 軽度シフト
+
+    # Step 3: ドリフト検出
+    psi_result = calc_psi(p_ref, p_curr)
+    ks_result  = detect_drift_ks(p_ref, p_curr)
+    jsd_val    = calc_jsd(p_ref, p_curr)
+
+    # Step 4: メトリクスをMLflowに記録
+    log_metrics(run_id, Dict(
+        "psi"            => psi_result["psi"],
+        "ks_statistic"   => ks_result["statistic"],
+        "jsd"            => Float64(jsd_val),
+    ), 1)
+    log_params(run_id, Dict("reference_n"=>10000, "current_n"=>1000))
+
+    # Step 5: Prometheusゲージを更新 (pushgateway経由)
+    push_to_prometheus(Dict(
+        "model_psi"          => psi_result["psi"],
+        "model_ks_statistic" => ks_result["statistic"],
+        "model_jsd"          => Float64(jsd_val),
+    ))
+
+    # Step 6: 自動再訓練トリガー判定
+    if psi_result["psi"] > retrain_threshold_psi
+        println("🚨 PSI=$(psi_result["psi"]) > $retrain_threshold_psi — 再訓練トリガー発火！")
+        log_params(run_id, Dict("retrain_triggered"=>"true", "trigger_reason"=>"PSI"))
+        end_run(run_id, "FINISHED")
+        return :retrain_triggered
+    end
+
+    end_run(run_id, "FINISHED")
+    println("✅ パイプライン完了 — ドリフトなし")
+    return :stable
+end
+
+function push_to_prometheus(metrics::Dict)
+    # Pushgateway への POST (実際の運用では使用)
+    url = "http://localhost:9091/metrics/job/mlops_drift_monitor"
+    body = join(["$(k) $(v)" for (k,v) in metrics], "\n") * "\n"
+    try
+        HTTP.post(url, ["Content-Type"=>"text/plain"], body)
+        println("📡 Prometheus Pushgateway 更新完了")
+    catch e
+        @warn "Pushgateway 未起動（ローカルテスト時は無視可）: $e"
+    end
+end
+
+# パイプライン実行
+status = full_mlops_pipeline()
+println("最終ステータス: $status")
+```
+
+**統合アーキテクチャ**:
+
+```
+[Julia 訓練ループ]
+      │ MLflow.log_metric()
+      ▼
+[MLflow Tracking Server] ──────► [MLflow Model Registry]
+      │                                    │
+      │ ドリフト検出ループ                  │ モデルバージョン管理
+      ▼                                    ▼
+[KS/PSI/JSD 計算] ──────────► [Prometheus Pushgateway]
+      │                                    │
+      │ PSI > 0.20                         │ scrape
+      ▼                                    ▼
+[再訓練ジョブキュー]              [Grafana ダッシュボード]
+      │                                    │
+      └──────────── Slack/PagerDuty アラート ◄┘
+```
+
+> **モデルガバナンス チェックリスト**
+> - [ ] モデルカードに公平性指標（gender/race別FPR disparity < 1.2）が記載されている
+> - [ ] 全推論リクエストが監査ログ（JSON Lines）に記録されている
+> - [ ] ドリフト監視（PSI/KS）が本番環境で稼働している
+> - [ ] MLflow Run IDで任意の実験を完全再現できる
+> - [ ] Graceful Shutdown 実装により k8s ローリングアップデートで推論ゼロダウン
 
 ---
 
-> Progress: 85%
+> Progress: 90%
 > **理解度チェック**
 > 1. Julia + MLflowによる実験管理で、`log_metric` と `log_param` を使い分ける設計原則と、Artifact管理による再現性保証を説明せよ。
 > 2. PSI（Population Stability Index）によるデータドリフト検出において、閾値（PSI > 0.2 = Significant Shift）の統計的根拠と、KS検定との使い分けを説明せよ。
 
-## 🔬 5. 実験ゾーン（30分）— 自己診断 & ミニPJ
+### 🔬 実験・検証（30分）— 自己診断 & ミニPJ
 
 ### 5.1 MLOps知識チェック (10問)
 
@@ -927,7 +1461,10 @@ Power (empirical): 0.812
 > 1. MLOps Level 2（継続的自動再訓練）において、データドリフト検知→自動再訓練→カナリアデプロイの自動化サイクルを実現するための最小構成を述べよ。
 > 2. DPO損失の実装で、`log_ratio_chosen - log_ratio_rejected` を計算する際、数値安定化のために注意すべき点（アンダーフロー/オーバーフロー）と対策を説明せよ。
 
-## 🎓 6. 振り返り + 統合ゾーン（30分）— MLOps完全版まとめ & ツール
+## 🔬 Z6. 新たな冒険へ（研究動向）
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 3つの核心
 

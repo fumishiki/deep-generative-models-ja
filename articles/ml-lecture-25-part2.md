@@ -14,7 +14,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 > **第25回【前編】**: [第25回【前編】](https://zenn.dev/fumishiki/ml-lecture-25-part1)
 
 
-## 💻 4. 実装ゾーン（45分）— Julia因果推論フルスタック
+## 💻 Z5. 試練（実装）（45分）— Julia因果推論フルスタック
 
 ### 4.1 CausalInference.jl セットアップ
 
@@ -608,7 +608,7 @@ causal_inference_pipeline(ps_test_data, "propensity")
 > 1. 傾向スコアマッチング後のバランスチェックで標準化差（SMD）が0.1未満を目安にする理由は？
 > 2. 2SLS推定量の第一段階F統計量が10未満のとき「弱操作変数」と判定される根拠は？
 
-## 🔬 5. 実験ゾーン（30分）— 実データ因果推論チャレンジ
+### 🔬 実験・検証（30分）— 実データ因果推論チャレンジ
 
 ### 5.1 シミュレーションデータで全手法比較
 
@@ -1197,7 +1197,7 @@ sensitivity_analysis_gamma(ate_ps, se_ps, [1.0, 1.5, 2.0])
 
 ---
 
-## 🎓 6. 振り返りと発展ゾーン（30分）— まとめと最新研究動向
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 因果推論ファミリーツリー
 
@@ -1327,6 +1327,9 @@ mindmap
 ---
 
 
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
+
 ### 6.6 本講義のまとめ
 
 1. **相関 ≠ 因果**: Simpson's Paradox, 交絡, 選択バイアスの罠を理解
@@ -1401,33 +1404,33 @@ RDDは空間的不連続、DiDは時間的変化を利用する。
 
 ### 6.9 次のステップ
 
-**第26回: 推論最適化 & Production品質** では、因果推論で得た効果を**本番システムに組み込む**:
-
-- A/Bテスト基盤構築 (Elixir OTPでの並行テスト管理)
-- バンディットアルゴリズム（探索と活用のトレードオフ）
-- 因果推論×強化学習（Counterfactual Policy Evaluation）
-- Production品質: 量子化・蒸留・Speculative Decoding
-
-**第27回: 評価パイプライン** では、因果効果の統計的検定:
+**第26回: 評価パイプライン構築** では、因果効果の統計的検定:
 
 - FID/IS/LPIPS (生成モデル評価)
 - BootstrapによるCI推定
 - 多重検定補正 (Bonferroni, FDR)
 - 因果効果の可視化 (Forest Plot, Love Plot)
 
-### 6.7 次回予告: 推論最適化 & Production品質
+**第27回: 推論最適化 & Production品質** では、因果推論で得た効果を**本番システムに組み込む**:
 
-第26回では、因果推論で測定した効果を**本番システムで活かす**技術を学ぶ:
+- A/Bテスト基盤構築 (Elixir OTPでの並行テスト管理)
+- バンディットアルゴリズム（探索と活用のトレードオフ）
+- 因果推論×強化学習（Counterfactual Policy Evaluation）
+- Production品質: 量子化・蒸留・Speculative Decoding
 
-- **A/Bテスト基盤**: Elixir OTPでの並行テスト管理、メトリクス収集、SRM検出
-- **バンディット**: 探索と活用のトレードオフ、Thompson Sampling, UCB
-- **因果推論×RL**: Counterfactual Policy Evaluation, Off-Policy Evaluation
-- **推論最適化**: 量子化 (INT8/FP16), 蒸留, Speculative Decoding, KVキャッシュ最適化
-- **Production品質**: Rust推論エンジン, Elixir分散サービング, 監視・ロギング、フェイルセーフ
+### 6.7 次回予告: 評価パイプライン構築
 
-**キーワード**: Multi-Armed Bandit / Contextual Bandit / Thompson Sampling / Speculative Decoding / GGUF量子化 / KV-Cache / OTP Supervision
+第26回では、因果推論で測定した効果を**定量的に評価する**基盤を構築する:
 
-**目標**: 因果推論で得た知見を、実戦で使える高速・頑健なシステムに統合する。
+- **FID / IS / LPIPS**: 生成モデル品質の定量評価
+- **CMMD**: CLIP埋め込みによる最大平均誤差
+- **統計検定統合**: t検定 / Wilcoxon / Bootstrap CI
+- **自動ベンチマークパイプライン**: Criterion.rs + Julia統計
+- **Human Evaluation**: MOS / A/Bテスト設計
+
+**キーワード**: FID / IS / LPIPS / CMMD / FLD+ / Precision-Recall / Bootstrap / Criterion.rs
+
+**目標**: 因果推論で得た知見を、評価指標と統計検定で定量的に検証できるようにする。
 
 ---
 
@@ -1766,4 +1769,4 @@ end
 
 **無断利用が発覚した場合**、使用料の請求およびSNS等での公表を行う場合があります。
 
-**次回**: [第26回: 推論最適化 & Production品質](/your-next-article)
+**次回**: [第26回: 評価パイプライン構築](/your-next-article)

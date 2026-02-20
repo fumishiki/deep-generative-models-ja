@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 **→ 前編（理論編）**: [ml-lecture-40-part1](./ml-lecture-40-part1)
 
-## 💻 4. 実装ゾーン（45分）— Julia Consistency Model完全実装
+## 💻 Z5. 試練（実装）（45分）— Julia Consistency Model完全実装
 
 ### 4.1 Consistency Function実装
 
@@ -416,7 +416,7 @@ mod tests {
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— ベンチマーク & 品質分析
+### 🔬 実験・検証（30分）— ベンチマーク & 品質分析
 
 ### 5.1 CM vs DDIM vs DPM-Solver++ 速度比較
 
@@ -677,7 +677,7 @@ Consistency Models の理解度を確認するため、理論（Self-consistency
 
 ---
 
-## 🚀 6. 発展ゾーン（20分）— 最新研究動向 & 理論的展望
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 Consistency Models研究系譜 — 詳細年表
 
@@ -943,7 +943,7 @@ InstaFlowが示した道:
 2. **Parallel decoding**: Speculative decoding for CM
 3. **Hardware co-design**: CM-specific accelerator
 
-## 🎓 6. 振り返り + 統合ゾーン（30分）— まとめ & 次回予告
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 本講義の核心
 

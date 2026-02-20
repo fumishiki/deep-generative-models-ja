@@ -1,5 +1,5 @@
 ---
-title: "第18回: Attention × Mamba ハイブリッド: 30秒の驚き→数式修行→実装マスター"
+title: "第18回: Attention × Mamba ハイブリッド: 30秒の驚き→数式修行→実装マスター 【前編】理論編"
 emoji: "🔀"
 type: "tech"
 topics: ["machinelearning", "deeplearning", "attention", "mamba", "julia"]
@@ -828,7 +828,7 @@ LayerNormとResidual connectionが勾配消失を防ぐことを確認。
 
 **Boss Battle完了** — Jamba-style Hybrid Blockの完全実装・検証を達成した。
 
-## 3.10 最新のHybrid SSM Architectures (2024-2025)
+### 3.10 最新のHybrid SSM Architectures (2024-2025)
 
 2024年から2025年にかけて、ハイブリッドアーキテクチャの研究が加速している。Jamba以降、Zamba、Griffin、Samba、StripedHyenaなど多様なアプローチが登場し、SSMとAttentionの統合に関する理論的理解が深まった[@lieber2024jamba][@waleffe2024empirical]。
 

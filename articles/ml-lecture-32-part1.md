@@ -45,7 +45,7 @@ result = deploy_e2e_system("models/smolvlm2-256m.onnx", port=4000)
 **この裏にある数式**: 第19回から第31回で学んだ**全ての技術が統合されている**:
 
 $$
-\text{Production System} = \underbrace{\text{Train}_{\text{Julia}}}_{\text{第20,23回}} \xrightarrow{\text{Export}_{\text{ONNX}}} \underbrace{\text{Infer}_{\text{Rust}}}_{\text{第26回}} \xrightarrow{\text{Serve}_{\text{Elixir}}} \underbrace{\text{Feedback}}_{\text{第32回}} \circlearrowleft
+\text{Production System} = \underbrace{\text{Train}_{\text{Julia}}}_{\text{第20,23回}} \xrightarrow{\text{Export}_{\text{ONNX}}} \underbrace{\text{Infer}_{\text{Rust}}}_{\text{第27回}} \xrightarrow{\text{Serve}_{\text{Elixir}}} \underbrace{\text{Feedback}}_{\text{第32回}} \circlearrowleft
 $$
 
 フィードバックループの数式:
@@ -124,7 +124,7 @@ $$
 
 ここで $\mathbf{Y} \in \mathbb{R}^{n \times 2}$ は2次元埋め込み、$w_{ij}$ は高次元空間での近傍重み。
 
-### 1.4 PyTorchとの対応 — モデル訓練
+### 1.4 Human-in-the-loop — フィードバックと専門家レビュー
 
 
 
@@ -169,11 +169,11 @@ Course IIIは**理論を動くシステムに変える14回**だった。各講�
 | 第20回 | 実装パターン | VAE/GAN/Transformer実装の型 | ⚡🦀 |
 | 第21回 | データサイエンス | ETL/特徴量エンジニアリング/可視化 | ⚡ |
 | 第22回 | マルチモーダル | VLM/画像-テキスト統合 | ⚡🦀 |
-| 第23回 | Fine-tuning & PEFT | LoRA/QLoRA/AdaLoRA | ⚡🦀 |
+| 第23回 | Post-Training & Alignment | CPT/SFT/RLHF/LoRA | ⚡🦀 |
 | 第24回 | 統計学 | 仮説検定/A/Bテスト/信頼区間 | ⚡ |
 | 第25回 | 因果推論 | RCT/DID/IV/傾向スコア | ⚡ |
-| 第26回 | 推論最適化 | 量子化/蒸留/プルーニング | 🦀⚡ |
-| 第27回 | 評価パイプライン | FID/CLIP Score/Human Eval | ⚡ |
+| 第26回 | 評価パイプライン | FID/CMMD/LPIPS/統計検定 | ⚡🦀 |
+| 第27回 | 推論最適化 | 量子化/蒸留/Speculative Decoding | 🦀⚡ |
 | 第28回 | プロンプト | Few-shot/CoT/ReAct/Self-Consistency | ⚡ |
 | 第29回 | RAG | Retrieval/Rerank/Hybrid Search | ⚡🦀 |
 | 第30回 | エージェント | ReAct/Tool Use/Multi-Agent | 🔮⚡ |
@@ -227,7 +227,7 @@ $$
 | 項目 | 松尾研 (教科書レベル) | 本シリーズ Course III |
 |:-----|:---------------------|:---------------------|
 | **訓練** | PyTorchで訓練 | ⚡ Julia高速訓練 (第20回) |
-| **推論** | Pythonで推論 | 🦀 Rust高速推論 (第26回) |
+| **推論** | Pythonで推論 | 🦀 Rust高速推論 (第27回) |
 | **配信** | Flask/FastAPI | 🔮 Elixir分散配信 (第30回) |
 | **監視** | なし | Prometheus/Grafana (第31回) |
 | **フィードバック** | なし | **Active Learning + HITL** (第32回) |
@@ -235,7 +235,7 @@ $$
 
 **松尾研が教えないこと**:
 - 3言語統合 (🦀⚡🔮)
-- Production品質設計 (第26回の推論最適化, 第31回のMLOps)
+- Production品質設計 (第27回の推論最適化, 第31回のMLOps)
 - フィードバックループ (第32回)
 - E2Eシステム構築 (第32回)
 

@@ -10,7 +10,7 @@ time_estimate: "90 minutes"
 languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
-## 💻 4. 実装ゾーン（45分）— Julia/RustでFlowを書く
+## 💻 Z5. 試練（実装）（45分）— Julia/RustでFlowを書く
 
 **ゴール**: RealNVP/Glow/CNFの実装力を身につける。
 
@@ -347,7 +347,7 @@ impl RealNVP {
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— Flowの訓練と評価
+### 🔬 実験・検証（30分）— Flowの訓練と評価
 
 **ゴール**: 2D toy dataset / MNIST でFlowを訓練し、性能を評価する。
 
@@ -577,7 +577,7 @@ plot([Gray.(x_img_reshape[:, :, 1, i]) for i in 1:16]..., layout=(4, 4), size=(4
 > 2. NCSNとの比較で、NFの密度推定が低次元データで優れ高次元で劣る傾向がある理由を述べよ。
 >    - *ヒント*: Coupling Layer の「変数分割」が高次元でどういう情報損失を引き起こすか考えよ。
 
-## Zone 6: 🎓 振り返り + 統合ゾーン（30min）
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 > **Note:** **Zone 6の目的**: FlowとDiffusionの統一理論である**Flow Matching**を理解し、JKOスキームの数理基盤を学ぶ。2024-2026の最新研究動向を把握し、Normalizing Flowの未来を展望する。
 
@@ -882,7 +882,7 @@ $$
 
 ---
 
-## Zone 6: 🎓 振り返り + 統合ゾーン — FAQ & Next Steps (30min)
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 本講義で達成したこと
 

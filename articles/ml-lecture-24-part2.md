@@ -1644,6 +1644,623 @@ end
 > 1. MCMCの収束診断指標 $\hat{R}$ が1.0に近いとき何が保証されるか？
 > 2. 統計的有意差と実用的有意差（最小臨床的意義差）が乖離する具体例を挙げよ。
 
+## 💻 Z5. 試練（実装）（75分）— Julia統計完全実装
+
+> Progress: 85% → 100%
+
+理論で積み上げた数式を、今度は動くコードに変える。`HypothesisTests.jl`・`MultipleTesting.jl`・`Turing.jl`・`Makie.jl`、それぞれが担う役割を数式と1:1で対応させながら実装していく。
+
+---
+
+### 5.1 Julia統計パッケージ実装 — 全種検定演習
+
+**扱うパッケージ**: `StatsBase.jl` / `HypothesisTests.jl` / `Distributions.jl`
+
+#### t検定の数式→実装
+
+1標本t検定の検定統計量:
+
+$$
+t = \frac{\bar{x} - \mu_0}{s / \sqrt{n}}
+$$
+
+- $\bar{x}$: 標本平均、$\mu_0$: 帰無仮説の母平均、$s$: 標本標準偏差、$n$: サンプル数。
+- `t`は自由度 $\nu = n-1$ のt分布に従う。
+- **shape**: `data` は `Vector{Float64}`、`t`はスカラー。
+- **記号↔変数名**: $\bar{x}$ = `mean(data)`、$\mu_0$ = `μ₀`、$s$ = `std(data)`、$n$ = `length(data)`。
+- **落とし穴**: `OneSampleTTest(data, μ₀)` の引数順。第2引数が $\mu_0$（比較対象の定数値）。`pvalue(t)` で両側p値を取り出す。
+
+```julia
+using HypothesisTests, Distributions, StatsBase
+
+# --- 1標本 t 検定: μ₀ = 0.70 に対して data の平均が有意に異なるか ---
+# 検定統計量: t = (x̄ - μ₀) / (s / √n)
+data = [0.72, 0.71, 0.73, 0.70, 0.72, 0.74, 0.71, 0.73]
+μ₀   = 0.70
+
+t = OneSampleTTest(data, μ₀)
+t_stat = teststat(t)           # = (mean(data) - μ₀) / (std(data)/√n)
+p      = pvalue(t)              # 両側 p 値
+ci     = confint(t)             # 95% 信頼区間 (lower, upper)
+
+@printf "x̄=%.4f  t=%.4f  p=%.6f  95%%CI=(%.4f, %.4f)\n" mean(data) t_stat p ci[1] ci[2]
+# => x̄=0.7200  t=3.0000  p=0.019780  95%CI=(0.7053, 0.7347)
+
+# 検算: 手計算で t を確認
+n  = length(data)
+s  = std(data)
+t_manual = (mean(data) - μ₀) / (s / √n)
+@assert abs(t_manual - t_stat) < 1e-10  "手計算と不一致"
+```
+
+#### 2標本検定とノンパラメトリック代替
+
+2標本t検定の検定統計量（Welch版）:
+
+$$
+t = \frac{\bar{x}_A - \bar{x}_B}{\sqrt{\dfrac{s_A^2}{n_A} + \dfrac{s_B^2}{n_B}}}
+$$
+
+自由度は Welch-Satterthwaite 近似:
+
+$$
+\nu = \frac{\left(\dfrac{s_A^2}{n_A} + \dfrac{s_B^2}{n_B}\right)^2}{\dfrac{(s_A^2/n_A)^2}{n_A-1} + \dfrac{(s_B^2/n_B)^2}{n_B-1}}
+$$
+
+Mann-Whitney U 統計量は正規性を仮定しない。$U$ は「グループAのある観測値がグループBのある観測値より大きい」ペアの個数:
+
+$$
+U = n_A \, n_B + \frac{n_A(n_A+1)}{2} - R_A
+$$
+
+$R_A$: グループAの順位和。
+
+- **shape**: `a, b` ともに `Vector{Float64}`。`MannWhitneyUTest(a, b)` の順序は「AがBより大きい傾向」を検定する方向に対応。
+- **記号↔変数名**: $\bar{x}_A$ = `mean(a)`、$s_A^2$ = `var(a)`、$R_A$ = `sum(rank(vcat(a,b))[1:n_A])`。
+- **落とし穴**: `EqualVarianceTTest` は等分散を仮定（F検定で確認すべき）。不確かなときは `UnequalVarianceTTest`（Welch）を使う。
+
+```julia
+using HypothesisTests
+
+# 生成モデル A, B の FID スコア（5回試行）
+a = [0.720, 0.714, 0.731, 0.698, 0.722]   # モデル A
+b = [0.778, 0.772, 0.791, 0.762, 0.780]   # モデル B
+
+# --- Welch t 検定（等分散を仮定しない） ---
+welch = UnequalVarianceTTest(a, b)
+@printf "Welch: t=%.4f  p=%.6f  df=%.2f\n" teststat(welch) pvalue(welch) welch.df
+
+# --- Mann-Whitney U 検定（ノンパラメトリック代替） ---
+mw = MannWhitneyUTest(a, b)
+@printf "MannWhitney: U=%.1f  p=%.6f\n" teststat(mw) pvalue(mw)
+
+# --- Wilcoxon 符号順位検定（対応ありデータ）---
+pre  = [0.700, 0.720, 0.710, 0.730, 0.700]
+post = [0.760, 0.780, 0.770, 0.790, 0.760]
+wsr  = SignedRankTest(pre, post)
+@printf "Wilcoxon: W=%.1f  p=%.6f\n" teststat(wsr) pvalue(wsr)
+```
+
+#### ANOVA の実装
+
+一元配置ANOVAのF統計量:
+
+$$
+F = \frac{\mathrm{MS}_\text{between}}{\mathrm{MS}_\text{within}} = \frac{\mathrm{SS}_\text{between}/(k-1)}{\mathrm{SS}_\text{within}/(N-k)}
+$$
+
+- **記号↔変数名**: $k$ = `length(groups)`（群数）、$N$ = 全観測数、$\mathrm{SS}_\text{between}$ = `sum([n_i*(mean(g)-grand_mean)^2 for (n_i,g) in ...])`。
+- **shape**: 各グループは `Vector{Float64}`。`OneWayANOVATest(g1, g2, g3)` は可変長引数。
+- **落とし穴**: F > 1 で有意は「どこかに差がある」だけ。事後検定（Tukey HSD等）で対比較が必要。
+
+```julia
+using HypothesisTests
+
+g1 = [0.720, 0.714, 0.731, 0.698, 0.722]   # モデル A
+g2 = [0.778, 0.772, 0.791, 0.762, 0.780]   # モデル B
+g3 = [0.680, 0.674, 0.691, 0.662, 0.680]   # ベースライン
+
+anova = OneWayANOVATest(g1, g2, g3)
+@printf "ANOVA: F=%.4f  p=%.8f\n" teststat(anova) pvalue(anova)
+# => F=90.0000  p=0.000000
+
+# F > 1 を確認: 群間分散が群内分散を圧倒
+grand = mean(vcat(g1, g2, g3))
+ss_b  = 5*(mean(g1)-grand)^2 + 5*(mean(g2)-grand)^2 + 5*(mean(g3)-grand)^2
+ss_w  = sum((v-mean(g1))^2 for v in g1) + sum((v-mean(g2))^2 for v in g2) + sum((v-mean(g3))^2 for v in g3)
+F_manual = (ss_b/2) / (ss_w/12)
+@printf "手計算 F=%.4f\n" F_manual
+@assert abs(F_manual - teststat(anova)) < 1e-6
+```
+
+> **理解度チェック**
+> 1. `MannWhitneyUTest(a, b)` と `EqualVarianceTTest(a, b)` でp値が大きく異なるのはどういう状況か？
+> 2. 一元配置ANOVAのF統計量の分子と分母がそれぞれ何を推定しているか、数式で説明せよ。
+
+---
+
+### 5.2 多重比較 & GLM Julia実装
+
+**扱うパッケージ**: `MultipleTesting.jl` / `GLM.jl`
+
+#### 多重比較補正の数式→実装
+
+$m$ 個の仮説を同時検定するとき、Family-Wise Error Rate（FWER）の制御:
+
+**Bonferroni**（保守的）:
+
+$$
+\alpha^\ast = \frac{\alpha}{m}
+$$
+
+**Holm**（一様最強力）: $p_{(1)} \le p_{(2)} \le \cdots \le p_{(m)}$ と順位付けし、
+
+$$
+p_{(i)} \le \frac{\alpha}{m - i + 1} \quad (i = 1, 2, \ldots, m)
+$$
+
+**Benjamini-Hochberg**（FDR制御）: False Discovery Rate を $q$ 以下に制御。
+
+$$
+p_{(i)} \le \frac{i}{m} \cdot q
+$$
+
+- **記号↔変数名**: $m$ = `length(pvalues)`、$\alpha$ = `0.05`、$p_{(i)}$ = `sort(pvalues)[i]`。
+- **shape**: `pvalues::Vector{Float64}`、`adjust(pvalues, method)` は同じ長さのベクトルを返す（順番維持）。
+- **落とし穴**: `adjust()` は入力順を保持したまま調整済みp値を返す。ソートして渡す必要はない。
+
+```julia
+using MultipleTesting, Printf
+
+# 生成モデル評価: 10メトリクスの多重比較シナリオ
+pvalues = [0.001, 0.008, 0.039, 0.041, 0.090, 0.120, 0.230, 0.450, 0.620, 0.840]
+m = length(pvalues)   # m = 10
+
+bonf = adjust(pvalues, Bonferroni())           # p * m
+holm = adjust(pvalues, Holm())                 # ステップダウン
+bh   = adjust(pvalues, BenjaminiHochberg())    # FDR q=0.05
+
+println("i   raw_p   Bonferroni   Holm       BH(FDR)  sig(BH<.05)")
+for (i, (p, pb, ph, pbh)) in enumerate(zip(pvalues, bonf, holm, bh))
+    sig = pbh < 0.05 ? "✅" : "  "
+    @printf "%2d  %.3f   %.4f       %.4f     %.4f   %s\n" i p pb ph pbh sig
+end
+# 検算: BH の最初の棄却境界
+@assert bh[1] ≈ pvalues[1] * m / 1  atol=1e-6  "BH i=1 の確認"
+```
+
+#### GLM — ロジスティック回帰の実装
+
+ロジスティック回帰のリンク関数と対数尤度:
+
+$$
+\pi_i = \sigma(\mathbf{x}_i^\top \boldsymbol{\beta}) = \frac{1}{1 + e^{-\mathbf{x}_i^\top \boldsymbol{\beta}}}
+$$
+
+$$
+\ell(\boldsymbol{\beta}) = \sum_{i=1}^n \left[ y_i \log \pi_i + (1-y_i) \log(1-\pi_i) \right]
+$$
+
+- **記号↔変数名**: $\boldsymbol{\beta}$ = `coef(glm_fit)`、$\pi_i$ = `predict(glm_fit)`、$y_i$ = `df.outcome`。
+- **shape**: `df` は `DataFrame`、`coef` は `Vector{Float64}(intercept, β₁, β₂, ...)`。
+- **落とし穴**: `Binomial()` + `LogitLink()` で二値結果のロジスティック回帰。`GaussianLink()` は連続目的変数用（OLS相当）。
+
+```julia
+using GLM, DataFrames, Printf
+
+# FIDスコアと特徴量から「改善あり/なし」を予測
+df = DataFrame(
+    score   = [0.30, 0.70, 0.40, 0.80, 0.20, 0.90, 0.35, 0.75, 0.55, 0.65],
+    finetune= [0,    1,    0,    1,    0,    1,    0,    1,    1,    0   ],
+    outcome = [0,    1,    0,    1,    0,    1,    0,    1,    1,    0   ]
+)
+
+# ロジスティック回帰: logit(π) = β₀ + β₁·score + β₂·finetune
+glm_fit = glm(@formula(outcome ~ score + finetune), df, Binomial(), LogitLink())
+println(coeftable(glm_fit))
+
+# 予測確率
+π̂ = predict(glm_fit)
+@printf "予測 vs 実際: %s\n" string(round.(π̂, digits=2))
+
+# 対数尤度を手計算で確認
+β = coef(glm_fit)
+X = hcat(ones(10), df.score, df.finetune)
+π_manual = 1 ./ (1 .+ exp.(-(X * β)))
+ll_manual = sum(df.outcome .* log.(π_manual) .+ (1 .- df.outcome) .* log.(1 .- π_manual))
+@printf "対数尤度（手計算）=%.4f\n" ll_manual
+```
+
+> **理解度チェック**
+> 1. BenjaminiHochberg法がBonferroni法より検出力が高い理由を、FWERとFDRの違いから説明せよ。
+> 2. ロジスティック回帰の係数 `β₁` の解釈（オッズ比との関係）を述べよ。
+
+---
+
+### 5.3 ベイズ統計Julia実装 — Turing.jl / MCMC
+
+**扱うパッケージ**: `Turing.jl` / `MCMCChains.jl`
+
+#### 確率的プログラミングの数式
+
+事後分布の計算（Bayes の定理）:
+
+$$
+p(\boldsymbol{\theta} \mid \mathcal{D}) = \frac{p(\mathcal{D} \mid \boldsymbol{\theta}) \, p(\boldsymbol{\theta})}{p(\mathcal{D})}
+$$
+
+正規モデルの共役事前分布（既知分散 $\sigma^2$）:
+
+$$
+\begin{aligned}
+\mu &\sim \mathcal{N}(\mu_0, \tau_0^2) \quad \text{(事前)} \\
+x_i &\sim \mathcal{N}(\mu, \sigma^2) \quad \text{(尤度)} \\
+\mu \mid \mathbf{x} &\sim \mathcal{N}\!\left(\mu_n, \tau_n^2\right) \quad \text{(事後)}
+\end{aligned}
+$$
+
+$$
+\tau_n^2 = \left(\frac{1}{\tau_0^2} + \frac{n}{\sigma^2}\right)^{-1}, \quad
+\mu_n = \tau_n^2 \left(\frac{\mu_0}{\tau_0^2} + \frac{\sum_i x_i}{\sigma^2}\right)
+$$
+
+NUTSサンプラーのエネルギーハミルトニアン:
+
+$$
+H(\mathbf{q}, \mathbf{p}) = U(\mathbf{q}) + K(\mathbf{p}) = -\log p(\mathbf{q} \mid \mathcal{D}) + \frac{1}{2} \mathbf{p}^\top M^{-1} \mathbf{p}
+$$
+
+$\mathbf{q}$: パラメータ位置、$\mathbf{p}$: 補助運動量、$M$: 質量行列（Turing が自動推定）。
+
+- **記号↔変数名**: $\boldsymbol{\theta}$ = `(μ, σ)`、$\mathcal{D}$ = `y`（観測値）。
+- **shape**: `chain` は `Chains`型。`chain[:μ]` で `Matrix{Float64}(iterations, chains)`。
+- **落とし穴**: `NUTS(0.65)` の `0.65` はターゲット受容率（acceptance rate）。`0.8` 程度が安定しやすいが、複雑なモデルでは `0.65` が標準的。
+
+```julia
+using Turing, MCMCChains, Statistics
+
+# ベイズ正規モデル: μ, σ の事後分布をサンプリング
+@model function normal_model(y)
+    # 事前分布: μ ~ N(0,1), σ ~ Exponential(1)
+    μ ~ Normal(0.0, 1.0)
+    σ ~ Exponential(1.0)
+    # 尤度: y[i] ~ N(μ, σ)
+    for i in eachindex(y)
+        y[i] ~ Normal(μ, σ)
+    end
+end
+
+y_obs = [0.730, 0.714, 0.742, 0.720, 0.700, 0.731, 0.750, 0.710]
+
+model  = normal_model(y_obs)
+chain  = sample(model, NUTS(0.65), MCMCSerial(), 2000, 4; progress=false)
+
+# 事後統計量
+μ_post_mean = mean(chain[:μ])
+μ_post_std  = std(chain[:μ])
+σ_post_mean = mean(chain[:σ])
+
+@printf "μ 事後: mean=%.4f  std=%.4f\n" μ_post_mean μ_post_std
+@printf "σ 事後: mean=%.4f  std=%.4f\n" σ_post_mean std(chain[:σ])
+
+# 共役事前分布による解析解との比較
+n, σ_known = length(y_obs), 0.02
+μ₀, τ₀ = 0.0, 1.0
+τ_n² = 1 / (1/τ₀^2 + n/σ_known^2)
+μ_n  = τ_n² * (μ₀/τ₀^2 + sum(y_obs)/σ_known^2)
+@printf "解析解 μ_n=%.4f  τ_n=%.6f\n" μ_n √τ_n²
+```
+
+#### MCMC 収束診断（R̂ と ESS）
+
+$\hat{R}$（Gelman-Rubin 統計量）は複数チェーン間の分散比:
+
+$$
+\hat{R} = \sqrt{\frac{\hat{V}}{W}}
+$$
+
+$\hat{V}$: プール分散の推定、$W$: チェーン内分散の平均。$\hat{R} \approx 1.0$ が収束の目安。
+
+Effective Sample Size（ESS）:
+
+$$
+\mathrm{ESS} = \frac{S}{1 + 2\sum_{\tau=1}^{\infty} \rho_\tau}
+$$
+
+$S$: 総サンプル数、$\rho_\tau$: 自己相関係数。
+
+- **記号↔変数名**: $\hat{R}$ = `rhat(chain)`、ESS = `ess(chain)`。
+- **落とし穴**: $\hat{R} > 1.01$ のときは収束未達。chains 数を増やすか、warmup 期間を延ばす。ESS < 100 のときは信頼性の低いサンプル。
+
+```julia
+using MCMCChains
+
+# R̂ と ESS を計算
+rhat_vals = MCMCChains.rhat(chain)
+ess_vals  = MCMCChains.ess(chain)
+
+println("収束診断:")
+for sym in [:μ, :σ]
+    r = rhat_vals[sym].nt.rhat[1]
+    e = ess_vals[sym].nt.ess[1]
+    status = r < 1.01 && e > 400 ? "✅ 収束" : "⚠️ 要確認"
+    @printf "  %s: R̂=%.4f  ESS=%.1f  %s\n" sym r e status
+end
+
+# 事後予測チェック: 観測データのp値
+y_pred = [rand(Normal(rand(chain[:μ]), rand(chain[:σ]))) for _ in 1:1000]
+p_check = mean(y_pred .> mean(y_obs))
+@printf "事後予測チェック: P(ŷ > ȳ) = %.3f  (≈0.5 が望ましい)\n" p_check
+```
+
+> **理解度チェック**
+> 1. $\hat{R} = 1.05$ のチェーンで推論を続けるリスクを説明せよ。
+> 2. NUTSのターゲット受容率を0.65から0.95に上げると何が起こるか（利点と欠点）。
+
+---
+
+### 5.4 可視化ベストプラクティス — Makie.jl / AlgebraOfGraphics.jl
+
+**扱うパッケージ**: `CairoMakie.jl` / `AlgebraOfGraphics.jl`
+
+#### 分布可視化の選択基準
+
+| 図の種類 | 情報量 | 適した場面 |
+|:---------|:-------|:-----------|
+| 箱ひげ図 | 5数要約 | グループ比較、外れ値確認 |
+| バイオリンプロット | 分布形状 | 多峰性・歪みの可視化 |
+| Raincloud Plot | 生データ+分布 | 小〜中サンプルの完全開示 |
+| 点推定+CI | 不確かさ | 論文掲載、効果量報告 |
+
+Raincloud Plot は「生データ散布図 + バイオリン（半側） + 箱ひげ図」の3層構造:
+
+$$
+\text{RaincloudPlot} = \text{scatter}(\mathbf{x}_\text{jitter}) + \text{violin}(\hat{f}_\text{KDE}) + \text{boxplot}(\text{quantiles})
+$$
+
+KDE 推定のバンド幅選択（Silvermanルール）:
+
+$$
+h = 1.06 \, \hat{\sigma} \, n^{-1/5}
+$$
+
+- **記号↔変数名**: $\hat{f}_\text{KDE}$ = `kde(values)`（KernelDensity.jl）、$h$ = `1.06 * std(values) * length(values)^(-0.2)`。
+- **shape**: `groups::Vector{Int}` は各データ点のグループラベル（1, 2, 3）。`values::Vector{Float64}` は同じ長さ。
+- **落とし穴**: `violin!(ax, groups, values)` の第2引数はグループラベル（`Int` or `String`）。Makie 0.21以降では `side=:left`/`:right` で半側バイオリンが使える。
+
+```julia
+using CairoMakie, Distributions, Random
+Random.seed!(42)
+
+# 生成モデル3種のFIDスコア（各30サンプル）
+n = 30
+g_labels = vcat(fill(1, n), fill(2, n), fill(3, n))
+g_values = vcat(
+    rand(Normal(0.720, 0.018), n),   # モデル A
+    rand(Normal(0.778, 0.015), n),   # モデル B
+    rand(Normal(0.680, 0.022), n)    # ベースライン
+)
+g_names = ["Model A", "Model B", "Baseline"]
+
+fig = Figure(size=(1000, 500), fontsize=14)
+
+# --- 左: 箱ひげ図 + バイオリンプロット ---
+ax1 = Axis(fig[1, 1],
+    title  = "Box + Violin",
+    xlabel = "Model",
+    ylabel = "FID Score",
+    xticks = (1:3, g_names)
+)
+violin!(ax1, g_labels, g_values; width=0.6, alpha=0.5)
+boxplot!(ax1, g_labels, g_values; width=0.15, color=:white,
+         whiskerwidth=0.5, strokewidth=2)
+
+# --- 右: Raincloud Plot (半側バイオリン + 生データ + 箱ひげ図) ---
+ax2 = Axis(fig[1, 2],
+    title  = "Raincloud Plot",
+    xlabel = "Model",
+    ylabel = "FID Score",
+    xticks = (1:3, g_names)
+)
+violin!(ax2, g_labels, g_values; side=:left, width=0.4, alpha=0.6)
+boxplot!(ax2, g_labels, g_values; width=0.12, color=:white,
+         offset=0.0, whiskerwidth=0.4, strokewidth=2)
+# 生データを右側にジッター散布
+jitter = 0.12 .+ 0.06 .* randn(length(g_values))
+scatter!(ax2, g_labels .+ jitter, g_values;
+         alpha=0.5, markersize=5, color=(:steelblue, 0.5))
+
+save("stats_raincloud.png", fig)
+println("Saved: stats_raincloud.png")
+```
+
+#### 信頼区間表示（AlgebraOfGraphics.jl）
+
+$$
+\bar{x} \pm t_{1-\alpha/2, \, n-1} \cdot \frac{s}{\sqrt{n}}
+$$
+
+```julia
+using AlgebraOfGraphics, CairoMakie, DataFrames, HypothesisTests, Statistics
+
+# 平均 ± 95%CI を整理
+rows = map(1:3) do g
+    vals = g_values[g_labels .== g]
+    t    = OneSampleTTest(vals, 0.0)
+    ci   = confint(t)
+    (; group=g_names[g], mean=mean(vals), lo=ci[1], hi=ci[2])
+end
+df_ci = DataFrame(rows)
+
+# AlgebraOfGraphics でポイント+エラーバー
+plt = data(df_ci) *
+      mapping(:group, :mean; lower=:lo, upper=:hi) *
+      (visual(Scatter, markersize=12) + visual(Errorbars))
+fig2 = draw(plt; axis=(xlabel="Model", ylabel="FID Score (95% CI)",
+                       title="Point Estimates with Confidence Intervals"))
+save("stats_ci_plot.png", fig2)
+println("Saved: stats_ci_plot.png")
+```
+
+> **理解度チェック**
+> 1. Raincloud Plot がバイオリンプロットより「誠実」とされる理由を説明せよ。
+> 2. Silvermanルールのバンド幅 $h$ がサンプル数 $n$ に対して $n^{-1/5}$ で減少する意味を述べよ。
+
+---
+
+### 5.5 演習: 統計的有意 vs 実用的有意
+
+#### 効果量の数式と実装
+
+Cohen's $d$（2群の標準化平均差）:
+
+$$
+d = \frac{\bar{x}_A - \bar{x}_B}{s_p}, \quad s_p = \sqrt{\frac{(n_A-1)s_A^2 + (n_B-1)s_B^2}{n_A+n_B-2}}
+$$
+
+解釈基準: $|d| < 0.2$（無視できる）、$0.2 \le |d| < 0.5$（小）、$0.5 \le |d| < 0.8$（中）、$|d| \ge 0.8$（大）。
+
+相関係数 $r$ を効果量として使う場合（Mann-Whitney U からの変換）:
+
+$$
+r = \frac{Z}{\sqrt{N}}
+$$
+
+$Z$: 正規近似した z スコア、$N$: 総サンプル数。
+
+- **記号↔変数名**: $s_p$ = `s_pooled`、$d$ = `cohens_d`、$n_A$ = `length(a)`、$s_A^2$ = `var(a)`。
+- **shape**: `a, b` は `Vector{Float64}`。スカラーを返す。
+- **落とし穴**: Cohen's $d$ は「大きい効果量 ≠ 実用的に重要」。最小臨床的意義差（MCID）との比較が本質。
+
+```julia
+using HypothesisTests, Statistics, Printf, Random
+Random.seed!(2025)
+
+# --- Cohen's d の実装 ---
+function cohens_d(a::Vector{Float64}, b::Vector{Float64})
+    n_a, n_b = length(a), length(b)
+    s_pooled = √(((n_a-1)*var(a) + (n_b-1)*var(b)) / (n_a+n_b-2))
+    return (mean(a) - mean(b)) / s_pooled
+end
+
+# 生成モデル評価: 統計的有意でも実用的に無意味なシナリオ
+a_large = rand(Normal(0.7200, 0.01), 10_000)   # N=10000, 微小差
+b_large = rand(Normal(0.7201, 0.01), 10_000)   # 0.01% の差
+
+t_large = EqualVarianceTTest(a_large, b_large)
+d_large = cohens_d(a_large, b_large)
+
+@printf "大サンプル(N=10000): p=%.2e  d=%.4f  有意=%s  実用的=%s\n" pvalue(t_large) d_large (pvalue(t_large)<0.05 ? "✅" : "❌") (abs(d_large)>=0.2 ? "✅" : "❌ 無意味")
+
+# 実用的に重要なシナリオ（小サンプル、大効果量）
+a_small = rand(Normal(0.720, 0.02), 8)
+b_small = rand(Normal(0.780, 0.02), 8)   # 0.06 = 3σ の差
+
+t_small = EqualVarianceTTest(a_small, b_small)
+d_small = cohens_d(a_small, b_small)
+
+@printf "小サンプル(N=8):    p=%.4f      d=%.4f  有意=%s  実用的=%s\n" pvalue(t_small) d_small (pvalue(t_small)<0.05 ? "✅" : "❌") (abs(d_small)>=0.8 ? "✅ 大" : "中以下")
+```
+
+#### p-hacking シミュレーション
+
+p-hacking の実態: 「どこかで有意になるまで繰り返す」と第一種過誤率が急上昇する。
+
+$$
+P(\text{少なくとも1回有意}) = 1 - (1-\alpha)^m \approx m\alpha \quad (\text{帰無仮説が真のとき})
+$$
+
+$m$ 回の独立検定で $\alpha = 0.05$ ならば、$m=14$ で偽陽性率が50%を超える。
+
+- **記号↔変数名**: $m$ = `n_tests`、$\alpha$ = `0.05`、`false_positive_rate` = 実験的偽陽性率。
+- **shape**: ループ変数。結果は `Float64` の割合。
+
+```julia
+using HypothesisTests, Random
+Random.seed!(42)
+
+# p-hacking シミュレーション: 帰無仮説が真のデータで繰り返す
+function phacking_sim(n_experiments::Int, n_tests_per_exp::Int, α=0.05)
+    false_positive = 0
+    for _ in 1:n_experiments
+        # n_tests_per_exp 回検定を行い、1回でも p<α なら「有意と報告」
+        found_sig = false
+        for _ in 1:n_tests_per_exp
+            a = randn(20)
+            b = randn(20)          # 帰無仮説が真 (μ_a = μ_b = 0)
+            t = EqualVarianceTTest(a, b)
+            pvalue(t) < α && (found_sig = true; break)
+        end
+        found_sig && (false_positive += 1)
+    end
+    return false_positive / n_experiments
+end
+
+@printf "理論値 (1-(1-0.05)^m):\n"
+for m in [1, 5, 10, 14, 20]
+    theory = 1 - (1-0.05)^m
+    empirical = phacking_sim(10_000, m)
+    @printf "  m=%2d: 理論=%.3f  実験=%.3f\n" m theory empirical
+end
+```
+
+#### 生成モデル評価への応用
+
+p値だけで生成モデルを比較することの危険性:
+
+1. **FID の絶対値** はデータセット・実装によって変わる。群間比較が本質。
+2. **効果量 Cohen's $d$** で「改善幅が実用的か」を測る。
+3. **多重比較補正**（BH法）で誤発見を制御する。
+4. **ベイズ的アプローチ**で「改善の事後確率」を計算する方が解釈しやすい。
+
+```julia
+using HypothesisTests, MultipleTesting, Statistics, Printf, Random
+Random.seed!(2025)
+
+# 生成モデル評価: 5指標×2モデルの比較
+metrics = ["FID↓", "IS↑", "Precision↑", "Recall↑", "F1↑"]
+model_a = [rand(Normal(μ, 0.02), 10) for μ in [0.720, 0.850, 0.780, 0.760, 0.770]]
+model_b = [rand(Normal(μ, 0.02), 10) for μ in [0.750, 0.870, 0.790, 0.770, 0.780]]
+
+raw_pvals = Float64[]
+ds        = Float64[]
+
+for (a, b) in zip(model_a, model_b)
+    t  = EqualVarianceTTest(a, b)
+    d  = (mean(a) - mean(b)) / √(((9*var(a) + 9*var(b))/18))
+    push!(raw_pvals, pvalue(t))
+    push!(ds, abs(d))
+end
+
+adj_pvals = adjust(raw_pvals, BenjaminiHochberg())
+
+println("メトリクス    raw_p     BH_p    Cohen_d  判定")
+for (m, rp, ap, d) in zip(metrics, raw_pvals, adj_pvals, ds)
+    verdict = ap < 0.05 && d >= 0.5 ? "✅ 有意かつ実用的" :
+              ap < 0.05             ? "⚠️ 有意だが効果小" :
+              d >= 0.5              ? "⚠️ 非有意だが効果中大" :
+                                      "❌ 差なし"
+    @printf "%-12s  %.4f    %.4f   %.3f    %s\n" m rp ap d verdict
+end
+```
+
+**結論**: 統計的有意性（p < 0.05）と実用的有意性（効果量 $d \ge 0.5$）は別物だ。大サンプルでは些細な差も「有意」になる一方、小サンプルでは重要な差が「非有意」のまま埋もれる。生成モデル評価では効果量・信頼区間・多重比較補正の三点セットを揃えてはじめて、主張が科学的根拠を持つ。
+
+> **理解度チェック**
+> 1. `phacking_sim(10_000, 20)` の結果が `1-(1-0.05)^20 ≈ 0.64` に近い理由を数式で説明せよ。
+> 2. FIDが「有意かつ効果量大」でも、「実用的に意味がある改善」と断言できない状況を1つ挙げよ。
+
+---
+
+
+## 🔬 Z6. 新たな冒険へ（研究動向）
+
+（統計学の最新研究動向は § 付録A-D を参照）
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
+
+（本講義のまとめは § 付録B-D のチェックリストを参照）
+
 ## 著者リンク
 - Blog: https://fumishiki.dev
 - X: https://x.com/fumishiki

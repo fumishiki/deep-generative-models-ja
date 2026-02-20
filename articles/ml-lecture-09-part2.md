@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > **📖 この記事は後編（実装編）です** 理論編は [【前編】第9回](/articles/ml-lecture-09-part1) をご覧ください。
 
-## 💻 4. 実装ゾーン（45分）— Python の限界と Rust の力
+## 💻 Z5. 試練（実装）（45分）— Python の限界と Rust の力
 
 ### 4.1 Python による ELBO 計算
 
@@ -790,7 +790,7 @@ pub fn elbo_parallel<'a>(
 > 1. PythonのGILとメモリコピーがELBO計算のボトルネックになる理由を、`np.random.randn(batch, latent)`の各イテレーションで発生するアロケーションを踏まえて説明せよ。
 > 2. Rustの「所有権（Ownership）」と「ゼロコピー（`&[f64]`スライス）」が、PythonのNumPyと比較して50x高速化を達成できる理由を述べよ。
 
-## 🔬 5. 実験ゾーン（30分）— 理解度チェック
+### 🔬 実験・検証（30分）— 理解度チェック
 
 ### 5.1 基礎問題
 
@@ -1234,7 +1234,7 @@ pub fn elbo_simd(
 
 ---
 
-## 🚀 6. 振り返りゾーン（30分）— まとめと次回予告
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 最新研究トレンド (2024-2026)
 
@@ -1347,14 +1347,14 @@ $$\mathcal{L} = \mathbb{E}_{q(z|x_{\text{img}}, x_{\text{text}})}\left[\log p(x_
 
 ### 6.4 次のステップ
 
-1. **Lecture 10: Normalizing Flows** — 可逆変換で厳密な対数尤度計算
-2. **Lecture 11: Diffusion Models** — ノイズ除去で世界最高峰の生成品質
-3. **Lecture 12: Score-Based Models** — スコアマッチングの数理
+1. **第10回: VAE (Variational Autoencoder)** — 基礎から離散表現（VQ-VAE/FSQ）まで
+2. **第11回: 最適輸送理論** — Wasserstein距離でGAN訓練を安定化
+3. **第12回: GAN: 基礎からStyleGANまで** — 敵対的学習の数理と最先端アーキテクチャ
 
 **Course I との接続**:
-- Lecture 5 (確率分布): Flow の Jacobian 行列式
-- Lecture 6 (情報理論): Diffusion の Rate-Distortion
-- Lecture 8 (最適化): Score Matching の統計的推定理論
+- 第5回 (確率分布): ELBO の KL 正則化
+- 第6回 (情報理論): 変分下界の情報理論的解釈
+- 第8回 (最適化): 確率的勾配降下法による変分パラメータ更新
 
 > **Note:** **進捗: 95%完了** — 展望完了！次は総まとめへ。
 
@@ -1385,6 +1385,9 @@ $$\mathcal{L} = \mathbb{E}_{q(z|x_{\text{img}}, x_{\text{text}})}\left[\log p(x_
 - **Python の限界**: プロトタイピングは速いが、本番には不向き
 - **Rust の力**: 安全性とパフォーマンスの両立
 - **言語移行の戦略**: Python で設計 → Rust で本実装
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.6 FAQ
 
@@ -1444,20 +1447,18 @@ $\log p(x)$ のこと。ベイズ統計では周辺尤度を "evidence" と呼�
 2. **Programming Rust** (O'Reilly, 2021) — 実践的パターン
 3. **ndarray Documentation** — 科学計算ライブラリ
 
-### 6.8 次回予告: Lecture 10 — Normalizing Flows
+### 6.8 次回予告: 第10回 — VAE: 基礎から離散表現まで
 
-**テーマ**: 可逆変換で厳密な対数尤度を計算する
+**テーマ**: 変分推論を深化させ、連続潜在空間から離散トークン空間へ
 
 **内容**:
-- 変数変換公式と Jacobian 行列式
-- Coupling Flows (RealNVP, Glow)
-- Autoregressive Flows (MAF, IAF)
-- Continuous Normalizing Flows (Neural ODE)
-- Rust 実装: 自動微分と Jacobian 計算
+- VAE の完全導出（ELBO・再パラメータ化トリック・KL解析解）
+- β-VAE / FactorVAE — Disentanglement の数理
+- VQ-VAE — 離散潜在変数と Straight-Through Estimator
+- FSQ (Finite Scalar Quantization) — シンプルで高性能な量子化
+- Julia 実装: Flux.jl で VAE を構築し、MNIST で潜在空間可視化
 
-**Boss Battle**: Course I Lecture 5 (確率分布) の変数変換定理を、深層学習で実装する。
-
-**言語移行**: Python (Pyro) → Rust (jax-rs 経由の勾配計算)
+**Boss Battle**: 変分推論（第9回）の ELBO を、ニューラルネットワークでスケーラブルに解く。
 
 ### 6.9 謝辞
 

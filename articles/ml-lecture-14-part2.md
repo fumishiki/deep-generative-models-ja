@@ -11,7 +11,7 @@ languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 
-## 💻 4. 実装ゾーン（45分）— Julia完全実装 + Rust推論
+## 💻 Z5. 試練（実装）（45分）— Julia完全実装 + Rust推論
 
 ### 4.1 環境セットアップ
 
@@ -405,7 +405,7 @@ end
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— Micro-GPT訓練とScaling観察
+### 🔬 実験・検証（30分）— Micro-GPT訓練とScaling観察
 
 ### 5.1 Tiny Shakespeare訓練
 
@@ -595,7 +595,7 @@ Input: "moon" → Output: "noom"
 > 1. $a + b \mod 97$ の各記号の意味と、この式が表す操作を説明してください。
 > 2. このゾーンで学んだ手法の直感的な意味と、なぜこの定式化が必要なのかを説明してください。
 
-## 🎓 6. 振り返りゾーン（30分）— まとめ・発展・問い
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 GPT vs BERT vs T5 — アーキテクチャ比較
 
@@ -791,6 +791,9 @@ $$
 > **Note:** **進捗: 100% 完了** GPT/BERT/T5の比較、Scaling Laws、Emergent Abilities、Differential Transformerまで — Attention研究の全体像を把握した。第14回完走！
 
 ---
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.7 今回の学習内容
 

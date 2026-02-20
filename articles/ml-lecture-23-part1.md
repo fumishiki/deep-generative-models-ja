@@ -1,5 +1,5 @@
 ---
-title: "第23回: Fine-tuning & PEFT: 30秒の驚き→数式修行→実装マスター【前編】理論編"
+title: "第23回: Post-Training & Alignment（SFT/RLHF/CPT + PEFT）: 30秒の驚き→数式修行→実装マスター【前編】理論編"
 slug: "ml-lecture-23-part1"
 emoji: "🔧"
 type: "tech"
@@ -11,7 +11,7 @@ languages: ["Julia", "Rust", "Elixir"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 
-# 第23回: Fine-tuning & PEFT — 全パラメータ更新は本当に必要か？
+# 第23回: Post-Training & Alignment（SFT/RLHF/CPT + PEFT） — 微調整は「手法選び」ではなく「学習段階設計」では？
 
 > **65Bパラメータのモデルを1枚のGPUで訓練。QLoRAが示したのは「最適化すべきは全パラメータではなく、低ランク部分空間」という洞察だった。**
 
@@ -323,13 +323,475 @@ LoRAの比喩: **汎用工具の刃を研ぎ直すのではなく、付け替え
 
 ---
 
-## 📐 3. 数式修行ゾーン（60分）— LoRA/QLoRA/DreamBooth/Adapterの完全導出
+## 📐 3. 数式修行ゾーン（60分）— Post-Training完全理論: CPT→SFT→RLHF→PEFT
 
-**ゴール**: LoRA, QLoRA, DreamBooth, Adapter系手法の数式を一行ずつ導出し、完全に理解する。
+**ゴール**: CPT/SFT/RLHFの損失関数を一行ずつ導出し、その後LoRA/QLoRA/DreamBooth/Adapterの数式を完全理解する。
 
-### 3.1 LoRA理論 — 低ランク適応の数学
+### 3.0 Post-Training全体像 — 学習段階設計
 
-#### 3.1.1 動機: Full Fine-tuningのメモリ問題
+事前学習済みモデルを実用目的に適応させる工程全体を「Post-Training」と呼ぶ。単なるFine-tuningではなく、**CPT → SFT → RLHF** という学習段階の連鎖設計だ。
+
+```mermaid
+graph LR
+    A["🌐 Pre-Training<br/>次トークン予測<br/>数TBコーパス"] --> B["📚 CPT<br/>継続事前学習<br/>ドメイン適応"]
+    B --> C["💬 SFT<br/>教師あり整列<br/>Instruction Tuning"]
+    C --> D["🎯 RLHF<br/>選好整列<br/>PPO / DPO"]
+    D --> E["⚡ PEFT適用<br/>LoRA / QLoRA<br/>各ステージに挿入可"]
+    style A fill:#e3f2fd
+    style B fill:#f3e5f5
+    style C fill:#e8f5e9
+    style D fill:#fff3e0
+    style E fill:#fce4ec
+```
+
+各ステージの役割と損失:
+
+| ステージ | 目的 | 典型損失関数の形 | データ規模 |
+|:---------|:-----|:--------------|:---------|
+| **Pre-Training** | 汎用言語表現の獲得 | 言語モデル損失 | 数TB |
+| **CPT** | ドメイン特化知識の注入 | 同上（ドメインコーパスで継続） | 数GB〜数TB |
+| **SFT** | 指示追従能力の付与 | 条件付き交差エントロピー | 数千〜数万例 |
+| **RLHF** | 人間の選好への整列 | 報酬最大化 − KL制約 | 数万比較ペア |
+| **PEFT** | 計算効率化（各ステージに適用可） | 上記のいずれか | 上記に同じ |
+
+#### 3.0.1 Catastrophic Forgetting — 逐次学習の呪い
+
+逐次学習の核心的問題。新タスクを学ぶとき、以前の知識が破壊される [^3]。
+
+$$
+\theta^* = \arg\min_\theta \mathcal{L}_\text{new}(\theta) \quad \Rightarrow \quad \mathcal{L}_\text{old}(\theta^*) \gg \mathcal{L}_\text{old}(\theta_0)
+$$
+
+新タスクの勾配 $\nabla_\theta \mathcal{L}_\text{new}$ が、旧知識の勾配方向と干渉する。
+
+緩和策の3類型:
+
+| 手法 | 原理 | 代表 |
+|:-----|:-----|:-----|
+| **正則化** | 重要パラメータの変化にペナルティ | EWC [^3] |
+| **リプレイ** | 旧データを混合して継続訓練 | Experience Replay |
+| **アーキテクチャ分離** | 旧知識と新知識を別パラメータに | LoRA（$W_0$ frozen） |
+
+EWC (Elastic Weight Consolidation) の損失:
+
+$$
+\mathcal{L}_\text{EWC}(\theta) = \mathcal{L}_\text{new}(\theta) + \frac{\lambda}{2} \sum_i F_i (\theta_i - \theta_{0,i})^2
+$$
+
+$F_i = \mathbb{E}\left[\left(\frac{\partial \log p_\theta(x)}{\partial \theta_i}\right)^2\right]$: Fisher情報行列の対角要素（パラメータ $i$ の重要度）。重要なパラメータ（$F_i$ が大きい）ほど移動コストが高い。
+
+#### 3.0.2 Full Fine-tuning vs PEFT の位置づけ
+
+$$
+\begin{aligned}
+\text{Full FT:} & \quad \theta_\text{new} = \arg\min_\theta \mathcal{L}(\theta), \quad \theta_\text{init} = \theta_\text{pretrained} \\
+\text{PEFT:} & \quad \phi^* = \arg\min_\phi \mathcal{L}(\theta_0 + \Delta\theta(\phi)), \quad |\phi| \ll |\theta_0|
+\end{aligned}
+$$
+
+PEFTの本質: 固定された $\theta_0$ の周辺で低次元の $\Delta\theta(\phi)$ を探索する。この $\Delta\theta$ の構造がLoRA（低ランク行列）、Adapter（ボトルネック非線形）、Prefix（プレフィックスベクトル）で異なる。
+
+#### 3.0.3 Transfer Learningの3パラダイム
+
+**パラダイム1: Feature Extraction**（$\theta_0$ 固定）
+
+$$
+y = g_\psi(f_{\theta_0}(x)), \quad \text{train only } \psi
+$$
+
+**パラダイム2: Full Fine-tuning**（全パラメータ更新）
+
+$$
+\theta^* = \theta_0 - \eta \nabla_\theta \mathcal{L}_\text{task}(\theta_0)
+$$
+
+**パラダイム3: PEFT**（2022年以降の主流）
+
+$$
+\phi^* = \arg\min_\phi \mathcal{L}_\text{task}\!\left(\theta_0 + \Delta\theta(\phi)\right), \quad |\phi| / |\theta_0| \approx 0.01\text{--}1\%
+$$
+
+LoRAでは $\phi = \{B, A\}$、$\Delta\theta = \frac{\alpha}{r} BA$。3パラダイムの中でPEFTだけが「$W_0$による事前学習知識を保護しつつ適応する」特性を持つ。
+
+---
+
+### 3.1 CPT理論 — 継続事前学習
+
+#### 3.1.1 定義と動機
+
+**Continued Pre-Training (CPT)** または **Domain-Adaptive Pretraining (DAPT)** [^29] とは、汎用事前学習済みモデルをドメイン特化コーパスで追加訓練する手法だ。
+
+医療・法律・コードなど、特定ドメインの文書は汎用コーパス中に少量しか含まれない。事前学習モデルはその語彙・スタイル・知識を十分に内在化していない。CPTはこのギャップを埋める。
+
+#### 3.1.2 CPT損失の完全導出
+
+CPTの損失はLanguage Modelingと同形だが、**ドメインコーパス $\mathcal{D}_\text{domain}$ 上で計算**する点が本質的な差異だ。
+
+ドメインコーパス: $\mathcal{D}_\text{domain} = \{x^{(1)}, x^{(2)}, \dots, x^{(N)}\}$（各 $x^{(i)}$ はトークン列）。
+
+**Step 1: 単一系列の対数尤度**
+
+系列 $x = (x_1, x_2, \dots, x_T)$ の確率を自己回帰的に分解:
+
+$$
+p_\theta(x) = \prod_{t=1}^T p_\theta(x_t \mid x_1, \dots, x_{t-1}) = \prod_{t=1}^T p_\theta(x_t \mid x_{<t})
+$$
+
+対数を取る:
+
+$$
+\log p_\theta(x) = \sum_{t=1}^T \log p_\theta(x_t \mid x_{<t})
+$$
+
+**Step 2: 負対数尤度（損失）**
+
+最大化問題を最小化問題に変換:
+
+$$
+\mathcal{L}_\text{CPT}(\theta) = -\frac{1}{T} \sum_{t=1}^T \log p_\theta(x_t \mid x_{<t})
+$$
+
+$p_\theta(x_t \mid x_{<t})$ はsoftmax確率: $p_\theta(x_t \mid x_{<t}) = \frac{\exp(h_\theta(x_{<t})_{x_t})}{\sum_{v} \exp(h_\theta(x_{<t})_v)}$。
+
+**Step 3: コーパス全体への拡張**
+
+$$
+\mathcal{L}_\text{CPT}(\theta) = -\frac{1}{|\mathcal{D}_\text{domain}|} \sum_{x \in \mathcal{D}_\text{domain}} \frac{1}{|x|} \sum_{t=1}^{|x|} \log p_\theta(x_t \mid x_{<t})
+$$
+
+**勾配の形**:
+
+$$
+\nabla_\theta \mathcal{L}_\text{CPT} = -\frac{1}{|\mathcal{D}|} \sum_{x, t} \nabla_\theta \log p_\theta(x_t \mid x_{<t})
+$$
+
+これはsoftmaxの勾配: $\nabla_\theta \log p = \nabla_\theta h_\theta - \mathbb{E}_{v \sim p}[\nabla_\theta h_\theta^{(v)}]$。正解トークンを強化し、他トークンを抑制する。
+
+#### 3.1.3 データ混合戦略 — ドメイン比率 $\alpha$ の選択理論
+
+CPTでは汎用データとドメインデータを混合することが多い。混合比率の選択が性能を左右する。
+
+**混合損失**:
+
+$$
+\mathcal{L}_\text{mix}(\theta) = \alpha \mathcal{L}_\text{domain}(\theta) + (1 - \alpha) \mathcal{L}_\text{general}(\theta), \quad \alpha \in [0, 1]
+$$
+
+**$\alpha$ の選択理論** [^29]:
+
+$$
+\alpha^* = \arg\min_\alpha \left[ \mathcal{L}_\text{domain}^\text{val}(\theta^*(\alpha)) + \lambda_\text{cf} \cdot \Delta_\text{forgetting}(\alpha) \right]
+$$
+
+$\Delta_\text{forgetting}(\alpha) = \mathcal{L}_\text{general}^\text{val}(\theta^*(\alpha)) - \mathcal{L}_\text{general}^\text{val}(\theta_0)$: 汎用性能の低下量。
+
+実験的ガイドライン [^29]:
+
+| ドメインデータ量 | 推奨 $\alpha$ | 根拠 |
+|:--------------|:------------|:-----|
+| < 1GB | 0.1〜0.3 | 少量のため過学習リスク |
+| 1〜10GB | 0.3〜0.5 | バランス点 |
+| > 10GB | 0.5〜0.8 | 十分な量、ドメイン優先 |
+
+#### 3.1.4 カリキュラム設計 — 難易度スケジューリング
+
+カリキュラム学習 [^30]: 易→難の順に提示すると収束が速い。
+
+$$
+p_t(x) \propto \exp\!\left(-\beta_t \cdot \text{difficulty}(x)\right), \quad \beta_t \text{ increases over training}
+$$
+
+$\text{difficulty}(x)$: 系列 $x$ の難易度指標（perplexityや文長など）。
+
+初期 ($\beta_t$ 小): 全データを均等にサンプリング。後期 ($\beta_t$ 大): 難しいサンプル重視。
+
+**数値検証**: 初期perplexityが200のモデルで、難易度スケジューリングありの場合のfinal perplexityは典型的に5〜10%低くなる（ドメイン依存）。
+
+#### 3.1.5 破滅的忘却と緩和 — EWC応用
+
+CPTで最も深刻な問題は、汎用能力の喪失だ。
+
+$$
+\text{forgetting} = \frac{\mathcal{L}_\text{general}(\theta_\text{CPT}) - \mathcal{L}_\text{general}(\theta_0)}{\mathcal{L}_\text{general}(\theta_0)} \times 100\%
+$$
+
+典型的には $\alpha = 1.0$ (ドメインのみ) で5〜20%の忘却が発生する。
+
+**緩和手法 1: Replay（データ混合、最も実用的）**
+
+$$
+\mathcal{L} = \alpha \mathcal{L}_\text{domain} + (1-\alpha) \mathcal{L}_\text{general}, \quad \alpha = 0.3\text{--}0.5
+$$
+
+**緩和手法 2: EWC**
+
+$$
+\mathcal{L} = \mathcal{L}_\text{domain}(\theta) + \frac{\lambda}{2} \sum_i F_i (\theta_i - \theta_{0,i})^2
+$$
+
+Fisherを計算するコスト（$O(|\theta|^2)$）が課題。実用上はパラメータをブロック対角と近似。
+
+**緩和手法 3: LoRA-CPT（アーキテクチャ分離）**
+
+$W_0$ を凍結し、CPTもLoRAで行う。汎用知識（$W_0$）を完全保護。
+
+---
+
+### 3.2 SFT理論 — 教師あり整列
+
+#### 3.2.1 Instruction Tuningの定義と歴史
+
+**Supervised Fine-Tuning (SFT)** = **Instruction Tuning** とは、事前学習済みモデルに「指示（instruction）→応答（response）」のペアを学習させ、人間の意図に沿った出力を可能にする手法だ。
+
+InstructGPT [^10] (Ouyang et al., 2022) はRLHFのSFTステージとして確立。その後Alpaca、Dolly、ShareGPT等の公開データセットにより広く普及した。
+
+#### 3.2.2 Chat Template — ロール構造の定式化
+
+現代のSFTデータは**system / user / assistant**の3ロール構造を持つ:
+
+```
+<|system|>
+You are a helpful assistant.
+<|user|>
+フランスの首都はどこですか？
+<|assistant|>
+フランスの首都はパリです。
+```
+
+数学的には、入力系列 $x$ をテンプレートで構造化:
+
+$$
+x = [\underbrace{s_1, \dots, s_{|s|}}_{\text{system}}, \underbrace{u_1, \dots, u_{|u|}}_{\text{user}}, \underbrace{a_1, \dots, a_{|a|}}_{\text{assistant}}]
+$$
+
+SFTでは**assistant部分のトークンのみ**に損失を計算する（system/userは正解ラベルとして扱わない）。
+
+#### 3.2.3 SFT損失の完全導出
+
+入力（instruction） $x$、出力（response） $y = (y_1, \dots, y_T)$ のペア $(x, y) \in \mathcal{D}_\text{SFT}$ に対して:
+
+**Step 1: 条件付き自己回帰分解**
+
+$$
+p_\theta(y \mid x) = \prod_{t=1}^T p_\theta(y_t \mid x, y_1, \dots, y_{t-1}) = \prod_{t=1}^T p_\theta(y_t \mid x, y_{<t})
+$$
+
+**Step 2: 負の条件付き対数尤度**
+
+$$
+\mathcal{L}_\text{SFT}(\theta) = -\frac{1}{T} \sum_{t=1}^T \log p_\theta(y_t \mid x, y_{<t})
+$$
+
+**Step 3: データセット全体**
+
+$$
+\mathcal{L}_\text{SFT}(\theta) = -\frac{1}{|\mathcal{D}_\text{SFT}|} \sum_{(x, y) \in \mathcal{D}_\text{SFT}} \frac{1}{|y|} \sum_{t=1}^{|y|} \log p_\theta(y_t \mid x, y_{<t})
+$$
+
+**CPT損失との本質的差異**:
+
+$$
+\begin{aligned}
+\mathcal{L}_\text{CPT} &= -\frac{1}{T} \sum_{t=1}^T \log p_\theta(x_t \mid x_{<t}) \quad \text{(全トークンに損失)} \\
+\mathcal{L}_\text{SFT} &= -\frac{1}{|y|} \sum_{t=1}^{|y|} \log p_\theta(y_t \mid x, y_{<t}) \quad \text{(応答トークンのみ)}
+\end{aligned}
+$$
+
+SFTはinputをコンテキストとして与え、outputのみを最適化する。
+
+#### 3.2.4 Reasoningデータ品質 — Chain-of-Thought
+
+Chain-of-Thought (CoT) [^31] は、応答に中間推論ステップを含める:
+
+$$
+y = (\underbrace{r_1, \dots, r_K}_{\text{reasoning chain}}, \underbrace{a}_{\text{final answer}})
+$$
+
+SFT損失はCoT全体に適用:
+
+$$
+\mathcal{L}_\text{CoT} = -\frac{1}{K+1} \left[\sum_{k=1}^K \log p_\theta(r_k \mid x, r_{<k}) + \log p_\theta(a \mid x, r)\right]
+$$
+
+**なぜCoTが効くか**: 推論ステップを明示的に学ぶことで、モデルが「正解への道筋」を内在化する。推論能力は $\log p_\theta(a \mid x, r)$ の向上 = 「文脈がある場合の正解確率」の向上として測定できる。
+
+#### 3.2.5 長さ制御と教師信号設計
+
+**長さバイアス問題**: SFTデータに長い応答が多いと、モデルが冗長な応答を好む。
+
+$$
+\mathcal{L}_\text{length-controlled} = -\frac{1}{|y|} \sum_t \log p_\theta(y_t \mid x, y_{<t}) \cdot w(|y|)
+$$
+
+$w(|y|)$: 長さペナルティ。典型的には $w(l) = \exp(-\gamma \cdot \max(0, l - l_\text{max}))$。
+
+**データ品質 vs 量の理論** [^32]: データ量を $N$、品質指標を $q \in [0, 1]$ とすると、
+
+$$
+\text{Performance} \approx c \cdot (N \cdot q)^\beta
+$$
+
+$\beta < 1$ の場合（多くの実験で確認）、**品質向上の効果は量向上と等価以上**。Alpaca (52K例, q 低) vs LIMA (1K例, q 高) でLIMAが多くのタスクで優位という結果 [^32] はこの理論を支持する。
+
+---
+
+### 3.3 RLHF理論 — 選好整列
+
+#### 3.3.1 問題設定 — なぜSFTだけでは不十分か
+
+SFTは「指示への正解らしい応答」を学ぶ。しかし「人間が本当に好む応答」は必ずしも「最も尤度が高い応答」ではない。
+
+$$
+\underbrace{p_\theta^\text{SFT}(y_\text{good} \mid x)}_{\text{SFTの得点}} \neq \underbrace{r_\text{human}(x, y_\text{good})}_{\text{人間の選好}}
+$$
+
+RLHFは、人間の選好を**報酬モデル (Reward Model, RM)** として学習し、強化学習でポリシー（LLM）を最適化する。
+
+#### 3.3.2 Bradley-Terry モデル — 選好の確率化
+
+人間の選好データ: $(x, y_w, y_l)$（$y_w$: 好まれる応答 = winner、$y_l$: 劣る応答 = loser）。
+
+**Bradley-Terry モデル** [^33]: 選好の確率を報酬差から導出:
+
+$$
+P(y_w \succ y_l \mid x) = \sigma(r(x, y_w) - r(x, y_l)) = \frac{\exp(r(x, y_w))}{\exp(r(x, y_w)) + \exp(r(x, y_l))}
+$$
+
+$\sigma$: シグモイド関数、$r(x, y)$: 入力 $x$、応答 $y$ のスカラー報酬。
+
+**なぜシグモイドか**: Bradley-Terryモデルは「2者比較の確率」の最もシンプルな正規化。
+
+#### 3.3.3 Reward Modelの学習 — 完全導出
+
+**Step 1: RM構造**
+
+RM = LLM + スカラーヘッド。最終層の出力 $h \in \mathbb{R}^d$ にスカラー射影:
+
+$$
+r_\psi(x, y) = w^\top h_\psi(x, y), \quad w \in \mathbb{R}^d
+$$
+
+$\psi$: RMのパラメータ（SFTモデルを初期値として使うことが多い）。
+
+**Step 2: 比較ロス（Bradley-Terryに基づく負の対数尤度）**
+
+$$
+\mathcal{L}_\text{RM}(\psi) = -\mathbb{E}_{(x, y_w, y_l) \sim \mathcal{D}_\text{pref}}\left[\log \sigma(r_\psi(x, y_w) - r_\psi(x, y_l))\right]
+$$
+
+**Step 3: 展開**
+
+$$
+\mathcal{L}_\text{RM}(\psi) = -\frac{1}{|\mathcal{D}|} \sum_{(x, y_w, y_l)} \log \sigma(r_\psi(x, y_w) - r_\psi(x, y_l))
+$$
+
+シグモイドの性質 $\log \sigma(z) = -\log(1 + e^{-z})$ から:
+
+$$
+\mathcal{L}_\text{RM} = \frac{1}{|\mathcal{D}|} \sum_{(x, y_w, y_l)} \log\!\left(1 + \exp(r_\psi(x, y_l) - r_\psi(x, y_w))\right)
+$$
+
+これは $r(x, y_w) > r(x, y_l)$ を強制する損失。差分 $r(x, y_w) - r(x, y_l)$ が大きいほど損失が小さい。
+
+#### 3.3.4 PPOによるポリシー最適化
+
+RLHF [^10] のポリシー最適化にはPPO (Proximal Policy Optimization) を使う。
+
+**目的関数（KL正則化付き）**:
+
+$$
+J(\pi_\theta) = \mathbb{E}_{x \sim \mathcal{D}, y \sim \pi_\theta(\cdot \mid x)}\!\left[r_\psi(x, y)\right] - \beta \, D_\text{KL}\!\left[\pi_\theta(\cdot \mid x) \,\|\, \pi_\text{ref}(\cdot \mid x)\right]
+$$
+
+$\pi_\theta$: 訓練中のLLMポリシー、$\pi_\text{ref}$: SFT済みの参照ポリシー（固定）、$\beta$: KLペナルティ係数。
+
+**KL項の役割**:
+
+$$
+D_\text{KL}[\pi_\theta \| \pi_\text{ref}] = \mathbb{E}_{y \sim \pi_\theta}\left[\log \frac{\pi_\theta(y \mid x)}{\pi_\text{ref}(y \mid x)}\right] \geq 0
+$$
+
+$\pi_\theta$ が $\pi_\text{ref}$ から遠ざかると KL が増大 → 目的関数が減少 → **報酬ハッキングの抑制**。
+
+**PPOクリッピング目標**:
+
+確率比 $\rho_t = \frac{\pi_\theta(y_t \mid x, y_{<t})}{\pi_\text{old}(y_t \mid x, y_{<t})}$、優位関数 $\hat{A}_t = r_\psi(x, y) - V_\phi(x)$ として:
+
+$$
+\mathcal{L}_\text{PPO}(\theta) = -\mathbb{E}_t\!\left[\min\!\left(\rho_t \hat{A}_t, \, \text{clip}(\rho_t, 1-\epsilon, 1+\epsilon) \hat{A}_t\right)\right]
+$$
+
+$\epsilon = 0.2$ (典型値): 確率比を $[1-\epsilon, 1+\epsilon]$ にクリップし、1ステップの更新が大きくなりすぎるのを防ぐ。
+
+**完全なRLHF損失**（Schulman et al. 2017 PPO [^34] を言語モデルに適用）:
+
+$$
+\mathcal{L}_\text{total} = -\mathcal{L}_\text{PPO} + c_1 \mathcal{L}_\text{VF} - c_2 S[\pi_\theta]
+$$
+
+$\mathcal{L}_\text{VF} = (V_\phi(x) - R_t)^2$: 価値関数の二乗誤差、$S[\pi_\theta]$: エントロピーボーナス（探索促進）。
+
+#### 3.3.5 報酬ハッキング対策
+
+報酬モデルは不完全 — $r_\psi$ が高くても人間には好まれない応答（reward hacking）が出現する。
+
+主な対策:
+
+| 手法 | 数式 | 効果 |
+|:-----|:-----|:-----|
+| **KL正則化** | $-\beta D_\text{KL}[\pi_\theta \| \pi_\text{ref}]$ | 参照ポリシーからの逸脱を抑制 |
+| **報酬クリッピング** | $r_\text{clip} = \text{clip}(r, -r_\text{max}, r_\text{max})$ | 極端な報酬信号を除去 |
+| **RM更新** | 周期的にRMを人間フィードバックで再訓練 | ハッキング戦略を学習前に修正 |
+
+KL正則化の強度 $\beta$ は:
+- $\beta \to 0$: RM最大化に特化 → ハッキング発生
+- $\beta \to \infty$: SFTと同一 → 改善なし
+- 最適 $\beta$: タスク依存（典型値 0.01〜0.5）
+
+#### 3.3.6 DPO — RLHFの閉形式最適解
+
+DPO (Direct Preference Optimization) [^35] は、PPOを使わずRLHFの目的関数を直接最適化する。
+
+**RLHF目的関数の最適解**（PPOなし、解析的に導出）:
+
+$$
+\pi^*(y \mid x) = \frac{1}{Z(x)} \pi_\text{ref}(y \mid x) \exp\!\left(\frac{1}{\beta} r(x, y)\right)
+$$
+
+$Z(x) = \sum_y \pi_\text{ref}(y \mid x) \exp(r(x,y)/\beta)$: 分配関数。
+
+**Step 1**: 上の最適解を $r$ について解く:
+
+$$
+r(x, y) = \beta \log \frac{\pi^*(y \mid x)}{\pi_\text{ref}(y \mid x)} + \beta \log Z(x)
+$$
+
+**Step 2**: RMの Bradley-Terry 損失に代入（$Z(x)$ は winner-loser比で消える）:
+
+$$
+\mathcal{L}_\text{DPO}(\theta) = -\mathbb{E}_{(x, y_w, y_l)}\!\left[\log \sigma\!\left(\beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_\text{ref}(y_w \mid x)} - \beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_\text{ref}(y_l \mid x)}\right)\right]
+$$
+
+これはPPOを使わず、ポリシー $\pi_\theta$ を直接選好データで最適化できる。
+
+**DPO vs PPO比較**:
+
+| 項目 | RLHF (PPO) | DPO |
+|:-----|:-----------|:----|
+| RM学習 | 必要（別途訓練） | 不要（直接最適化） |
+| 安定性 | 不安定（PPOの超パラメータ多） | 安定（SFTと同等の訓練ループ） |
+| 性能 | 高い（RM品質依存） | 同等〜やや低い |
+| 実装難易度 | 高 | 低 |
+
+---
+
+### 3.4 PEFT統合理論 — LoRA/QLoRA/Adapter/DreamBooth
+
+CPT・SFT・RLHFで学習段階設計を理解した。PEFTはこれら**全ての段階**に適用可能な計算効率化手法だ。以降 3.4.1〜3.4.10 で各PEFT手法を完全導出する。
+
+### 3.4.1 LoRA理論 — 低ランク適応の数学
+
+#### 3.4.1.1 動機: Full Fine-tuningのメモリ問題
 
 GPT-3 (175B params) をFull Fine-tuningする場合、AdamWオプティマイザは:
 
@@ -348,7 +810,7 @@ $$
 
 理由: 大規模モデルは過剰パラメータ化されており、Fine-tuning時の適応は低次元部分空間で十分。
 
-#### 3.1.2 LoRAの定式化
+#### 3.4.1.2 LoRAの定式化
 
 重み行列 $W \in \mathbb{R}^{d \times k}$ (例: Transformer の $W_q, W_k, W_v, W_o$) を考える。Full Fine-tuningは:
 
@@ -380,7 +842,7 @@ $$
 
 GPT-3 (d=12288, k=12288, r=4) なら削減率 **6,144倍**。
 
-#### 3.1.3 初期化とスケーリング
+#### 3.4.1.3 初期化とスケーリング
 
 LoRAの初期化は特殊:
 
@@ -409,7 +871,7 @@ $$
 
 $\alpha/r$ スケーリングにより $\mathbb{E}[\|\frac{\alpha}{r} BA x\|^2] \propto \alpha^2 / r \|x\|^2$、$r$ の影響を相殺。
 
-#### 3.1.4 LoRAの勾配計算
+#### 3.4.1.4 LoRAの勾配計算
 
 損失関数 $\mathcal{L}$ に対する勾配（$W_0$ は固定）:
 
@@ -438,7 +900,7 @@ A &\leftarrow A - \eta \nabla_A \mathcal{L}
 \end{aligned}
 $$
 
-#### 3.1.5 LoRAの推論時最適化
+#### 3.4.1.5 LoRAの推論時最適化
 
 訓練後、$B, A$ を $W_0$ にマージ可能:
 
@@ -456,7 +918,7 @@ $$
 
 メモリ: $W_0$ は共有、タスクごとに $r(d+k)$ パラメータ追加のみ。
 
-#### 3.1.6 どのレイヤーにLoRAを適用するか
+#### 3.4.1.6 どのレイヤーにLoRAを適用するか
 
 TransformerのAttention層には $W_q, W_k, W_v, W_o$ の4つの重み行列がある。全てにLoRAを適用すると:
 
@@ -471,9 +933,9 @@ $$
 
 Hu et al. [^1] の実験では、**$W_q, W_v$ のみ**にLoRAを適用するのが最効率（性能 vs パラメータ数のトレードオフ）。
 
-### 3.2 QLoRA — 量子化とLoRAの融合
+### 3.4.2 QLoRA — 量子化とLoRAの融合
 
-#### 3.2.1 動機: さらなるメモリ削減
+#### 3.4.2.1 動機: さらなるメモリ削減
 
 LoRAはパラメータ数を削減したが、$W_0$ は依然FP32/FP16で保持。65Bモデルなら $65 \times 10^9 \times 2 = 130$ GB (FP16)。
 
@@ -484,7 +946,7 @@ QLoRA [^2] の革新:
 3. **Double Quantization**: 量子化定数自体を量子化
 4. **Paged Optimizers**: CPU-GPU間のメモリスワップ
 
-#### 3.2.2 NormalFloat (NF4) 量子化 — 完全導出
+#### 3.4.2.2 NormalFloat (NF4) 量子化 — 完全導出
 
 通常の4-bit量子化は線形スケール $[-7, -6, \dots, 6, 7]$。だが、ニューラルネットの重みは**正規分布**に近い。
 
@@ -625,7 +1087,7 @@ $$
 
 Lloyd-Maxアルゴリズムは、この $D^*$ を数値的に達成する。NF4は、対称正規分布に対して**分位点量子化 = Lloyd-Max最適解**を閉形式で与える。
 
-#### 3.2.3 Double Quantization — 二重量子化の完全導出
+#### 3.4.2.3 Double Quantization — 二重量子化の完全導出
 
 量子化には**スケーリング定数**（absmax）が必要。65Bモデルなら、ブロックサイズ64で $65B / 64 \approx 1B$ 個の定数（FP32なら4GB）。
 
@@ -777,7 +1239,7 @@ $$
 
 メモリ計算: 65Bモデルで $N = 65 \times 10^9$ weights。第1段階定数 = $N/64 \times 4\,\text{byte} \approx 4.06\,\text{GB}$。Double Quantization後 = $N/64 \times 1\,\text{byte} + N/16384 \times 4\,\text{byte} \approx 1.03\,\text{GB}$。削減量 $\approx 3\,\text{GB}$。65Bモデル全体の4-bit weight量 $\approx 32.5\,\text{GB}$ に対して約9%のオーバーヘッド削減。
 
-#### 3.2.4 QLoRA Forward Pass
+#### 3.4.2.4 QLoRA Forward Pass
 
 $$
 \begin{aligned}
@@ -788,7 +1250,7 @@ $$
 
 **メモリ**: $W_0$ は4-bit保持、計算時のみFP16に展開。勾配は $B, A$ にのみ流れる。
 
-#### 3.2.5 Paged Optimizers
+#### 3.4.2.5 Paged Optimizers
 
 訓練中、バッチサイズのスパイクでOOM（Out of Memory）が発生しうる。Paged Optimizersは、NVIDIA Unified Memoryを使い、GPU→CPU間でオプティマイザ状態をスワップ:
 
@@ -798,15 +1260,15 @@ $$
 
 これにより、OOMを回避しつつ大バッチサイズに対応。
 
-### 3.3 DreamBooth — 少数画像での個人化
+### 3.4.3 DreamBooth — 少数画像での個人化
 
-#### 3.3.1 動機: Few-shot生成の課題
+#### 3.4.3.1 動機: Few-shot生成の課題
 
 Stable Diffusionは「犬」の画像を生成できる。だが、**あなたの犬**の画像を生成するには？ 3-5枚の写真から個人化する必要がある。
 
 DreamBooth [^4] は、Diffusionモデルを数画像でFine-tuningし、特定被写体を生成可能にする。
 
-#### 3.3.2 DreamBoothの定式化
+#### 3.4.3.2 DreamBoothの定式化
 
 **目標**: 被写体の画像 $\{x_1, \dots, x_K\}$ (K=3-10) を与え、「a [V] dog」のようなプロンプトで生成可能にする。
 
@@ -822,7 +1284,7 @@ $c$: "a [V] dog" などのキャプション、$z_t$: ノイズ付加潜在変�
 
 **問題**: 少数画像のみで訓練すると**overfitting** + **language drift**（"dog"一般の意味を忘れる）。
 
-#### 3.3.3 Prior Preservation Loss — 完全導出
+#### 3.4.3.3 Prior Preservation Loss — 完全導出
 
 DreamBoothの革新は**Prior Preservation Loss**。なぜこれが必要か、数式で完全に導出する。
 
@@ -949,7 +1411,7 @@ $$
 
 Naive FTは "dog" トークンの意味が大幅にずれる（KL=2.34）。DreamBoothはKL=0.12で保持。
 
-#### 3.3.4 Class-specific Prior の理論的正当化
+#### 3.4.3.4 Class-specific Prior の理論的正当化
 
 なぜ「一般的な犬」だけを prior として保持すれば十分か？
 
@@ -971,7 +1433,7 @@ Instance学習: $\Delta \theta_\text{high} \gg \Delta \theta_\text{mid} \approx 
 
 Prior preservation: $\theta_\text{mid}$ を $\theta_{0,\text{mid}}$ 付近に保持。
 
-#### 3.3.5 DreamBoothとLoRAの組み合わせ
+#### 3.4.3.5 DreamBoothとLoRAの組み合わせ
 
 DreamBoothはFull Fine-tuning（全UNet重みを更新）だが、**DreamBooth + LoRA**も可能:
 
@@ -981,9 +1443,9 @@ $$
 
 UNetの各Attention層に $(B, A)$ を追加、$\theta_0$ は固定。メモリ削減 + 推論時の複数被写体切り替えが可能。
 
-### 3.4 Adapter Tuning — 各層に追加モジュール
+### 3.4.4 Adapter Tuning — 各層に追加モジュール
 
-#### 3.4.1 Adapterの構造
+#### 3.4.4.1 Adapterの構造
 
 Adapter [^5] は、Transformer各層に**小さなボトルネックモジュール**を挿入:
 
@@ -1007,7 +1469,7 @@ $W_{\text{down}} \in \mathbb{R}^{r \times d}$, $W_{\text{up}} \in \mathbb{R}^{d 
 
 Transformer 12層なら、Adapterパラメータ $12 \times 2dr \approx 1.2M$（BERT-base全体110Mの約1%）。
 
-#### 3.4.2 Adapter vs LoRA比較
+#### 3.4.4.2 Adapter vs LoRA比較
 
 | 項目 | Adapter | LoRA |
 |:-----|:--------|:-----|
@@ -1018,7 +1480,7 @@ Transformer 12層なら、Adapterパラメータ $12 \times 2dr \approx 1.2M$（
 
 **性能**: GLUEベンチマークでAdapterとLoRAは同等（Full FTの98-99%）[^1] [^5]。
 
-#### 3.4.3 Prefix Tuning — 連続プロンプト
+#### 3.4.4.3 Prefix Tuning — 連続プロンプト
 
 Prefix Tuning [^6] は、入力の**先頭にtrainableなベクトル列**を追加:
 
@@ -1036,7 +1498,7 @@ Transformerパラメータは固定、$P$ のみtrainable。パラメータ数 $
 
 **問題**: プレフィックスが長いと、有効コンテキスト長が減る。
 
-#### 3.4.4 P-Tuning v2 — Deep Prompt Tuning
+#### 3.4.4.4 P-Tuning v2 — Deep Prompt Tuning
 
 P-Tuning v2 [^7] は、**各層の入力**にプレフィックスを追加:
 
@@ -1051,7 +1513,7 @@ $$
 
 **性能**: P-Tuning v2は、多くのタスクで**Full FTを超える** [^7]。理由は不明だが、仮説として「各層で異なるプロンプトが、階層的な特徴抽出を強化」。
 
-#### 3.4.5 Prompt Tuning — Softプロンプト
+#### 3.4.4.5 Prompt Tuning — Softプロンプト
 
 Prompt Tuning [^8] は、**埋め込み層にのみ**連続ベクトルを追加:
 
@@ -1071,7 +1533,7 @@ Transformerパラメータは固定、$E_\text{prompt}$ のみtrainable。
 
 **Prompt Tuning vs Prefix Tuning**: Prompt Tuningは入力層のembedding空間にのみ作用するのに対し、Prefix Tuningは全層のkey/valueに prefix vectorを注入する。前者はシンプルだが後者のほうが表現力が高く、特に短いtask descriptionでの性能差が顕著だ。
 
-### 3.5 PEFT手法の統一理論
+### 3.4.5 PEFT手法の統一理論
 
 全PEFT手法を統一視点で捉える:
 
@@ -1091,7 +1553,7 @@ $\theta_0$: frozen事前学習パラメータ、$\phi$: trainable追加パラメ
 
 全て $|\phi| \ll |\theta_0|$（典型的に0.01-1%）。
 
-### 3.6 ⚔️ Boss Battle: LoRA完全実装の数式分解
+### 3.4.6 ⚔️ Boss Battle: LoRA完全実装の数式分解
 
 GPT-2スタイルのTransformer 1層に対し、LoRAを完全実装する数式を分解する。
 
@@ -1174,9 +1636,9 @@ $$
 
 **ボス撃破**: LoRAのForward/Backward/Updateを完全分解した。
 
-### 3.7 AdaLoRA — ランク適応型LoRA
+### 3.4.7 AdaLoRA — ランク適応型LoRA
 
-#### 3.7.1 動機: ランク$r$は固定でよいか？
+#### 3.4.7.1 動機: ランク$r$は固定でよいか？
 
 LoRAは全層で同じランク $r$ を使用する。だが、各層の**重要度**は異なる:
 
@@ -1185,7 +1647,7 @@ LoRAは全層で同じランク $r$ を使用する。だが、各層の**重要
 
 AdaLoRA [^15] は、訓練中に**層ごとのランクを動的に調整**する。
 
-#### 3.7.2 AdaLoRAの定式化
+#### 3.4.7.2 AdaLoRAの定式化
 
 AdaLoRA は、特異値分解（SVD）の枠組みでLoRAを再定式化:
 
@@ -1198,7 +1660,7 @@ $\Lambda = \text{diag}(\sigma_1, \dots, \sigma_r)$: 特異値行列
 
 通常のLoRA $\Delta W = BA$ と異なり、AdaLoRAは $\Lambda$ を**trainable diagonal matrix**として扱う。
 
-#### 3.7.3 ランク調整のメカニズム
+#### 3.4.7.3 ランク調整のメカニズム
 
 訓練中、各特異値 $\sigma_i$ の**重要度**を評価:
 
@@ -1255,7 +1717,7 @@ $$
 
 高重要度層のランクを増やし、低重要度層のランクを減らす。
 
-#### 3.7.4 AdaLoRAの訓練アルゴリズム
+#### 3.4.7.4 AdaLoRAの訓練アルゴリズム
 
 訓練ループの全体構造を整理する。
 
@@ -1279,7 +1741,7 @@ $$
 - 固定 $r=16$ (2倍パラメータ) より高性能
 - 層ごとの最適ランク配分が性能向上の鍵
 
-#### 3.7.6 層別ランク分布の可視化
+#### 3.4.7.6 層別ランク分布の可視化
 
 AdaLoRA訓練後の層別ランク（DeBERTa-v3 12層）:
 
@@ -1295,9 +1757,9 @@ AdaLoRA訓練後の層別ランク（DeBERTa-v3 12層）:
 
 **観察**: 低層のランクが大幅削減（8→2）、高層が大幅増加（8→32）。予算は固定。
 
-### 3.8 LoRA+ — 学習率の層別最適化
+### 3.4.8 LoRA+ — 学習率の層別最適化
 
-#### 3.8.1 動機: $B$と$A$は同じ学習率でよいか？
+#### 3.4.8.1 動機: $B$と$A$は同じ学習率でよいか？
 
 LoRAの初期化: $B=0, A \sim \mathcal{N}(0, \sigma^2)$
 
@@ -1316,7 +1778,7 @@ A &\leftarrow A - \eta_A \nabla_A \mathcal{L} \quad \text{where } \eta_A > \eta_
 \end{aligned}
 $$
 
-#### 3.8.2 理論的根拠: Hessianの条件数
+#### 3.4.8.2 理論的根拠: Hessianの条件数
 
 $B$ と $A$ のHessian（2次導関数行列）の条件数を比較:
 
@@ -1330,7 +1792,7 @@ $A$ は $B$ を介して間接的に影響 → Hessianの条件数が大きい�
 
 条件数が大きいパラメータには**大きな学習率**が必要（[^17] Adaptive LR理論）。
 
-#### 3.8.3 最適学習率比の導出
+#### 3.4.8.3 最適学習率比の導出
 
 LoRA+論文 [^16] は、理論的に最適な学習率比を導出:
 
@@ -1344,7 +1806,7 @@ $$
 
 実用上、論文は**固定比 $\eta_A / \eta_B = 16$**を推奨（多くのタスクで最適に近い）。
 
-#### 3.8.4 LoRA+ vs LoRAの実験比較
+#### 3.4.8.4 LoRA+ vs LoRAの実験比較
 
 実験設定: RoBERTa-base (125M) をGLUEでFine-tuning
 
@@ -1359,7 +1821,7 @@ $$
 - 性能も+0.7pt向上
 - Full FTに近い性能を半分の時間で達成
 
-#### 3.8.5 学習率非対称設定の効果
+#### 3.4.8.5 学習率非対称設定の効果
 
 Hayouら [^9] は、LoRAの収束が遅い原因を行列 $A$ と $B$ の**学習率スケールの不均衡**に帰着させた。$A$ はランダム初期化（有界スペクトル）、$B$ はゼロ初期化（スペクトルゼロ）から出発する。AdamWの適応的更新ではこの非対称性が自動的には補正されない。
 
@@ -1367,9 +1829,9 @@ Hayouら [^9] は、LoRAの収束が遅い原因を行列 $A$ と $B$ の**学�
 
 実装上は `AdamW` の `param_groups` で $B$ と $A$ に別々の `lr` を渡せばよい（$\eta_B = \eta$、$\eta_A = \lambda_+ \eta$ ）。収束速度2倍・性能+0.7ptが報告されている [^9]。
 
-### 3.9 VeRA — ランダム射影LoRA
+### 3.4.9 VeRA — ランダム射影LoRA
 
-#### 3.9.1 動機: LoRAのパラメータをさらに削減
+#### 3.4.9.1 動機: LoRAのパラメータをさらに削減
 
 LoRAはパラメータを大幅削減したが、大規模モデル（GPT-3級）では依然として数百MBになる。
 
@@ -1385,7 +1847,7 @@ $B_{\text{rand}} \in \mathbb{R}^{d \times r}$, $A_{\text{rand}} \in \mathbb{R}^{
 $b \in \mathbb{R}^d$, $a \in \mathbb{R}^k$: **trainable**スケーリングベクトル
 $\odot$: Hadamard積（要素ごとの積）
 
-#### 3.9.2 VeRAの定式化
+#### 3.4.9.2 VeRAの定式化
 
 **ステップ1**: ランダム行列の生成（初期化時1回のみ）
 
@@ -1423,7 +1885,7 @@ $$
 \end{aligned}
 $$
 
-#### 3.9.3 パラメータ削減の計算
+#### 3.4.9.3 パラメータ削減の計算
 
 | 手法 | パラメータ数 | 削減率（$d=k=4096, r=8$） |
 |:-----|:------------|:-------------------------|
@@ -1435,7 +1897,7 @@ GPT-3 (175B) の場合:
 - LoRA: ~200MB
 - VeRA: **~25MB**
 
-#### 3.9.4 なぜランダム行列で機能するか？
+#### 3.4.9.4 なぜランダム行列で機能するか？
 
 **理論的根拠**: Johnson-Lindenstrauss Lemma [^19]
 
@@ -1449,7 +1911,7 @@ $R$: ランダム行列（ガウス分布）
 
 VeRAは、LoRAの学習可能な部分空間を**ランダム部分空間**で近似。スケーリングベクトル $b, a$ が、その部分空間内での最適化を行う。
 
-#### 3.9.5 VeRA vs LoRAの実験比較
+#### 3.4.9.5 VeRA vs LoRAの実験比較
 
 実験設定: GPT-2 Medium (355M) をE2E NLGでFine-tuning
 
@@ -1465,9 +1927,9 @@ VeRAは、LoRAの学習可能な部分空間を**ランダム部分空間**で�
 
 **トレードオフ**: VeRAは初期化のランダム性に依存。複数回試行して最良のseedを選ぶ必要がある（論文では5 seeds平均）。
 
-### 3.10 LoRA Composition — 複数LoRAの合成
+### 3.4.10 LoRA Composition — 複数LoRAの合成
 
-#### 3.10.1 動機: タスク横断知識の活用
+#### 3.4.10.1 動機: タスク横断知識の活用
 
 複数タスクでLoRAを訓練した場合、それらを**組み合わせて**新タスクに適応できるか？
 
@@ -1484,7 +1946,7 @@ $$
 
 $\lambda_i$: 合成重み（ハイパーパラメータ or 学習可能）
 
-#### 3.10.2 合成手法の3パターン
+#### 3.4.10.2 合成手法の3パターン
 
 **1. 加算合成（Linear Composition）**
 
@@ -1512,7 +1974,7 @@ $$
 
 例: 「要約 + 翻訳 - 質問応答」で多言語要約を構成。
 
-#### 3.10.3 数値例: LoRA Composition実験
+#### 3.4.10.3 数値例: LoRA Composition実験
 
 実験設定: T5-base (220M)、3タスクのLoRAを合成
 
@@ -1528,7 +1990,7 @@ $$
 - 新タスク（多言語要約）を**ゼロショット**で38.4達成（from-scratchの35.1より高い）
 - 合成により、追加訓練なしで新タスクに適応
 
-#### 3.10.4 理論的解釈: 部分空間の重ね合わせ
+#### 3.4.10.4 理論的解釈: 部分空間の重ね合わせ
 
 LoRAの $\Delta W_i = B_i A_i$ は、$r$ 次元の部分空間 $\mathcal{S}_i \subset \mathbb{R}^{d \times k}$ を定義:
 

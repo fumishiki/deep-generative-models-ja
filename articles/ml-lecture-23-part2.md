@@ -13,7 +13,361 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > 📌 **前編（理論）**: [第23回 前編](./ml-lecture-23-part1)
 
-## 💻 4. 実装ゾーン（45分）— ⚡Julia LoRA訓練 + 🦀Rust LoRA推論
+## 💻 Z5. 試練（実装）（Part A）— Post-Training基盤: CPT→SFT→RLHF
+
+**ゴール**: CPT→SFT→RLHFの実装基盤をJuliaで構築する。各コードブロック直前に対応する数式を示し、記号↔変数名を1:1で対応させる。
+
+### 4.0 事後学習基盤（土台）— チェックポイント読込・Optimizer・Checkpoint再開（Julia）
+
+Post-Training全段階で共通して必要な基盤コードだ。事前学習済みチェックポイントの読み込み、optimizerのセットアップ、学習途中からの再開機構を実装する。
+
+チェックポイント読み込みの数式的意味:
+
+$$
+\theta_\text{init} = \theta_\text{pretrained}, \quad \text{(frozen 部分は勾配計算対象外)}
+$$
+
+optimizerの更新則（AdamW）:
+
+$$
+\begin{aligned}
+m_t &= \beta_1 m_{t-1} + (1-\beta_1) g_t \\
+v_t &= \beta_2 v_{t-1} + (1-\beta_2) g_t^2 \\
+\theta_t &= \theta_{t-1} - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} - \lambda \theta_{t-1}
+\end{aligned}
+$$
+
+- $g_t = \nabla_\theta \mathcal{L}$、$\hat{m}_t = m_t / (1 - \beta_1^t)$、$\hat{v}_t = v_t / (1 - \beta_2^t)$
+- $\lambda$: weight decay（$\lambda = 0.01$ 典型値）
+- `η` ↔ `lr`、`β₁` ↔ `β₁`、`β₂` ↔ `β₂`、`ε` ↔ `ε`、`λ` ↔ `λ_wd`
+
+```julia
+using Lux, Optimisers, JLD2, Random, Zygote
+
+# --- Checkpoint I/O ---
+function save_checkpoint(path::String, ps, st, opt_state, step::Int)
+    JLD2.save(path, Dict(
+        "params"    => ps,
+        "states"    => st,
+        "opt_state" => opt_state,
+        "step"      => step,
+    ))
+    @info "Checkpoint saved: step=$step → $path"
+end
+
+function load_checkpoint(path::String)
+    ckpt = JLD2.load(path)
+    return ckpt["params"], ckpt["states"], ckpt["opt_state"], ckpt["step"]
+end
+
+# --- AdamW optimizer setup: η=lr, β₁, β₂, ε, λ_wd ---
+function make_adamw(; lr::Float32=1f-4, β₁::Float32=0.9f0,
+                     β₂::Float32=0.999f0, ε::Float32=1f-8,
+                     λ_wd::Float32=0.01f0)
+    # Corresponds to: θₜ = θₜ₋₁ - η * m̂ₜ / (√v̂ₜ + ε) - λ_wd * θₜ₋₁
+    Optimisers.OptimiserChain(
+        Optimisers.Adam(lr, (β₁, β₂), ε),
+        Optimisers.WeightDecay(λ_wd),
+    )
+end
+
+# --- Generic training loop with checkpoint resume ---
+function train_loop!(model, ps, st, dataloader;
+                     opt    = make_adamw(),
+                     epochs = 3,
+                     save_every = 500,
+                     resume_ckpt = nothing)
+
+    # Resume if checkpoint path provided
+    step = 0
+    if !isnothing(resume_ckpt) && isfile(resume_ckpt)
+        ps, st, opt_state, step = load_checkpoint(resume_ckpt)
+        @info "Resumed from step $step"
+    else
+        opt_state = Optimisers.setup(opt, ps)
+    end
+
+    for epoch in 1:epochs
+        for batch in dataloader
+            step += 1
+            # Forward + backward
+            (loss, st), ∇ps = Zygote.withgradient(ps) do p
+                ℓ, st_new = compute_loss(model, p, st, batch)
+                ℓ, st_new
+            end
+            # ∇ps ↔ ∇_θ ℒ in math
+            opt_state, ps = Optimisers.update!(opt_state, ps, ∇ps[1])
+
+            if step % 100 == 0
+                @info "step=$step  loss=$(round(loss, digits=4))"
+            end
+            if step % save_every == 0
+                save_checkpoint("ckpt_step$(step).jld2", ps, st, opt_state, step)
+            end
+        end
+    end
+    return ps, st
+end
+
+# Verify: AdamW preserves weight norm (weight decay pulls toward 0)
+θ_test = ones(Float32, 4)
+opt_test = Optimisers.setup(make_adamw(λ_wd=0.1f0), θ_test)
+g_test   = zeros(Float32, 4)  # zero gradient → only weight decay acts
+opt_test2, θ_test2 = Optimisers.update!(opt_test, θ_test, g_test)
+@assert all(θ_test2 .< θ_test)  # weight decay reduces magnitude
+```
+
+---
+
+### 4.1 CPT実装 — ドメイン継続事前学習（Julia）
+
+CPT損失:
+
+$$
+\mathcal{L}_\text{CPT}(\theta) = -\frac{1}{T} \sum_{t=1}^{T} \log p_\theta(x_t \mid x_{<t})
+$$
+
+数式↔コード対応:
+- $p_\theta(x_t \mid x_{<t})$ ↔ `softmax(logits)[x_t]`
+- $\mathcal{L}_\text{CPT}$ ↔ `loss_cpt`
+- $T$ ↔ `T` (sequence length)
+- $\alpha$ (mixing ratio) ↔ `α`
+
+Shape追跡: logits `∈ ℝ^{B×T×V}` (B=batch, T=seq_len, V=vocab_size), labels `∈ ℤ^{B×T}`。
+
+数値安定化: softmaxの前にlogits から最大値を引く（実装はNNlibが内部で行う）。
+
+```julia
+using Lux, NNlib, Optimisers, Zygote
+
+# --- CPT loss: L_CPT = -mean over tokens of log p_θ(xₜ | x<ₜ) ---
+function loss_cpt(model, ps, st, x::AbstractMatrix{Int}; α_domain::Float32=1.0f0)
+    # x: [T, B] integer token ids
+    B, T = size(x, 2), size(x, 1)
+
+    # Forward pass: logits [T, V, B] → we compute [T-1, V, B] for shift-by-1
+    logits, st_new = model(x[1:end-1, :], ps, st)  # logits: [(T-1), V, B]
+
+    # Targets: x[2:end, :] shifted by 1  (next-token prediction)
+    targets = x[2:end, :]  # [(T-1), B]
+
+    # Cross-entropy loss per token: -log p_θ(xₜ | x<ₜ)
+    V = size(logits, 2)
+    logits_flat = reshape(logits, (T-1)*B, V)         # [(T-1)*B, V]
+    targets_flat = vec(targets)                         # [(T-1)*B]
+
+    # Corresponds to -∑ log p_θ(xₜ | x<ₜ) / T
+    loss_cpt = Lux.CrossEntropyLoss()(logits_flat, targets_flat)
+
+    # α_domain: mixing weight (see §3.1.3)
+    return α_domain * loss_cpt, st_new
+end
+
+# --- Data mixing: L_mix = α * L_domain + (1-α) * L_general ---
+function loss_mixed(model, ps, st,
+                    x_domain::AbstractMatrix{Int},
+                    x_general::AbstractMatrix{Int};
+                    α::Float32 = 0.4f0)
+    # α ↔ mixing ratio α ∈ [0,1]
+    ℓ_domain, st1 = loss_cpt(model, ps, st, x_domain)
+    ℓ_general, st2 = loss_cpt(model, ps, st1, x_general)
+    # L_mix = α * L_domain + (1-α) * L_general
+    return α * ℓ_domain + (1.0f0 - α) * ℓ_general, st2
+end
+
+# --- Forgetting metric: Δ forgetting = (L_general_after - L_general_before) / L_general_before ---
+function measure_forgetting(model_before, model_after, ps_before, ps_after, st,
+                             x_general::AbstractMatrix{Int})
+    ℓ_before, _ = loss_cpt(model_before, ps_before, st, x_general)
+    ℓ_after,  _ = loss_cpt(model_after,  ps_after,  st, x_general)
+    Δ_forgetting = (ℓ_after - ℓ_before) / ℓ_before  # positive = forgetting
+    return Δ_forgetting
+end
+
+# Numerical check: uniform distribution gives log(V) cross-entropy
+V = 1000
+logits_uniform = zeros(Float32, 10, V)  # 10 tokens, uniform logits
+targets_test   = ones(Int, 10)
+ce_expected    = log(Float32(V))  # ≈ 6.908 for V=1000
+ce_got = Lux.CrossEntropyLoss()(logits_uniform, targets_test)
+@assert isapprox(ce_got, ce_expected, rtol=0.01) "Expected ≈$(ce_expected), got $(ce_got)"
+```
+
+---
+
+### 4.2 SFT実装 — Instruction Tuning・Chat Template（Julia）
+
+SFT損失（response トークンのみ）:
+
+$$
+\mathcal{L}_\text{SFT}(\theta) = -\frac{1}{|y|} \sum_{t=1}^{|y|} \log p_\theta(y_t \mid x, y_{<t})
+$$
+
+数式↔コード対応:
+- $x$ (instruction) ↔ `x_inst`
+- $y$ (response) ↔ `y_resp`
+- $\mathcal{L}_\text{SFT}$ ↔ `loss_sft`
+- response mask ↔ `resp_mask` （instructionトークンは損失計算から除外）
+
+Shape追跡: 入力 `[x; y]` を結合して `[T_total, B]`、`resp_mask ∈ {0,1}^{T_total×B}` でresponse部分のみ1。
+
+落とし穴: instructionにもCEを適用すると「入力を暗記」するだけで応答品質が上がらない。maskが命。
+
+```julia
+# --- Chat Template: [system][user][assistant] → token id sequence ---
+function apply_chat_template(instruction::String, response::String;
+                              system::String = "You are a helpful assistant.",
+                              inst_tok = 1, resp_tok = 2, eos = 3)
+    # Returns (input_ids, resp_mask) where resp_mask=1 for response tokens
+    sys_tokens  = tokenize(system)           # [tok ...] (conceptual)
+    inst_tokens = tokenize(instruction)
+    resp_tokens = tokenize(response)
+
+    input_ids = [inst_tok; sys_tokens; inst_tok; inst_tokens;
+                  resp_tok; resp_tokens; eos]
+    # resp_mask: 1 only for response tokens (y in math)
+    n_prefix  = 1 + length(sys_tokens) + 1 + length(inst_tokens) + 1
+    resp_mask = vcat(zeros(Int, n_prefix), ones(Int, length(resp_tokens) + 1))
+    return input_ids, resp_mask
+end
+
+# --- SFT loss: only over response tokens ---
+# L_SFT = -1/|y| * ∑_{t ∈ response} log p_θ(yₜ | x, y<t)
+function loss_sft(model, ps, st,
+                  input_ids::AbstractMatrix{Int},    # [T_total, B]
+                  resp_mask::AbstractMatrix{Float32}) # [T_total, B], 1=response
+
+    B, T = size(input_ids, 2), size(input_ids, 1)
+    logits, st_new = model(input_ids[1:end-1, :], ps, st)  # [(T-1), V, B]
+    targets = input_ids[2:end, :]                           # [(T-1), B]
+    mask    = resp_mask[2:end, :]                           # [(T-1), B] shifted
+
+    V = size(logits, 2)
+    logits_flat  = reshape(logits,  (T-1)*B, V)
+    targets_flat = vec(targets)
+    mask_flat    = vec(mask)
+
+    # Cross-entropy per token
+    ce_per_token = -log.(softmax(logits_flat, dims=2)[CartesianIndex.(1:length(targets_flat), targets_flat)])
+
+    # Masked mean: only response tokens
+    # L_SFT = -1/|y| * ∑_{mask=1} log p
+    n_resp = sum(mask_flat)
+    loss_sft = dot(ce_per_token, mask_flat) / max(n_resp, 1f0)
+    return loss_sft, st_new
+end
+
+# Numerical verification: if all logits=0 (uniform), CE = log(V)
+V_check = 100
+B_check, T_check = 2, 8
+logits_check = zeros(Float32, T_check * B_check, V_check)
+targets_check = ones(Int, T_check * B_check)
+ce_check = -mean(log.(softmax(logits_check, dims=2)[CartesianIndex.(1:T_check*B_check, targets_check)]))
+@assert isapprox(ce_check, log(Float32(V_check)), rtol=0.01)
+```
+
+---
+
+### 4.3 RLHF実装 — Reward Model・PPO更新（Julia）
+
+Reward Modelの Bradley-Terry 損失:
+
+$$
+\mathcal{L}_\text{RM}(\psi) = -\frac{1}{|\mathcal{D}|} \sum_{(x, y_w, y_l)} \log \sigma(r_\psi(x, y_w) - r_\psi(x, y_l))
+$$
+
+PPOの目的関数（KL正則化付き）:
+
+$$
+J(\pi_\theta) = \mathbb{E}\!\left[r_\psi(x, y)\right] - \beta \, D_\text{KL}\!\left[\pi_\theta \,\|\, \pi_\text{ref}\right]
+$$
+
+数式↔コード対応:
+- $r_\psi(x, y)$ ↔ `r_ψ` (scalar reward)
+- $\sigma$ ↔ `sigmoid` / `NNlib.sigmoid`
+- $\pi_\theta(y_t \mid x, y_{<t})$ ↔ `logprob_θ`
+- $\pi_\text{ref}(y_t \mid x, y_{<t})$ ↔ `logprob_ref`
+- $\beta$ ↔ `β` (KL coefficient)
+
+Shape: $r_\psi \in \mathbb{R}^B$, $\text{logprob} \in \mathbb{R}^{T \times B}$, KL $\in \mathbb{R}^B$.
+
+```julia
+using Lux, NNlib, Optimisers, Zygote, Statistics
+
+# --- Reward Model: LLM base + scalar head ---
+struct RewardModel{B, H} <: Lux.AbstractExplicitContainerLayer{(:base, :head)}
+    base::B   # pretrained LLM (frozen or LoRA-adapted)
+    head::H   # Dense(d → 1)
+end
+
+function (rm::RewardModel)(x, ps, st)
+    h, st_base = rm.base(x, ps.base, st.base)          # [d, B]
+    r, st_head = rm.head(h[end, :, :], ps.head, st.head) # [1, B] → scalar
+    return dropdims(r, dims=1), (base=st_base, head=st_head)
+end
+
+# --- Bradley-Terry loss: L_RM = -mean(log σ(r_w - r_l)) ---
+# r_ψ(x, y_w) ↔ r_w,  r_ψ(x, y_l) ↔ r_l
+function loss_rm(rm_model, ps, st,
+                 x_w::AbstractMatrix{Int},   # winner responses
+                 x_l::AbstractMatrix{Int})    # loser responses
+
+    r_w, st1 = rm_model(x_w, ps, st)   # r_w ↔ r_ψ(x, y_w), shape: [B]
+    r_l, st2 = rm_model(x_l, ps, st1)  # r_l ↔ r_ψ(x, y_l)
+
+    # L_RM = -mean(log σ(r_w - r_l))
+    ℓ_rm = -mean(log.(NNlib.sigmoid.(r_w .- r_l)))
+    return ℓ_rm, st2
+end
+
+# --- Log-probability computation: log π_θ(yₜ | x, y<t) ---
+function compute_logprobs(model, ps, st, input_ids::AbstractMatrix{Int})
+    # Returns sum of log-probs over response tokens
+    logits, st_new = model(input_ids[1:end-1, :], ps, st)   # [(T-1), V, B]
+    T, V, B = size(logits)
+    targets  = input_ids[2:end, :]  # [(T-1), B]
+    lp_flat  = log.(softmax(reshape(logits, T*B, V), dims=2))
+    # log π_θ(yₜ | x, y<t): select log-prob for actual token
+    logprobs = lp_flat[CartesianIndex.(1:T*B, vec(targets))]
+    return reshape(logprobs, T, B), st_new  # [T, B]
+end
+
+# --- PPO reward: r_total = r_ψ(x,y) - β * KL(π_θ || π_ref) ---
+# J(π_θ) = E[r_ψ(x,y)] - β * D_KL[π_θ || π_ref]
+function compute_rlhf_reward(rm_model, rm_ps, rm_st,
+                              logprobs_θ::AbstractMatrix{Float32},   # [T, B]
+                              logprobs_ref::AbstractMatrix{Float32}, # [T, B]
+                              x::AbstractMatrix{Int};
+                              β::Float32 = 0.1f0)
+    # Scalar reward from reward model
+    r_ψ, _ = rm_model(x, rm_ps, rm_st)   # [B]
+
+    # KL divergence per sequence: KL = sum_t (log π_θ - log π_ref)
+    kl_per_token = logprobs_θ .- logprobs_ref   # [T, B]
+    kl_seq       = sum(kl_per_token, dims=1)[1, :]  # [B], ≥0 by Jensen
+
+    # Total reward: r_total = r_ψ - β * KL
+    # Corresponds to J(π_θ) = E[r_ψ(x,y)] - β * D_KL[π_θ || π_ref]
+    r_total = r_ψ .- β .* kl_seq   # [B]
+    return r_total
+end
+
+# Numerical check: KL(p||p) = 0 for identical distributions
+lp_same = randn(Float32, 10, 4)
+kl_same = sum(lp_same .- lp_same, dims=1)
+@assert all(kl_same .≈ 0f0) "KL(p||p) must be 0"
+
+# Bradley-Terry: reward difference drives loss
+r_w_test = [1.0f0, 2.0f0]
+r_l_test = [0.0f0, 0.0f0]
+loss_test = -mean(log.(NNlib.sigmoid.(r_w_test .- r_l_test)))
+@assert loss_test > 0f0  # NLL is always positive
+@assert loss_test < log(2f0)  # Below random (log2) means model already aligned
+```
+
+---
+
+## 💻 Z5. 試練（実装）（Part B）— PEFT実装: LoRA/QLoRA/Rust推論
 
 **ゴール**: Julia でLoRA訓練を実装し、Rust で推論時のLoRAマージ・切り替えを実装する。
 
@@ -447,7 +801,7 @@ Instruction Tuningでは、データセット全体で一貫したSystem Prompt�
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— SmolVLM2 LoRA Fine-tuning
+### 🔬 実験・検証（30分）— SmolVLM2 LoRA Fine-tuning
 
 **ゴール**: 第22回のSmolVLM2-256MをLoRAでFine-tuningし、ドメイン適応を体験する。
 
@@ -1050,7 +1404,7 @@ h_out = adapter(h)
 
 ---
 
-## 🎓 6. 振り返りと発展ゾーン（30分）— まとめと最新研究動向
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 PEFT研究の系譜 (2019-2026)
 
@@ -1308,6 +1662,9 @@ graph LR
 | **KL divergence** | 第6回 | 事前学習分布→タスク分布への適応 |
 | **Adam optimizer** | 第6回 | LoRA/QLoRAの訓練 |
 | **Gradient Descent** | 第6回 | $B, A$ のパラメータ更新 |
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.8 FAQ — よくある疑問と誤解
 
@@ -1680,6 +2037,20 @@ peft_config = (
 [^22]: Wei, H., et al. (2024). **Calibrating and Rotating: A Unified Framework for Weight Conditioning in PEFT**. *arXiv preprint*. <https://arxiv.org/abs/2511.00051>
 
 [^23]: Zhu, Z., Su, Q., Ding, Y., Song, K., et al. (2025). **LoRAFusion: Efficient LoRA Fine-Tuning for LLMs**. *EuroSys 2026*. <https://arxiv.org/abs/2510.00206>
+
+[^29]: Gururangan, S., Marasović, A., Swayamdipta, S., Lo, K., Beltagy, I., Downey, D., & Smith, N. A. (2020). **Don't Stop Pretraining: Adapt Language Models to Domains and Tasks**. *ACL 2020*. <https://arxiv.org/abs/2004.10964>
+
+[^30]: Bengio, Y., Louradour, J., Collobert, R., & Weston, J. (2009). **Curriculum Learning**. *ICML 2009*. <https://dl.acm.org/doi/10.1145/1553374.1553380>
+
+[^31]: Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q., & Zhou, D. (2022). **Chain-of-Thought Prompting Elicits Reasoning in Large Language Models**. *NeurIPS 2022*. <https://arxiv.org/abs/2201.11903>
+
+[^32]: Zhou, C., Liu, P., Xu, P., Iyer, S., Sun, J., Mao, Y., Ma, X., Efrat, A., Yu, P., Yu, L., Zhang, S., Ghosh, G., Lewis, M., Zettlemoyer, L., & Levy, O. (2023). **LIMA: Less Is More for Alignment**. *NeurIPS 2023*. <https://arxiv.org/abs/2305.11206>
+
+[^33]: Bradley, R. A., & Terry, M. E. (1952). **Rank Analysis of Incomplete Block Designs: I. The Method of Paired Comparisons**. *Biometrika*, 39(3/4), 324–345.
+
+[^34]: Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). **Proximal Policy Optimization Algorithms**. *arXiv preprint*. <https://arxiv.org/abs/1707.06347>
+
+[^35]: Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Ermon, S., & Finn, C. (2023). **Direct Preference Optimization: Your Language Model is Secretly a Reward Model**. *NeurIPS 2023*. <https://arxiv.org/abs/2305.18290>
 
 ### 教科書
 

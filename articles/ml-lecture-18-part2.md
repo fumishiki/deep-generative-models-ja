@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 **← Part1（理論編）**: [第18回 Part1](./ml-lecture-18-part1)
 
-## 💻 4. 実装ゾーン（45分）— Julia/Rust Hybrid実装
+## 💻 Z5. 試練（実装）（45分）— Julia/Rust Hybrid実装
 
 ### 4.1 Julia実装: Tiny Hybrid Model訓練
 
@@ -377,7 +377,7 @@ fn matmul_simd(a: &[f32], b: &[f32], m: usize, n: usize, k: usize) -> Vec<f32> {
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— Pure vs Hybrid 性能比較
+### 🔬 実験・検証（30分）— Pure vs Hybrid 性能比較
 
 ### 5.1 比較実験: Transformer vs Mamba vs Hybrid
 
@@ -908,7 +908,7 @@ Lecture 18修了前に確認しよう:
 > 1. Tiny Hybrid Julia実装で、SSM層とAttention層のLayer比率を変えたアブレーション実験から何が分かるか？
 > 2. Rust推論パイプラインでSSM再帰とAttention並列を「切り替える」実装上の鍵は何か？
 
-## 🎓 6. 振り返りゾーン（30分）— まとめ・発展・問い
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 Hybrid Architecture 研究系譜
 
@@ -1311,6 +1311,9 @@ $$
 2. **Long-context SSM** [arXiv:2507.12442](https://arxiv.org/abs/2507.12442): SSM hybrid長コンテキスト性能分析
 3. **Samba** (未公開): Microsoft MoE+SSM+Attn hybrid
 4. **CPA O(n log n) Attention** (Nature 2025): 準線形Attention近似
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.6 用語集 (Lecture 18)
 

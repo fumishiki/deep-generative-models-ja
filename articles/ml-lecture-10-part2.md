@@ -11,7 +11,7 @@ languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 
-## 💻 4. 実装ゾーン（45分）— Julia登場、そしてPythonに戻れない
+## 💻 Z5. 試練（実装）（45分）— Julia登場、そしてPythonに戻れない
 
 > **📖 この記事は後編（実装編）です** 理論編は [【前編】第10回](/articles/ml-lecture-10-part1) をご覧ください。
 
@@ -688,7 +688,7 @@ const ∇ = gradient  # Type: \nabla<TAB>
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 潜在空間を可視化し、操作する
+### 🔬 実験・検証（30分）— 潜在空間を可視化し、操作する
 
 ### 5.1 シンボル読解テスト — 論文の数式を正確に読む
 
@@ -1192,7 +1192,7 @@ Plate notation で $N$ 個のデータ点が独立に生成されることを示
 > 1. Julia実装における `z .= μ .+ σ .* ε` （Reparameterization Trick）の `.=` ブロードキャスト代入が、Pythonの `z = mu + sigma * eps` と比べてメモリ効率で優れる理由を述べよ。
 > 2. VQ-VAEのCommitment Loss $\beta_c \|\text{sg}[\mathbf{z}_e] - e\|^2 + \|\mathbf{z}_e - \text{sg}[e]\|^2$ において、`sg`（stop-gradient）が2箇所に入る理由と、それぞれが何を学習させるかを説明せよ。
 
-## 🚀 6. 振り返りゾーン（30分）— まとめと次回予告
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 FSQ (Finite Scalar Quantization) — VQ-VAEの簡素版
 
@@ -1384,6 +1384,9 @@ Image (256×256) → Encoder → 1D sequence (1024 tokens) → Decoder → Image
 
 > **Note:** **進捗: 95% 完了** VAE系列の系譜、FSQ/Cosmos最前線、推薦書籍を把握した。Zone 7で全体を振り返る。
 
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
+
 ### 6.5 この講義の3つの核心
 
 1. **VAEは変分推論の自動化である** — 手動設計の近似分布 $q(z)$ を、NN $q_\phi(z \mid x)$ に置き換えた。Reparameterization Trickで微分可能に。
@@ -1455,7 +1458,7 @@ VAEが高次元画像を低次元潜在空間に圧縮することで、Diffusio
 本講義は基礎と離散表現に集中したため、以下は省略した:
 
 - **Hierarchical VAE** (Ladder VAE, NVAE) — 階層的潜在表現
-- **Normalizing Flow Posterior** — より柔軟な事後分布（第14回で扱う）
+- **Normalizing Flow Posterior** — より柔軟な事後分布（このシリーズでは扱わない）
 - **Conditional VAE (CVAE)** — ラベル条件付き生成
 - **Semi-supervised VAE** — ラベルなしデータの活用
 - **Variational Lossy Autoencoder (VLAE)** — 情報理論的解釈
@@ -1520,7 +1523,7 @@ $$
 graph LR
     L10["第10回: VAE<br>KL正則化"] --> L11["第11回: 最適輸送理論<br>Wasserstein距離"]
     L11 --> L12["第12回: GAN<br>WGAN理論"]
-    L12 --> L13["第13回: StyleGAN<br>制御可能な生成"]
+    L12 --> L13["第13回: 自己回帰モデル<br>連鎖律で確率分解"]
 
     style L10 fill:#e1f5fe
     style L11 fill:#fff3e0

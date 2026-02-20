@@ -10,7 +10,7 @@ time_estimate: "90 minutes"
 languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
-## 💻 4. 実装ゾーン（45分）— 3言語で動画生成を実装
+## 💻 Z5. 試練（実装）（45分）— 3言語で動画生成を実装
 
 ### 4.1 ⚡ Julia: Video Diffusion訓練実装
 
@@ -457,7 +457,7 @@ end
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 動画生成の最前線デモ
+### 🔬 実験・検証（30分）— 動画生成の最前線デモ
 
 ### 5.1 🎯 SmolVLM2-256M動画理解デモ
 
@@ -927,7 +927,7 @@ generated = ddim_sample(model, 20, 60, 60, β_schedule, num_steps=20)
 > 1. LTX-Videoが700MパラメータでFLUX等の商用モデルに近い品質を達成できる「Flexible Attention」の仕組みを説明せよ。
 > 2. SmolVLM2の256MパラメータでGPUメモリ1.38GBに収まる設計上の工夫を、attention計算の観点から述べよ。
 
-## 🚀 6. 発展ゾーン（30分）— 2024-2025最前線の動画生成 + まとめ
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 HunyuanVideo — Tencentの13B商用級モデル
 
@@ -1579,6 +1579,9 @@ graph TD
 
 ---
 
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.8 今回学んだこと（4つのKey Takeaways）
 

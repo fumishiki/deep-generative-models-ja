@@ -10,7 +10,7 @@ time_estimate: "90 minutes"
 languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
-## 💻 4. 実装ゾーン（45分）— 3言語フルスタック実装
+## 💻 Z5. 試練（実装）（45分）— 3言語フルスタック実装
 
 **ゴール**: Julia でモーション訓練、Rust で4Dレンダリング、Elixir でロボット分散制御を実装し、実践力を身につける。
 
@@ -699,7 +699,7 @@ iex> RobotSwarm.Coordinator.broadcast_action([0.0, 0.1, 0.0])
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— Tiny Motion Diffusion 演習
+### 🔬 実験・検証（30分）— Tiny Motion Diffusion 演習
 
 **ゴール**: 自分の手で Tiny Motion Diffusion Model を訓練し、モーション生成を体験する。
 
@@ -1264,7 +1264,7 @@ compare_training_configs()
 > 1. Tiny Motion DiffusionのMDMで$\mathbf{x}_0$予測を使う場合とノイズ$\epsilon$予測を使う場合の訓練目標の違いを式で示せ。
 > 2. 歩行モーション生成の評価にFID代わりにFMD（Fréchet Motion Distance）を使う理由を説明せよ。
 
-## 🚀 6. 発展ゾーン（30分）— 最新研究と未解決問題 + まとめ
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 **ゴール**: 2025-2026 の最新研究動向を理解し、次のブレイクスルーを予測する。
 
@@ -1360,6 +1360,9 @@ compare_training_configs()
 
 
 **ゴール**: 第47回の学びを整理し、第48回への接続を確認する。
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.5 本講義の3つの到達点
 

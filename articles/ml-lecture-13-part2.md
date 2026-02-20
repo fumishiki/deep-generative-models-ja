@@ -15,7 +15,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > **📖 この記事は後編（実装編）です** 理論編は [【前編】第13回](/articles/ml-lecture-13-part1) をご覧ください。
 
-## 💻 4. 実装ゾーン(45分)— PixelCNN/WaveNetをJulia+Rustで構築
+## 💻 Z5. 試練（実装）(45分)— PixelCNN/WaveNetをJulia+Rustで構築
 
 ### 4.1 環境構築
 
@@ -908,7 +908,7 @@ pub enum InferenceError {
 
 ---
 
-## 🔬 5. 実験ゾーン(30分)— 実装を動かして理解を深める
+### 🔬 実験・検証(30分)— 実装を動かして理解を深める
 
 ### 5.1 Symbol Reading Test — AR数式を読む
 
@@ -1458,7 +1458,7 @@ end
 
 ---
 
-## 🎓 6. 振り返りゾーン（30分）— まとめ・発展・問い
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 AR系統樹 — PixelCNNからVAR/Infinityまで
 
@@ -1613,7 +1613,10 @@ $$
 
 **動向**: Token→Scale→Bitへの進化 = 並列化の極限追求。
 
-### 22.8 次回予告 — 第14回: Attention
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
+
+### 6.8 次回予告 — 第14回: Attention
 
 **第14回のテーマ**: RNN/CNNの限界 → Attentionの必然性 → Transformer → GPT/BERT
 

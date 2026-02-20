@@ -10,7 +10,7 @@ time_estimate: "90 minutes"
 languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
-## 💻 4. 実装ゾーン（45分）— Julia実装でRBM + Modern Hopfield + MCMC
+## 💻 Z5. 試練（実装）（45分）— Julia実装でRBM + Modern Hopfield + MCMC
 
 ### 4.1 環境構築
 
@@ -719,7 +719,7 @@ plot(p1, p2, layout=(1, 2), size=(1000, 400))
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— EBMの挙動を深掘り
+### 🔬 実験・検証（30分）— EBMの挙動を深掘り
 
 ### 5.1 RBMの記憶容量実験
 
@@ -1048,7 +1048,7 @@ plot(p1, p2, layout=(1, 2), size=(1200, 400))
 > 1. CD-k実装でPositive/Negativeの勾配 $\nabla_\theta[\log p(\mathbf{v}^+) - \log p(\mathbf{v}^-)]$ を計算する際、$k$ が小さいと推定が偏る理由を述べよ。
 > 2. Modern HopfieldのAttentionとの等価性を数値実験で検証する際、どの出力（更新則の数値一致）を確認すべきか述べよ。
 
-## 🚀 6. 発展ゾーン（20分）— 最新研究とEBMの未来
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 NRGPT: GPTをEBMとして再解釈（2025）
 
@@ -1243,7 +1243,7 @@ graph TD
 > 1. EBMとScore Matchingの接続式 $s_\theta(\mathbf{x}) = -\nabla_\mathbf{x} E_\theta(\mathbf{x})$ を使い、なぜScore MatchingがZ(θ)を回避できるか説明せよ。
 > 2. Energy Matching が Flow Matching + EBMを統一する数学的根拠（損失関数の形）を述べよ。
 
-## 🎓 6. 振り返り + 統合ゾーン（30分）— EBMの本質と次への接続
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 本講義で学んだこと
 

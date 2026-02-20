@@ -11,7 +11,7 @@ languages: ["Julia", "Rust", "Elixir"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 > **📖 前編（理論編）**: [第32回前編: Production理論編](./ml-lecture-32-part1) | **← 理論・数式ゾーンへ**
-## 💻 4. 実装ゾーン（45分）— 3言語E2E統合システム構築
+## 💻 Z5. 試練（実装）（45分）— 3言語E2E統合システム構築
 
 ### 4.1 ⚡ Julia訓練パイプライン完全版
 
@@ -614,7 +614,7 @@ echo "🦀 Rust Inference: http://localhost:8080"
 > 2. ElixirのCircuit Breaker（回路遮断器）パターンが、下流サービスの障害伝播をどのように防ぐか。状態遷移（Closed/Open/Half-Open）の数値条件も含めて説明せよ。
 
 ---
-## 🔬 5. 実験ゾーン（30分）— E2Eテスト & 統合デモ
+### 🔬 実験・検証（30分）— E2Eテスト & 統合デモ
 
 ### 5.1 E2Eテスト完全版
 
@@ -1035,7 +1035,7 @@ kubectl apply -f chaos_pod_kill.yaml
 > 1. Continual Learning（継続的学習）において、Catastrophic Forgetting（破滅的忘却）を防ぐEWC（Elastic Weight Consolidation）の損失の各項の役割を説明せよ。
 > 2. Active Learningが人間アノテーションコストを削減できる理由を、不確実性の高いサンプルへの集中という観点から、ランダムサンプリングとの比較で示せ。
 
-## Z6: 発展ゾーン — Production ML研究系譜
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 > **Note:** **ゴール**: Production MLの最新研究動向を追跡し、次世代システム設計の指針を得る
 
@@ -1233,7 +1233,7 @@ Retraining Pipeline (Kubeflow) ────→ Model Registry
 
 ---
 
-## Z7: 振り返りゾーン — Course III完全読了
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 > **Note:** **おめでとう！** Course III (全14講: 第19-32回) を完全制覇した！
 

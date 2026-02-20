@@ -22,7 +22,7 @@ topics: ["machinelearning", "prompt", "rust", "julia", "llm"]
 published: true
 ---
 
-## 💻 4. 実装ゾーン（45分）— Template Engine + Julia実験
+## 💻 Z5. 試練（実装）（45分）— Template Engine + Julia実験
 
 **ゴール**: プロンプトを型安全に管理する🦀 Rust Template Engineと、プロンプト効果を定量測定する⚡ Julia実験環境を構築する。
 
@@ -642,7 +642,7 @@ published: true
 > 1. RustのPrompt Template EngineでJSONスキーマバリデーションを実装する型安全上の理由は？
 > 2. Few-shot例の類似度ベース選択（Semantic Similarity）で過適合が起きる条件は？
 
-## 🔬 5. 実験ゾーン（30分）— SmolVLM2 Prompt最適化
+### 🔬 実験・検証（30分）— SmolVLM2 Prompt最適化
 
 **ゴール**: 軽量VLM (SmolVLM2-256M)を使って、プロンプト手法の効果を実測する。
 
@@ -1147,7 +1147,7 @@ Few-shot CoT (3例) + Markdown構造化 + Self-Consistency (N=3~5)
 
 ---
 
-## 🎓 6. 振り返りと発展ゾーン（30分）— まとめと最新研究動向
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 **ゴール**: DSPy、Prompt Compression、Negative Promptingの最先端技術を学ぶ。
 
@@ -1489,6 +1489,9 @@ Output: These are some headphones. They're wireless. You can use them to listen 
 Input: {product}
 Output:
 ```
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.6 本講義の3つの核心
 

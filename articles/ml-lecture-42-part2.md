@@ -13,7 +13,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 **→ 前編（理論編）**: [ml-lecture-42-part1](./ml-lecture-42-part1)
 
-## 💻 4. 実装ゾーン（45分）— 統一的実装フレームワーク
+## 💻 Z5. 試練（実装）（45分）— 統一的実装フレームワーク
 
 ### 4.1 抽象化層の設計原理
 
@@ -781,7 +781,7 @@ train!(ddpm, imagenet_loader, AdamW(1e-4); epochs=1000)
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— 統一的ベンチマーク実験
+### 🔬 実験・検証（30分）— 統一的ベンチマーク実験
 
 ### 5.1 実験設定
 
@@ -1030,7 +1030,7 @@ end
 > 1. 統一フレームワーク実装で、VAE・GAN・Flow・Diffusion の4ファミリーに共通の `train_step(x)` 関数を実装するとき、各ファミリーで「何を計算しているか」を一文で言い表せ（損失関数の本質）。
 > 2. Score Matching 損失 $\mathbb{E}[\|\nabla_x\log p_\sigma - s_\theta\|^2]$ と Flow Matching 損失 $\mathbb{E}[\|v_\theta - u_t\|^2]$ が、最適解において同じ生成分布を定義することを、確率流 ODE の等価性から説明せよ。
 
-## 🚀 6. 発展ゾーン（30分）— 最新研究動向と統一理論の展望 + まとめ
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 Stochastic Interpolants Framework の深掘り
 
@@ -1457,6 +1457,9 @@ Text Transformer の出力を Diffusion の条件として注入。Text-to-Image
 
 ---
 
+
+
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 6.9 10講義の旅路を振り返る
 

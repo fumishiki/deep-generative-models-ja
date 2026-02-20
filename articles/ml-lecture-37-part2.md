@@ -11,7 +11,7 @@ languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 
-## 💻 4. 実装ゾーン（45分）— Julia DifferentialEquations.jlでSDE数値解法
+## 💻 Z5. 試練（実装）（45分）— Julia DifferentialEquations.jlでSDE数値解法
 
 ### 4.1 Julia DifferentialEquations.jl入門 — SDEProblemの定義
 
@@ -615,7 +615,7 @@ title!("Ornstein-Uhlenbeck過程 アンサンブル平均")
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— VP-SDE ↔ Probability Flow ODE変換 + 軌道可視化
+### 🔬 実験・検証（30分）— VP-SDE ↔ Probability Flow ODE変換 + 軌道可視化
 
 ### 5.1 演習: VP-SDE軌道とPF-ODE軌道の比較
 
@@ -1259,7 +1259,7 @@ plot(p1, p2, layout=(1,2), size=(1200, 400))
 > 1. Julia DifferentialEquations.jl での `SDEProblem` 実装において、VP-SDEとVE-SDEのdrift関数とdiffusion関数の具体的な違いをコードの変数名と対応する数式で示せ。
 > 2. Predictor-Corrector実装でCorrectorのLangevinステップ数を増やすとサンプル品質が向上するが、計算コストとのトレードオフが生じる境界条件を述べよ。
 
-## 🚀 6. 発展ゾーン（20分）— 研究動向とSDEの未来
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 SDE収束理論の最新進展（2024-2025）
 
@@ -1364,7 +1364,7 @@ plot(p1, p2, layout=(1,2), size=(1200, 400))
 > 1. SDE → Flow Matching への接続において、Fokker-Planck方程式の連続性方程式としての解釈が条件付き速度場 $u_t(\mathbf{x}|\mathbf{x}_1)$ の設計にどう寄与するか述べよ。
 > 2. VP-SDE・VE-SDE・Sub-VP SDE・PF-ODEの4定式化が同一の周辺分布 $p_t(\mathbf{x})$ を生成できる条件と、それぞれの数値解法上の有利な点を一行ずつ述べよ。
 
-## 🎓 6. 振り返り + 統合ゾーン（30分）— まとめとFAQ
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 本回のまとめ — 3つの核心
 

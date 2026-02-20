@@ -10,7 +10,7 @@ time_estimate: "90 minutes"
 languages: ["Julia", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
-## 💻 4. 実装ゾーン（45分）— Julia Score Matching & Rust Langevin
+## 💻 Z5. 試練（実装）（45分）— Julia Score Matching & Rust Langevin
 
 ### 4.1 環境セットアップ
 
@@ -729,7 +729,7 @@ println("Rust-accelerated sample: $(x_final)")
 
 ---
 
-## 🔬 5. 実験ゾーン（30分）— NCSN訓練とAnnealed Langevin
+### 🔬 実験・検証（30分）— NCSN訓練とAnnealed Langevin
 
 ### 5.1 自己診断テスト — Score Matching理論
 
@@ -955,7 +955,7 @@ plot(p1, p2, layout=(1, 2), size=(800, 400))
 > 1. Julia実装の Score Matching で Fisher Divergence が数値的に不安定になる状況と、log-sum-exp による安定化の方法を述べよ。
 > 2. NCSNの訓練においてノイズレベル $\sigma_i$ を等比数列で設定する根拠を、スコア関数の大きさのスケール依存性から説明せよ。
 
-## 🚀 6. 発展ゾーン（20分）— Score Matching研究の系譜と最新動向
+## 🔬 Z6. 新たな冒険へ（研究動向）
 
 ### 6.1 Score-Based Generative Modelsの系譜
 
@@ -1019,7 +1019,7 @@ VP-SDE (DDPM型) と VE-SDE (NCSN型) を統一的に記述。第37回で完全�
 > 1. DSMとDDPMの $\epsilon$-prediction損失が数学的に等価であることを示す式変換の核心ステップを導け。
 > 2. Sliced Score Matching がランダム投影ベクトル $\mathbf{v}$ を使って計算コストを $O(D)$ に削減できる理由を述べよ。
 
-## 🎓 6. 振り返り + 統合ゾーン（30分）— まとめとCourse IV進行
+## 🎭 Z7. エピローグ（まとめ・FAQ・次回予告）
 
 ### 7.1 本講義の核心 — 4つの重要知見
 
