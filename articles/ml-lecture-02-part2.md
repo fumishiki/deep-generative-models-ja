@@ -24,29 +24,29 @@ NumPyの `np.linalg` モジュールは、線形代数の主要な演算を全�
 
 | 関数 | 数式 | 用途 |
 |:-----|:-----|:-----|
-| `A @ B` | `$AB$` | 行列積 |
-| `np.linalg.inv(A)` | `$A^{-1}$` | 逆行列（非推奨、solveを使え） |
-| `np.linalg.solve(A, b)` | `$A^{-1}\mathbf{b}$` | 連立方程式 |
-| `np.linalg.eigh(A)` | `$A = Q\Lambda Q^\top$` | 対称行列の固有値分解 |
-| `np.linalg.svd(A)` | `$A = U\Sigma V^\top$` | 特異値分解（第3回） |
-| `np.linalg.qr(A)` | `$A = QR$` | QR分解 |
-| `np.linalg.cholesky(A)` | `$A = LL^\top$` | Cholesky分解 |
-| `np.linalg.norm(x)` | `$\|\mathbf{x}\|$` | ノルム |
-| `np.linalg.det(A)` | `$\det(A)$` | 行列式 |
-| `np.trace(A)` | `$\text{tr}(A)$` | トレース |
-| `np.linalg.matrix_rank(A)` | `$\text{rank}(A)$` | ランク |
-| `np.linalg.lstsq(A, b)` | `$\hat{\mathbf{x}} = \arg\min\|A\mathbf{x} - \mathbf{b}\|^2$` | 最小二乗 |
+| `A @ B` | $AB$ | 行列積 |
+| `np.linalg.inv(A)` | $A^{-1}$ | 逆行列（非推奨、solveを使え） |
+| `np.linalg.solve(A, b)` | $A^{-1}\mathbf{b}$ | 連立方程式 |
+| `np.linalg.eigh(A)` | $A = Q\Lambda Q^\top$ | 対称行列の固有値分解 |
+| `np.linalg.svd(A)` | $A = U\Sigma V^\top$ | 特異値分解（第3回） |
+| `np.linalg.qr(A)` | $A = QR$ | QR分解 |
+| `np.linalg.cholesky(A)` | $A = LL^\top$ | Cholesky分解 |
+| `np.linalg.norm(x)` | $\|\mathbf{x}\|$ | ノルム |
+| `np.linalg.det(A)` | $\det(A)$ | 行列式 |
+| `np.trace(A)` | $\text{tr}(A)$ | トレース |
+| `np.linalg.matrix_rank(A)` | $\text{rank}(A)$ | ランク |
+| `np.linalg.lstsq(A, b)` | $\hat{\mathbf{x}} = \arg\min\|A\mathbf{x} - \mathbf{b}\|^2$ | 最小二乗 |
 
 > **⚠️ Warning:** Section 3.3 で述べたとおり、逆行列の直接計算は避けましょう [^8]。
 
 表の関数を一通り動かして、何が返ってくるか手で確認しておこう。
 
-```math
+$$
 A = LL^\top = Q\Lambda Q^\top \quad (A: \text{正定値対称行列})
-```
+$$
 
-- `np.linalg.eigh` は固有値を昇順に返す（`$\lambda_1 \leq \lambda_2 \leq \cdots$`）— 降順が欲しければ `[::-1]` で反転
-- `np.linalg.cholesky` は下三角行列 `$L$` を返す（`$A = LL^\top$`、`$L^\top$` ではなく `$L$`）
+- `np.linalg.eigh` は固有値を昇順に返す（$\lambda_1 \leq \lambda_2 \leq \cdots$）— 降順が欲しければ `[::-1]` で反転
+- `np.linalg.cholesky` は下三角行列 $L$ を返す（$A = LL^\top$、$L^\top$ ではなく $L$）
 - `np.linalg.norm(A)` のデフォルトは**Frobeniusノルム**（行列の場合）— スペクトルノルムは `norm(A, 2)`
 
 ```python
@@ -95,21 +95,21 @@ print(f"条件数 (固有値比) = {kappa_from_eig:.2f}  ✓")
 
 | 演算 | 数式 | einsum |
 |:-----|:-----|:-------|
-| 内積 | `$\mathbf{a}^\top\mathbf{b} = \sum_i a_i b_i$` | `np.einsum('i,i->', a, b)` |
-| 外積 | `$\mathbf{a}\mathbf{b}^\top$` | `np.einsum('i,j->ij', a, b)` |
-| 行列積 | `$C_{ij} = \sum_k A_{ik}B_{kj}$` | `np.einsum('ik,kj->ij', A, B)` |
-| 行列のトレース | `$\text{tr}(A) = \sum_i A_{ii}$` | `np.einsum('ii->', A)` |
-| 行列転置 | `$B_{ij} = A_{ji}$` | `np.einsum('ij->ji', A)` |
-| バッチ行列積 | `$C_{bij} = \sum_k A_{bik}B_{bkj}$` | `np.einsum('bik,bkj->bij', A, B)` |
-| 二次形式 | `$\mathbf{x}^\top A \mathbf{x}$` | `np.einsum('i,ij,j->', x, A, x)` |
+| 内積 | $\mathbf{a}^\top\mathbf{b} = \sum_i a_i b_i$ | `np.einsum('i,i->', a, b)` |
+| 外積 | $\mathbf{a}\mathbf{b}^\top$ | `np.einsum('i,j->ij', a, b)` |
+| 行列積 | $C_{ij} = \sum_k A_{ik}B_{kj}$ | `np.einsum('ik,kj->ij', A, B)` |
+| 行列のトレース | $\text{tr}(A) = \sum_i A_{ii}$ | `np.einsum('ii->', A)` |
+| 行列転置 | $B_{ij} = A_{ji}$ | `np.einsum('ij->ji', A)` |
+| バッチ行列積 | $C_{bij} = \sum_k A_{bik}B_{bkj}$ | `np.einsum('bik,bkj->bij', A, B)` |
+| 二次形式 | $\mathbf{x}^\top A \mathbf{x}$ | `np.einsum('i,ij,j->', x, A, x)` |
 
-```math
+$$
 \mathbf{a}^\top\mathbf{b}=\sum_i a_i b_i
 
 C_{ij}=\sum_k A_{ik}B_{kj}
 
 \mathbf{x}^\top M\mathbf{x}=\sum_{i,j}x_i M_{ij}x_j
-```
+$$
 
 ```python
 import numpy as np
@@ -152,14 +152,14 @@ PyTorch でも `torch.einsum` が使え、同じ添字規則のまま自動微�
 
 行列のメモリ上での格納順序が計算速度に直結する。
 
-| 方式 | 行列 `$A_{ij}$` の格納順 | 言語/ライブラリ |
+| 方式 | 行列 $A_{ij}$ の格納順 | 言語/ライブラリ |
 |:-----|:---------------------|:-------------|
-| **Row-major (C order)** | `$A_{00}, A_{01}, A_{02}, A_{10}, \ldots$` | C, Python/NumPy, PyTorch |
-| **Column-major (Fortran order)** | `$A_{00}, A_{10}, A_{20}, A_{01}, \ldots$` | Fortran, Julia, MATLAB, R |
+| **Row-major (C order)** | $A_{00}, A_{01}, A_{02}, A_{10}, \ldots$ | C, Python/NumPy, PyTorch |
+| **Column-major (Fortran order)** | $A_{00}, A_{10}, A_{20}, A_{01}, \ldots$ | Fortran, Julia, MATLAB, R |
 
 **キャッシュ効率**: メモリは連続アクセスが速い。Row-majorでは**行方向**のアクセスが高速、Column-majorでは**列方向**が高速。
 
-> **Note:** **なぜこれが重要か**: 行列積 `$C = AB$` を実装するとき、ナイーブな3重ループの順序 (i, j, k) vs (i, k, j) でキャッシュヒット率が大きく変わり、性能が数倍変わることがある。NumPy は内部で最適化された BLAS（Basic Linear Algebra Subprograms）を呼んでいるので、ユーザーが意識する必要は少ないが、JuliaやRust等で自前実装する場合は必須の知識だ。第9回（Julia登場）と第11回（Rust登場）で改めて扱う。
+> **Note:** **なぜこれが重要か**: 行列積 $C = AB$ を実装するとき、ナイーブな3重ループの順序 (i, j, k) vs (i, k, j) でキャッシュヒット率が大きく変わり、性能が数倍変わることがある。NumPy は内部で最適化された BLAS（Basic Linear Algebra Subprograms）を呼んでいるので、ユーザーが意識する必要は少ないが、JuliaやRust等で自前実装する場合は必須の知識だ。第9回（Julia登場）と第11回（Rust登場）で改めて扱う。
 
 「本当に差が出るのか」は自分の手で測るのが一番速い。`axis=1`（行方向）と `axis=0`（列方向）で `np.sum` の時間を比べるだけでも、キャッシュ局所性の差が出る。
 
@@ -169,18 +169,18 @@ PyTorch でも `torch.einsum` が使え、同じ添字規則のまま自動微�
 
 | 演算 | 計算量 | 備考 |
 |:-----|:------|:-----|
-| ベクトル内積 | `$O(n)$` | |
-| 行列-ベクトル積 | `$O(mn)$` | `$A \in \mathbb{R}^{m \times n}$` |
-| 行列-行列積 | `$O(mnp)$` | `$A \in \mathbb{R}^{m \times n}, B \in \mathbb{R}^{n \times p}$` |
-| LU分解 | `$O(\frac{2}{3}n^3)$` | 連立方程式 |
-| Cholesky分解 | `$O(\frac{1}{3}n^3)$` | 正定値行列 |
-| QR分解 | `$O(\frac{4}{3}n^3)$` | Householder法 |
-| 固有値分解 | `$O(n^3)$` | QRアルゴリズム |
-| SVD | `$O(mn\min(m,n))$` | 第3回で詳説 |
-| Attention `$QK^\top$` | `$O(n^2 d)$` | シーケンス長`$n$`の二乗! |
+| ベクトル内積 | $O(n)$ | |
+| 行列-ベクトル積 | $O(mn)$ | $A \in \mathbb{R}^{m \times n}$ |
+| 行列-行列積 | $O(mnp)$ | $A \in \mathbb{R}^{m \times n}, B \in \mathbb{R}^{n \times p}$ |
+| LU分解 | $O(\frac{2}{3}n^3)$ | 連立方程式 |
+| Cholesky分解 | $O(\frac{1}{3}n^3)$ | 正定値行列 |
+| QR分解 | $O(\frac{4}{3}n^3)$ | Householder法 |
+| 固有値分解 | $O(n^3)$ | QRアルゴリズム |
+| SVD | $O(mn\min(m,n))$ | 第3回で詳説 |
+| Attention $QK^\top$ | $O(n^2 d)$ | シーケンス長$n$の二乗! |
 
 <details><summary>Strassenアルゴリズムと理論限界</summary>
-行列積の計算量は長らく `$O(n^3)$` が最善と考えられていたが、1969年にStrassenが `$O(n^{2.807})$` のアルゴリズムを発見した。現在の理論的最善は `$O(n^{2.3728\ldots})$` [Alman & Vassilevska Williams, 2021] だが、定数が大きく実用されていない。
+行列積の計算量は長らく $O(n^3)$ が最善と考えられていたが、1969年にStrassenが $O(n^{2.807})$ のアルゴリズムを発見した。現在の理論的最善は $O(n^{2.3728\ldots})$ [Alman & Vassilevska Williams, 2021] だが、定数が大きく実用されていない。
 
 GPU上の行列積は、NVIDIA の cuBLAS が最適化しており、Tensor Core を使えばFP16で理論限界に近い性能が出る。Transformerの訓練速度は、本質的にこの行列積の速度で決まる。
 </details>
@@ -191,24 +191,24 @@ GPU上の行列積は、NVIDIA の cuBLAS が最適化しており、Tensor Core
 
 | # | 数式パターン | コード | 例 |
 |:--|:-----------|:------|:---|
-| 1 | `$\mathbf{a}^\top\mathbf{b}$` | `np.dot(a, b)` or `a @ b` | 内積 |
-| 2 | `$AB$` | `A @ B` | 行列積 |
-| 3 | `$A^\top$` | `A.T` | 転置 |
-| 4 | `$A^{-1}\mathbf{b}$` | `np.linalg.solve(A, b)` | 連立方程式 |
-| 5 | `$\|x\|_2$` | `np.linalg.norm(x)` | L2ノルム |
-| 6 | `$\text{diag}(\lambda_1, \ldots)$` | `np.diag(lambdas)` | 対角行列 |
-| 7 | `$\sum_{ij} A_{ij} B_{ij}$` | `np.einsum('ij,ij->', A, B)` | Frobenius内積 |
+| 1 | $\mathbf{a}^\top\mathbf{b}$ | `np.dot(a, b)` or `a @ b` | 内積 |
+| 2 | $AB$ | `A @ B` | 行列積 |
+| 3 | $A^\top$ | `A.T` | 転置 |
+| 4 | $A^{-1}\mathbf{b}$ | `np.linalg.solve(A, b)` | 連立方程式 |
+| 5 | $\|x\|_2$ | `np.linalg.norm(x)` | L2ノルム |
+| 6 | $\text{diag}(\lambda_1, \ldots)$ | `np.diag(lambdas)` | 対角行列 |
+| 7 | $\sum_{ij} A_{ij} B_{ij}$ | `np.einsum('ij,ij->', A, B)` | Frobenius内積 |
 > **Note:** これらの翻訳パターンは、後の講義（第6回のKL/CE、VAEのELBO、Diffusionのスコア等）で「そのまま」出てくる。ここで手に馴染ませると、以降の数式が急に読みやすくなる。
 
-### 4.6 行列の指数関数 `$\exp(A)$`
+### 4.6 行列の指数関数 $\exp(A)$
 
 行列の指数関数は、SSM（State Space Models、第26回）の中核:
 
-```math
+$$
 \exp(A) = \sum_{k=0}^{\infty} \frac{A^k}{k!} = I + A + \frac{A^2}{2!} + \frac{A^3}{3!} + \cdots
-```
+$$
 
-`$A$` が対角化可能なら: `$\exp(A) = V \exp(\Lambda) V^{-1} = V \text{diag}(e^{\lambda_1}, \ldots, e^{\lambda_n}) V^{-1}$`
+$A$ が対角化可能なら: $\exp(A) = V \exp(\Lambda) V^{-1} = V \text{diag}(e^{\lambda_1}, \ldots, e^{\lambda_n}) V^{-1}$
 
 ```python
 import numpy as np
@@ -237,7 +237,7 @@ print("exp(A) via eig:  \n", np.round(eA_eig.real, 6))
 # exp([[0,-1],[1,0]]) = [[cos1, -sin1],[sin1, cos1]] (回転行列)
 ```
 
-> **SSMへの予告**: 第26回（State Space Models / Mamba）では、`$\exp(A\Delta t)$` の効率的な計算がモデルの性能を左右する。連続時間の状態方程式 `$\dot{\mathbf{x}} = A\mathbf{x} + B\mathbf{u}$` を離散化する際にこの行列指数関数が登場する。覚えておいてほしい。
+> **SSMへの予告**: 第26回（State Space Models / Mamba）では、$\exp(A\Delta t)$ の効率的な計算がモデルの性能を左右する。連続時間の状態方程式 $\dot{\mathbf{x}} = A\mathbf{x} + B\mathbf{u}$ を離散化する際にこの行列指数関数が登場する。覚えておいてほしい。
 
 ### 4.7 数値計算のピットフォール
 
@@ -250,7 +250,7 @@ print("exp(A) via eig:  \n", np.round(eA_eig.real, 6))
 | 大行列の行列式 | オーバーフロー/アンダーフロー | `np.linalg.slogdet` で対数を取る |
 | Gram-Schmidt の直交性劣化 | 浮動小数点誤差の蓄積 | Modified Gram-Schmidt or QR分解を使う |
 | 固有値の順序仮定 | `eig` は固有値をソートしない | `eigh` を使う、または明示的にソート |
-| 対称性の仮定崩れ | 丸め誤差で `$A \neq A^\top$` | `A = (A + A.T) / 2` で強制対称化 |
+| 対称性の仮定崩れ | 丸め誤差で $A \neq A^\top$ | `A = (A + A.T) / 2` で強制対称化 |
 
 ```python
 import numpy as np
@@ -290,19 +290,19 @@ print(f"強制対称化後: {np.max(np.abs(S_sym - S_sym.T)):.2e}")
 
 「正方行列を分解する手法」を3つ並べて、**同じ問題に対して異なる手法がなぜ異なる答えを返すか**を数値で確認する。
 
-```math
+$$
 A = QR \quad (Q^\top Q = I,\ R \text{ 上三角}) \quad \Leftarrow \text{最小二乗法・直交基底}
-```
+$$
 
-```math
+$$
 A = LL^\top \quad (L \text{ 下三角}) \quad \Leftarrow \text{正定値行列の連立方程式・サンプリング}
-```
+$$
 
-```math
+$$
 A = Q\Lambda Q^\top \quad (Q^\top Q = I,\ \Lambda \text{ 対角}) \quad \Leftarrow \text{スペクトル解析・PCA}
-```
+$$
 
-- `$A$` は共通: `$3 \times 3$` 正定値対称行列
+- $A$ は共通: $3 \times 3$ 正定値対称行列
 - QR: 全行列に適用可（ただし対称性を活用しない）
 - Cholesky: 正定値行列専用 — LUの半分の計算量
 - Eigendecomposition: 対称行列専用 — スペクトル情報を完全に取り出す
@@ -378,77 +378,77 @@ print("3手法全て一致 ✓")
 
 以下の数式を声に出して読み、意味を説明せよ。
 
-<details><summary>Q1: `$A \in \mathbb{R}^{m \times n}$`</summary>
-**読み**: 「`$A$` は `$m$` 行 `$n$` 列の実数行列」
+<details><summary>Q1: $A \in \mathbb{R}^{m \times n}$</summary>
+**読み**: 「$A$ は $m$ 行 $n$ 列の実数行列」
 
-**意味**: `$A$` は `$m \times n$` 個の実数値を持つ行列。線形写像 `$A: \mathbb{R}^n \to \mathbb{R}^m$` を表現する。
+**意味**: $A$ は $m \times n$ 個の実数値を持つ行列。線形写像 $A: \mathbb{R}^n \to \mathbb{R}^m$ を表現する。
 </details>
 
-<details><summary>Q2: `$\mathbf{v} \in \ker(A) \iff A\mathbf{v} = \mathbf{0}$`</summary>
-**読み**: 「`$\mathbf{v}$` が `$A$` の核に属することと、`$A\mathbf{v}$` がゼロベクトルになることは同値」
+<details><summary>Q2: $\mathbf{v} \in \ker(A) \iff A\mathbf{v} = \mathbf{0}$</summary>
+**読み**: 「$\mathbf{v}$ が $A$ の核に属することと、$A\mathbf{v}$ がゼロベクトルになることは同値」
 
-**意味**: 核（null space）は、`$A$` で潰されてゼロになるベクトル全体の集合。Rank-Nullity定理で `$\dim(\ker(A)) = n - \text{rank}(A)$`。
+**意味**: 核（null space）は、$A$ で潰されてゼロになるベクトル全体の集合。Rank-Nullity定理で $\dim(\ker(A)) = n - \text{rank}(A)$。
 </details>
 
-<details><summary>Q3: `$\text{tr}(ABC) = \text{tr}(BCA) = \text{tr}(CAB)$`</summary>
-**読み**: 「`$ABC$` のトレースは `$BCA$` のトレースに等しく、`$CAB$` のトレースにも等しい」
+<details><summary>Q3: $\text{tr}(ABC) = \text{tr}(BCA) = \text{tr}(CAB)$</summary>
+**読み**: 「$ABC$ のトレースは $BCA$ のトレースに等しく、$CAB$ のトレースにも等しい」
 
-**意味**: トレースの巡回性（cyclic property）。行列積の順序を巡回的に入れ替えてもトレースは変わらない。行列微分で頻出。**注意**: `$\text{tr}(ABC) \neq \text{tr}(ACB)$` — 巡回的でない並べ替えではトレースは変わる。
+**意味**: トレースの巡回性（cyclic property）。行列積の順序を巡回的に入れ替えてもトレースは変わらない。行列微分で頻出。**注意**: $\text{tr}(ABC) \neq \text{tr}(ACB)$ — 巡回的でない並べ替えではトレースは変わる。
 </details>
 
-<details><summary>Q4: `$A \succ 0$`</summary>
-**読み**: 「`$A$` は正定値」
+<details><summary>Q4: $A \succ 0$</summary>
+**読み**: 「$A$ は正定値」
 
-**意味**: `$\mathbf{x}^\top A \mathbf{x} > 0$` for all `$\mathbf{x} \neq \mathbf{0}$`。全ての固有値が正。Cholesky分解が可能。共分散行列が正則なとき成立。
+**意味**: $\mathbf{x}^\top A \mathbf{x} > 0$ for all $\mathbf{x} \neq \mathbf{0}$。全ての固有値が正。Cholesky分解が可能。共分散行列が正則なとき成立。
 </details>
 
-<details><summary>Q5: `$\hat{\mathbf{x}} = (A^\top A)^{-1} A^\top \mathbf{b}$`</summary>
-**読み**: 「`$\hat{\mathbf{x}}$` は `$A^\top A$` の逆行列と `$A^\top \mathbf{b}$` の積」
+<details><summary>Q5: $\hat{\mathbf{x}} = (A^\top A)^{-1} A^\top \mathbf{b}$</summary>
+**読み**: 「$\hat{\mathbf{x}}$ は $A^\top A$ の逆行列と $A^\top \mathbf{b}$ の積」
 
-**意味**: 最小二乗解。`$\|A\mathbf{x} - \mathbf{b}\|^2$` を最小にする `$\mathbf{x}$`。正規方程式 `$A^\top A\hat{\mathbf{x}} = A^\top\mathbf{b}$` の解。`$A^\top A$` が正則（`$A$` がフルランク列）のとき一意。
+**意味**: 最小二乗解。$\|A\mathbf{x} - \mathbf{b}\|^2$ を最小にする $\mathbf{x}$。正規方程式 $A^\top A\hat{\mathbf{x}} = A^\top\mathbf{b}$ の解。$A^\top A$ が正則（$A$ がフルランク列）のとき一意。
 </details>
 
-<details><summary>Q6: `$A = Q\Lambda Q^\top$`, `$Q^\top Q = I$`</summary>
-**読み**: 「`$A$` は直交行列 `$Q$` と対角行列 `$\Lambda$` でスペクトル分解される」
+<details><summary>Q6: $A = Q\Lambda Q^\top$, $Q^\top Q = I$</summary>
+**読み**: 「$A$ は直交行列 $Q$ と対角行列 $\Lambda$ でスペクトル分解される」
 
-**意味**: 対称行列のスペクトル定理。`$Q$` の列が固有ベクトル、`$\Lambda$` の対角成分が固有値。PCA、共分散行列の分析で必須。
+**意味**: 対称行列のスペクトル定理。$Q$ の列が固有ベクトル、$\Lambda$ の対角成分が固有値。PCA、共分散行列の分析で必須。
 </details>
 
-<details><summary>Q7: `$P = A(A^\top A)^{-1}A^\top$`, `$P^2 = P$`</summary>
-**読み**: 「`$P$` は射影行列で、2回適用しても結果が変わらない（冪等）」
+<details><summary>Q7: $P = A(A^\top A)^{-1}A^\top$, $P^2 = P$</summary>
+**読み**: 「$P$ は射影行列で、2回適用しても結果が変わらない（冪等）」
 
-**意味**: `$P$` は `$A$` の列空間への直交射影。`$P\mathbf{b}$` は `$\mathbf{b}$` に最も近い `$\text{Col}(A)$` 上の点。
+**意味**: $P$ は $A$ の列空間への直交射影。$P\mathbf{b}$ は $\mathbf{b}$ に最も近い $\text{Col}(A)$ 上の点。
 </details>
 
-<details><summary>Q8: `$\|\mathbf{u}\| \|\mathbf{v}\| \cos\theta = \langle \mathbf{u}, \mathbf{v} \rangle$`</summary>
-**読み**: 「`$\mathbf{u}$` と `$\mathbf{v}$` のノルムの積にコサインをかけたものが内積」
+<details><summary>Q8: $\|\mathbf{u}\| \|\mathbf{v}\| \cos\theta = \langle \mathbf{u}, \mathbf{v} \rangle$</summary>
+**読み**: 「$\mathbf{u}$ と $\mathbf{v}$ のノルムの積にコサインをかけたものが内積」
 
-**意味**: 内積の幾何学的解釈。`$\cos\theta = 1$`（平行）→内積最大、`$\cos\theta = 0$`（直交）→内積ゼロ。Attention[^1]の類似度計算の数学的基盤。
+**意味**: 内積の幾何学的解釈。$\cos\theta = 1$（平行）→内積最大、$\cos\theta = 0$（直交）→内積ゼロ。Attention[^1]の類似度計算の数学的基盤。
 </details>
 
-<details><summary>Q9: `$(AB)^{-1} = B^{-1}A^{-1}$`</summary>
-**読み**: 「`$AB$` の逆行列は `$B$` の逆行列と `$A$` の逆行列の積（順序反転）」
+<details><summary>Q9: $(AB)^{-1} = B^{-1}A^{-1}$</summary>
+**読み**: 「$AB$ の逆行列は $B$ の逆行列と $A$ の逆行列の積（順序反転）」
 
-**意味**: 「靴下を履いてから靴を履く」→「脱ぐときは靴を先に脱ぎ、次に靴下」。逆操作は順序が逆になる。`$(AB)^\top = B^\top A^\top$` と同じ原理。
+**意味**: 「靴下を履いてから靴を履く」→「脱ぐときは靴を先に脱ぎ、次に靴下」。逆操作は順序が逆になる。$(AB)^\top = B^\top A^\top$ と同じ原理。
 </details>
 
-<details><summary>Q10: `$R(\mathbf{x}) = \frac{\mathbf{x}^\top A \mathbf{x}}{\mathbf{x}^\top \mathbf{x}}$`, `$\lambda_{\min} \leq R(\mathbf{x}) \leq \lambda_{\max}$`</summary>
+<details><summary>Q10: $R(\mathbf{x}) = \frac{\mathbf{x}^\top A \mathbf{x}}{\mathbf{x}^\top \mathbf{x}}$, $\lambda_{\min} \leq R(\mathbf{x}) \leq \lambda_{\max}$</summary>
 **読み**: 「Rayleigh商は最小固有値と最大固有値の間に収まる」
 
-**意味**: 対称行列 `$A$` のRayleigh商の最大化が最大固有値と第1固有ベクトルを与える。PCA[^6][^7]の数学的基盤。
+**意味**: 対称行列 $A$ のRayleigh商の最大化が最大固有値と第1固有ベクトルを与える。PCA[^6][^7]の数学的基盤。
 </details>
 
 ### 5.2 コード翻訳テスト
 
 以下の数式をNumPyコードに翻訳せよ。
 
-<details><summary>Q1: `$C = A^\top B$` (`$A \in \mathbb{R}^{3 \times 2}, B \in \mathbb{R}^{3 \times 4}$`)</summary>
+<details><summary>Q1: $C = A^\top B$ ($A \in \mathbb{R}^{3 \times 2}, B \in \mathbb{R}^{3 \times 4}$)</summary>
 
-```math
+$$
 C = A^\top B, \quad C \in \mathbb{R}^{2 \times 4}
-```
+$$
 
-- `$A$` の転置: shape `(2, 3)` → `$B$`: shape `(3, 4)` → 積: shape `(2, 4)`
+- $A$ の転置: shape `(2, 3)` → $B$: shape `(3, 4)` → 積: shape `(2, 4)`
 - 記号対応: `A` → `A`、`B` → `B`、結果 `C` → `C`
 
 ```python
@@ -463,13 +463,13 @@ print("C.shape:", C.shape)  # (2, 4)
 落とし穴: `A @ B` はshape不一致でエラー。転置の向きを間違えやすい。
 </details>
 
-<details><summary>Q2: Frobenius ノルム `$\|A\|_F = \sqrt{\text{tr}(A^\top A)}$`</summary>
+<details><summary>Q2: Frobenius ノルム $\|A\|_F = \sqrt{\text{tr}(A^\top A)}$</summary>
 
-```math
+$$
 \|A\|_F = \sqrt{\text{tr}(A^\top A)} = \sqrt{\sum_{i,j} A_{ij}^2}
-```
+$$
 
-- shape: `$A \in \mathbb{R}^{m \times n}$` → スカラー
+- shape: $A \in \mathbb{R}^{m \times n}$ → スカラー
 - 記号: `A` → `A`、`tr` → `np.trace`、全要素二乗和の平方根
 
 ```python
@@ -488,14 +488,14 @@ print(f"||A||_F = {fro_norm:.6f}")       # 3つ全て一致
 落とし穴: `np.linalg.norm(A)` のデフォルトはFrobeniusではなく最大特異値（Spectralノルム）ではない。実は行列の場合デフォルトはFrobenius。ベクトルの場合はL2。混同に注意。
 </details>
 
-<details><summary>Q3: 二次形式 `$f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top H \mathbf{x} - \mathbf{b}^\top\mathbf{x}$`</summary>
+<details><summary>Q3: 二次形式 $f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top H \mathbf{x} - \mathbf{b}^\top\mathbf{x}$</summary>
 
-```math
+$$
 f(\mathbf{x}) = \frac{1}{2}\mathbf{x}^\top H \mathbf{x} - \mathbf{b}^\top\mathbf{x}, \quad H \in \mathbb{R}^{n \times n},\ \mathbf{x},\mathbf{b} \in \mathbb{R}^n
-```
+$$
 
-- `$\frac{1}{2}\mathbf{x}^\top H \mathbf{x}$`: スカラー（二次項）
-- `$\mathbf{b}^\top\mathbf{x}$`: スカラー（線形項）
+- $\frac{1}{2}\mathbf{x}^\top H \mathbf{x}$: スカラー（二次項）
+- $\mathbf{b}^\top\mathbf{x}$: スカラー（線形項）
 - 記号: `x` → `x`、`H` → `H`、`b` → `b`
 
 ```python
@@ -523,14 +523,14 @@ print(f"f(x*) = {f_min:.4f}")   # f(x*) = -b^T H^{-1} b / 2
 この形は最小二乗法・ニュートン法・ガウス過程回帰で頻出する。
 </details>
 
-<details><summary>Q4: PCA次元削減 `$Z = \tilde{X} Q_k$`</summary>
+<details><summary>Q4: PCA次元削減 $Z = \tilde{X} Q_k$</summary>
 
-```math
+$$
 Z = \tilde{X} Q_k, \quad \tilde{X} \in \mathbb{R}^{N \times d},\ Q_k \in \mathbb{R}^{d \times k},\ Z \in \mathbb{R}^{N \times k}
-```
+$$
 
-- `$\tilde{X}$`: 中心化データ（各列の平均ゼロ）
-- `$Q_k$`: 共分散行列の上位 `$k$` 固有ベクトルを列に持つ行列
+- $\tilde{X}$: 中心化データ（各列の平均ゼロ）
+- $Q_k$: 共分散行列の上位 $k$ 固有ベクトルを列に持つ行列
 - shape: `(N, d) @ (d, k)` → `(N, k)`
 
 ```python
@@ -563,14 +563,14 @@ print(f"explained variance ratio: {eigvals[idx[:k]] / eigvals.sum()}")
 落とし穴: `np.linalg.eigh` は固有値を**昇順**に返す。PCAでは分散大 = 固有値大 の成分から使うので、`[::-1]` で降順にする。
 </details>
 
-<details><summary>Q5: Cholesky サンプリング `$\mathbf{x} = \boldsymbol{\mu} + L\mathbf{z}$`, `$\mathbf{z} \sim \mathcal{N}(\mathbf{0}, I)$`</summary>
+<details><summary>Q5: Cholesky サンプリング $\mathbf{x} = \boldsymbol{\mu} + L\mathbf{z}$, $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, I)$</summary>
 
-```math
+$$
 \mathbf{x} = \boldsymbol{\mu} + L\mathbf{z}, \quad \mathbf{z} \sim \mathcal{N}(\mathbf{0}, I_d), \quad \Sigma = LL^\top
-```
+$$
 
-- `$\mathbb{E}[\mathbf{x}] = \boldsymbol{\mu}$`、`$\text{Cov}[\mathbf{x}] = L \cdot I \cdot L^\top = LL^\top = \Sigma$`
-- 記号: `mu` → `$\boldsymbol{\mu}$`、`L` → `$L$`（下三角）、`z` → `$\mathbf{z}$`
+- $\mathbb{E}[\mathbf{x}] = \boldsymbol{\mu}$、$\text{Cov}[\mathbf{x}] = L \cdot I \cdot L^\top = LL^\top = \Sigma$
+- 記号: `mu` → $\boldsymbol{\mu}$、`L` → $L$（下三角）、`z` → $\mathbf{z}$
 
 ```python
 import numpy as np
@@ -597,7 +597,7 @@ print("標本 Σ:\n", np.round(Sigma_sample, 2))
 print(f"||Σ - Σ_sample||_F = {np.linalg.norm(Sigma - Sigma_sample, 'fro'):.4f}")
 ```
 
-これは VAE の再パラメータ化トリック（第10回）と同じ構造。`$L\mathbf{z}$` が確率変数の「ルーツ」を分離する。
+これは VAE の再パラメータ化トリック（第10回）と同じ構造。$L\mathbf{z}$ が確率変数の「ルーツ」を分離する。
 </details>
 
 ### 5.3 ミニプロジェクト: PCA で MNIST を可視化する
@@ -606,20 +606,20 @@ sklearn の `load_digits`（8×8ピクセルの手書き数字、64次元）をP
 
 **数学的背景:**
 
-```math
+$$
 \tilde{X} = X - \bar{\mathbf{x}}^\top \mathbf{1}_N^\top, \quad \Sigma = \frac{1}{N-1}\tilde{X}^\top\tilde{X} \in \mathbb{R}^{d \times d}
-```
+$$
 
-```math
+$$
 \Sigma = Q\Lambda Q^\top, \quad Q^\top Q = I, \quad \Lambda = \text{diag}(\lambda_1 \geq \lambda_2 \geq \cdots \geq \lambda_d)
-```
+$$
 
-```math
+$$
 Z = \tilde{X} Q_k \in \mathbb{R}^{N \times k}, \quad \text{explained ratio} = \frac{\sum_{i=1}^{k} \lambda_i}{\sum_{i=1}^{d} \lambda_i}
-```
+$$
 
-- shape: `$\tilde{X}$`:`(N, d)=(1797, 64)` → `$\Sigma$`:`(64, 64)` → `$Q_k$`:`(64, 2)` → `$Z$`:`(1797, 2)`
-- 記号対応: `X_c` → `$\tilde{X}$`、`eigvecs` → `$Q$`、`Q_k` → `$Q_k$`、`Z` → `$Z$`
+- shape: $\tilde{X}$:`(N, d)=(1797, 64)` → $\Sigma$:`(64, 64)` → $Q_k$:`(64, 2)` → $Z$:`(1797, 2)`
+- 記号対応: `X_c` → $\tilde{X}$、`eigvecs` → $Q$、`Q_k` → $Q_k$、`Z` → $Z$
 - 数値安定性: `eigh` は対称行列専用で `eig` より高精度（固有値が実数保証）
 
 ```python
@@ -717,10 +717,10 @@ plt.savefig("pca_digits.png", dpi=120)
 plt.show()
 ```
 
-2D図では「0」と「1」が比較的きれいに分離されるが、他クラスは混在する。これは64次元空間での情報の多くが2主成分では表現しきれないから。第15回（VAE）の潜在空間 `$\mathbf{z} \in \mathbb{R}^{10}$` と比べたとき、PCAとVAEの「次元圧縮」の本質的な違いが見えてくる。
+2D図では「0」と「1」が比較的きれいに分離されるが、他クラスは混在する。これは64次元空間での情報の多くが2主成分では表現しきれないから。第15回（VAE）の潜在空間 $\mathbf{z} \in \mathbb{R}^{10}$ と比べたとき、PCAとVAEの「次元圧縮」の本質的な違いが見えてくる。
 </details>
 
-> **Note:** PCA は**線形**次元削減。クラス間の境界が非線形な場合は、Kernel PCA・Autoencoder（第12回）・UMAP が有効。PCA の固有ベクトル `$Q_k$` は「データが最も変化する方向」を見つけるが、クラスを分離する方向（LDA）ではない。
+> **Note:** PCA は**線形**次元削減。クラス間の境界が非線形な場合は、Kernel PCA・Autoencoder（第12回）・UMAP が有効。PCA の固有ベクトル $Q_k$ は「データが最も変化する方向」を見つけるが、クラスを分離する方向（LDA）ではない。
 
 
 
@@ -728,50 +728,50 @@ plt.show()
 
 <details><summary>Q1: 固有値方程式</summary>
 
-```math
+$$
 A\mathbf{v} = \lambda\mathbf{v}
-```
+$$
 </details>
 
 <details><summary>Q2: スペクトル分解</summary>
 
-```math
+$$
 A = Q\Lambda Q^\top = \sum_{i=1}^{n} \lambda_i \mathbf{q}_i \mathbf{q}_i^\top
-```
+$$
 </details>
 
 <details><summary>Q3: Cauchy-Schwarz 不等式</summary>
 
-```math
+$$
 |\langle \mathbf{u}, \mathbf{v} \rangle| \leq \|\mathbf{u}\| \cdot \|\mathbf{v}\|
-```
+$$
 </details>
 
 <details><summary>Q4: 正規方程式</summary>
 
-```math
+$$
 \hat{\mathbf{x}} = (A^\top A)^{-1} A^\top \mathbf{b}
-```
+$$
 </details>
 
 <details><summary>Q5: 多変量ガウス分布</summary>
 
-```math
+$$
 \mathcal{N}(\mathbf{x} \mid \boldsymbol{\mu}, \Sigma) = \frac{1}{(2\pi)^{d/2} |\Sigma|^{1/2}} \exp\left(-\frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^\top \Sigma^{-1} (\mathbf{x}-\boldsymbol{\mu})\right)
-```
+$$
 </details>
 
 ### 5.5 実装チャレンジ: 勾配降下法で線形回帰
 
 最小二乗法は閉形式解を持つが、勾配降下法でも解ける。ここでは勾配降下法で線形回帰を解き、閉形式解と一致するか確認する。
 
-```math
+$$
 L(\mathbf{w})=\frac{1}{n}\|X\mathbf{w}-\mathbf{y}\|_2^2=\frac{1}{n}(X\mathbf{w}-\mathbf{y})^\top(X\mathbf{w}-\mathbf{y})
 
 \nabla_{\mathbf{w}}L(\mathbf{w})=\frac{2}{n}X^\top(X\mathbf{w}-\mathbf{y})
 
 \mathbf{w}\leftarrow \mathbf{w}-\\alpha\nabla_{\mathbf{w}}L(\mathbf{w})
-```
+$$
 
 ```python
 import numpy as np
@@ -817,11 +817,11 @@ print(f"最終損失:   {losses[-1]:.6f}")
 
 固有値分解を `np.linalg.eigh` なしで実装する。Power Iteration（べき乗法）は、行列を繰り返しかけることで最大固有値と対応する固有ベクトルを求めるアルゴリズムだ。
 
-```math
+$$
 \\mathbf{v}_{t+1}=\\frac{A\\mathbf{v}_t}{\\|A\\mathbf{v}_t\\|_2}
 
 \\lambda_t=\\mathbf{v}_t^\\top A\\mathbf{v}_t
-```
+$$
 
 ```python
 import numpy as np
@@ -870,9 +870,9 @@ print(f"固有ベクトル (eigh): {np.round(V_np[:, -1], 4)}")
 <details><summary>Deflation で全固有値を求める</summary>
 Power Iteration は最大固有値のみを返す。全固有値を求めるには **Deflation**（減衰法）を使う:
 
-1. 最大固有値 `$\lambda_1$` と固有ベクトル `$\mathbf{v}_1$` を求める
-2. `$A \leftarrow A - \lambda_1 \mathbf{v}_1 \mathbf{v}_1^\top$`（ランク1の引き算）
-3. 新しい `$A$` に対してPower Iterationを繰り返す
+1. 最大固有値 $\lambda_1$ と固有ベクトル $\mathbf{v}_1$ を求める
+2. $A \leftarrow A - \lambda_1 \mathbf{v}_1 \mathbf{v}_1^\top$（ランク1の引き算）
+3. 新しい $A$ に対してPower Iterationを繰り返す
 
 </details>
 
@@ -885,7 +885,7 @@ Power Iteration は最大固有値のみを返す。全固有値を求めるに�
 - [ ] 内積→ノルム→距離の定義の連鎖を説明できる
 - [ ] Cauchy-Schwarz不等式を述べ、コサイン類似度との関係を説明できる
 - [ ] 行列積の3つの見方（要素・列・行）を使い分けられる
-- [ ] 転置の性質 `$(AB)^\top = B^\top A^\top$` を証明できる
+- [ ] 転置の性質 $(AB)^\top = B^\top A^\top$ を証明できる
 - [ ] `np.linalg.solve` と `np.linalg.inv` の違いを説明できる
 - [ ] 固有値分解を手計算で2×2行列に適用できる
 - [ ] スペクトル定理の3つの主張を述べられる
@@ -894,21 +894,21 @@ Power Iteration は最大固有値のみを返す。全固有値を求めるに�
 - [ ] 最小二乗法の正規方程式を導出できる
 - [ ] PCAを固有値分解として実装できる
 - [ ] `np.einsum` で内積・行列積・トレースを書ける
-- [ ] Attention[^1]の `$QK^\top$` を線形代数の言葉で説明できる
+- [ ] Attention[^1]の $QK^\top$ を線形代数の言葉で説明できる
 - [ ] Cholesky分解の構成アルゴリズム（対角・下三角の公式）を手書きで実装できる
 - [ ] `np.linalg.solve`・`np.linalg.qr`・`np.linalg.eigh` を正しく使い分けられる
-- [ ] 条件数 `$\kappa(A) = \sigma_{\max}/\sigma_{\min}$` が大きい行列の連立方程式で何が起きるかを説明できる
+- [ ] 条件数 $\kappa(A) = \sigma_{\max}/\sigma_{\min}$ が大きい行列の連立方程式で何が起きるかを説明できる
 
 ### 5.8 実装チャレンジ: Cholesky分解を手書きで実装する
 
 Part1 Section 3.8 で学んだ Cholesky 分解の構成アルゴリズムを Python で実装し、`np.linalg.cholesky` と一致することを確認する。
 
-```math
+$$
 L_{jj} = \sqrt{A_{jj} - \sum_{k=1}^{j-1} L_{jk}^2}, \qquad L_{ij} = \frac{1}{L_{jj}}\left(A_{ij} - \sum_{k=1}^{j-1} L_{ik} L_{jk}\right),\ i > j
-```
+$$
 
-- shape: 入力 `$A \in \mathbb{R}^{n \times n}$`（正定値対称）→ 出力 `$L \in \mathbb{R}^{n \times n}$`（下三角）
-- 記号対応: `A[i, j]` → `$A_{ij}$`、`L[j, j]` → `$L_{jj}$`
+- shape: 入力 $A \in \mathbb{R}^{n \times n}$（正定値対称）→ 出力 $L \in \mathbb{R}^{n \times n}$（下三角）
+- 記号対応: `A[i, j]` → $A_{ij}$、`L[j, j]` → $L_{jj}$
 - 数値安定性: 平方根の中が負になれば `A` が正定値でない証拠 → `ValueError` を出す
 
 ```python
@@ -987,12 +987,12 @@ except ValueError as e:
 | 内積 | `np.dot(a, b)` | — | 1Dベクトル同士のみ。2D以上は `@` を使う |
 | 転置 | `A.T` | — | ビューを返す（コピーなし） |
 | 逆行列 | `np.linalg.inv(A)` | `scipy.linalg.inv(A)` | 可能な限り `solve` を使う |
-| 連立方程式 | `np.linalg.solve(A, b)` | `scipy.linalg.solve(A, b)` | `$A\mathbf{x}=\mathbf{b}$` を解く |
+| 連立方程式 | `np.linalg.solve(A, b)` | `scipy.linalg.solve(A, b)` | $A\mathbf{x}=\mathbf{b}$ を解く |
 | 固有値分解（対称） | `np.linalg.eigh(A)` | `scipy.linalg.eigh(A)` | **対称行列には必ず eigh** |
 | 固有値分解（一般） | `np.linalg.eig(A)` | `scipy.linalg.eig(A)` | 非対称行列用。複素固有値あり |
 | SVD | `np.linalg.svd(A)` | `scipy.linalg.svd(A)` | 第3回で詳しく |
 | QR分解 | `np.linalg.qr(A)` | `scipy.linalg.qr(A)` | `mode='reduced'` でeconomy QR |
-| Cholesky分解 | `np.linalg.cholesky(A)` | `scipy.linalg.cholesky(A)` | NumPy: 下三角 `$L$`、SciPy: デフォルト上三角 |
+| Cholesky分解 | `np.linalg.cholesky(A)` | `scipy.linalg.cholesky(A)` | NumPy: 下三角 $L$、SciPy: デフォルト上三角 |
 | 行列式 | `np.linalg.det(A)` | — | 大行列では対数行列式 `slogdet` を使う |
 | ランク | `np.linalg.matrix_rank(A)` | — | 数値ランク（閾値付き） |
 | ノルム | `np.linalg.norm(A, ord)` | — | `ord=2`: スペクトルノルム、`ord='fro'`: Frobenius |
@@ -1004,53 +1004,53 @@ except ValueError as e:
 <details><summary>用語集</summary>
 | 英語 | 日本語 | 記号 |
 |:-----|:------|:-----|
-| Vector space | ベクトル空間 | `$V$` |
+| Vector space | ベクトル空間 | $V$ |
 | Linear independence | 線形独立 | |
-| Basis | 基底 | `$\{\mathbf{e}_i\}$` |
-| Dimension | 次元 | `$\dim V$` |
-| Inner product | 内積 | `$\langle \cdot, \cdot \rangle$` |
-| Norm | ノルム | `$\|\cdot\|$` |
-| Orthogonal | 直交 | `$\perp$` |
-| Eigenvalue | 固有値 | `$\lambda$` |
-| Eigenvector | 固有ベクトル | `$\mathbf{v}$` |
-| Positive definite | 正定値 | `$A \succ 0$` |
-| Trace | トレース | `$\text{tr}(\cdot)$` |
-| Determinant | 行列式 | `$\det(\cdot)$` |
-| Rank | ランク | `$\text{rank}(\cdot)$` |
-| Projection | 射影 | `$P$` |
+| Basis | 基底 | $\{\mathbf{e}_i\}$ |
+| Dimension | 次元 | $\dim V$ |
+| Inner product | 内積 | $\langle \cdot, \cdot \rangle$ |
+| Norm | ノルム | $\|\cdot\|$ |
+| Orthogonal | 直交 | $\perp$ |
+| Eigenvalue | 固有値 | $\lambda$ |
+| Eigenvector | 固有ベクトル | $\mathbf{v}$ |
+| Positive definite | 正定値 | $A \succ 0$ |
+| Trace | トレース | $\text{tr}(\cdot)$ |
+| Determinant | 行列式 | $\det(\cdot)$ |
+| Rank | ランク | $\text{rank}(\cdot)$ |
+| Projection | 射影 | $P$ |
 | Least squares | 最小二乗法 | |
-| QR decomposition | QR分解 | `$A = QR$` |
-| Cholesky decomposition | Cholesky分解 | `$A = LL^\top$` |
+| QR decomposition | QR分解 | $A = QR$ |
+| Cholesky decomposition | Cholesky分解 | $A = LL^\top$ |
 | Spectral theorem | スペクトル定理 | |
 | Cauchy-Schwarz inequality | Cauchy-Schwarz不等式 | |
-| Rayleigh quotient | Rayleigh商 | `$R(\mathbf{x})$` |
+| Rayleigh quotient | Rayleigh商 | $R(\mathbf{x})$ |
 </details>
 
 ### 6.25 補遺 — 高速化技術とランダム化アルゴリズム
 
-> **Note:** **計算効率の限界と突破**: 密行列の SVD は `$O(n^3)$` の計算量だが[^13]、ランダム化とGPU活用で実用的な高速化が可能に。本節では最新研究に基づく実践的手法を解説。
+> **Note:** **計算効率の限界と突破**: 密行列の SVD は $O(n^3)$ の計算量だが[^13]、ランダム化とGPU活用で実用的な高速化が可能に。本節では最新研究に基づく実践的手法を解説。
 
 #### ランダム化 SVD — 大規模行列の低ランク近似
 
-通常の SVD は `$O(\min(mn^2, m^2n))$` の計算量を要するが、ランダム化 SVD[^14] は `$O(mnk)$`（`$k$` はターゲットランク）に削減できる。
+通常の SVD は $O(\min(mn^2, m^2n))$ の計算量を要するが、ランダム化 SVD[^14] は $O(mnk)$（$k$ はターゲットランク）に削減できる。
 
 ##### アルゴリズム
 
 
 **理論的保証**:
 
-```math
+$$
 \mathbb{E}\left[\|A - QQ^\top A\|_F\right] \leq \left(1 + \frac{k}{p-k-1}\right)^{1/2} \sigma_{k+1}
-```
+$$
 
-ここで `$\sigma_{k+1}$` は `$(k+1)$` 番目の特異値。オーバーサンプリング `$p = k + 10$` で高精度な近似が得られる。
+ここで $\sigma_{k+1}$ は $(k+1)$ 番目の特異値。オーバーサンプリング $p = k + 10$ で高精度な近似が得られる。
 
 ##### 性能比較
 
 | 手法 | 計算量 | 1000×1000 (k=50) | 精度 |
 |:---|:---|:---:|:---|
-| 通常 SVD | `$O(n^3)$` | 2.3秒 | Exact |
-| ランダム化 SVD | `$O(mnk)$` | 0.08秒 | 相対誤差 < 1% |
+| 通常 SVD | $O(n^3)$ | 2.3秒 | Exact |
+| ランダム化 SVD | $O(mnk)$ | 0.08秒 | 相対誤差 < 1% |
 
 #### GPU 加速による行列分解の高速化
 
@@ -1069,9 +1069,9 @@ Wichmann et al. (2025)[^15] による portable SVD 実装の特徴:
 
 数式的には、以下の変換を GPU 上で実行:
 
-```math
+$$
 A \xrightarrow{\text{Householder}} B \xrightarrow{\text{Givens}} \text{Bidiag} \xrightarrow{\text{D\&C}} U\Sigma V^\top
-```
+$$
 
 各ステージで GPU メモリ階層（グローバル/共有/レジスタ）を最適活用することで 100-300倍の高速化を達成[^16]。
 
@@ -1079,28 +1079,28 @@ A \xrightarrow{\text{Householder}} B \xrightarrow{\text{Givens}} \text{Bidiag} \
 
 Randomized Rank-Revealing QLP (RU-QLP) 分解[^17] は、ランダムサンプリングと unpivoted QR を組み合わせ:
 
-```math
+$$
 A P = Q \begin{bmatrix} L_{11} & 0 \\ L_{21} & L_{22} \end{bmatrix} P^\top
-```
+$$
 
-ここで `$L_{11}$` は `$k \times k$` の下三角行列、`$P$` は置換行列。
+ここで $L_{11}$ は $k \times k$ の下三角行列、$P$ は置換行列。
 
 ##### 性能:
 - **CPU**: ランダム化 SVD の 7.1-8.5倍高速
 - **GPU**: ランダム化 SVD の 2.3-5.8倍高速
-- **誤差保証**: `$\|A - A_k\|_2 \leq (1+\epsilon)\sigma_{k+1}$`
+- **誤差保証**: $\|A - A_k\|_2 \leq (1+\epsilon)\sigma_{k+1}$
 
 
 #### 実践的ガイドライン
 
 | 行列サイズ | ランク | 推奨手法 | 理由 |
 |:---|:---|:---|:---|
-| `$n < 1000$` | Full | `np.linalg.svd` | 正確・簡潔 |
-| `$n \geq 1000$` | `$k \ll n$` | ランダム化 SVD | `$O(mnk)$` 計算量 |
-| `$n \geq 5000$` | Any | GPU (CuPy/JAX) | 10-100倍高速化 |
-| スパース | 小 `$k$` | `scipy.sparse.linalg.svds` | メモリ効率 |
+| $n < 1000$ | Full | `np.linalg.svd` | 正確・簡潔 |
+| $n \geq 1000$ | $k \ll n$ | ランダム化 SVD | $O(mnk)$ 計算量 |
+| $n \geq 5000$ | Any | GPU (CuPy/JAX) | 10-100倍高速化 |
+| スパース | 小 $k$ | `scipy.sparse.linalg.svds` | メモリ効率 |
 
-> **⚠️ Warning:** **注意**: GPU は初期化コスト（数百ms）があるため、小規模行列では CPU の方が速い場合もある。`$n \geq 5000$` が目安。
+> **⚠️ Warning:** **注意**: GPU は初期化コスト（数百ms）があるため、小規模行列では CPU の方が速い場合もある。$n \geq 5000$ が目安。
 
 #### メモリ効率的な実装パターン
 
@@ -1108,12 +1108,12 @@ A P = Q \begin{bmatrix} L_{11} & 0 \\ L_{21} & L_{22} \end{bmatrix} P^\top
 
 | パターン | 手法 | 用途 |
 |:---|:---|:---|
-| **Chunked computation** | 行を分割して処理 | 巨大な Gram 行列 `$X X^\top$` |
+| **Chunked computation** | 行を分割して処理 | 巨大な Gram 行列 $X X^\top$ |
 | **In-place ops** | `A += B`（`A = A + B` より効率的） | 勾配累積 |
 | **Sparse format** | `scipy.sparse.csr_matrix` | 疎行列（ゼロが90%超） |
 | **Low-rank factor** | `U @ V.T` を分解のまま保持 | LoRA[^10]の重み更新 |
 
-LoRAは「ランク `$r$` の積 `$BA$`（`$r \ll d$`）で大行列の更新を近似」する技法。`$W + \Delta W = W + BA$` の形で学習パラメータを削減する。メモリと計算量が `$O(d \cdot r)$` に落ちる（vs `$O(d^2)$`）。
+LoRAは「ランク $r$ の積 $BA$（$r \ll d$）で大行列の更新を近似」する技法。$W + \Delta W = W + BA$ の形で学習パラメータを削減する。メモリと計算量が $O(d \cdot r)$ に落ちる（vs $O(d^2)$）。
 #### まとめ: 線形代数の高速化技術マップ
 
 ```mermaid
@@ -1174,20 +1174,20 @@ mindmap
 
 #### 条件数の定義と意味
 
-行列 `$A \in \mathbb{R}^{n \times n}$` の **条件数** は以下で定義される:
+行列 $A \in \mathbb{R}^{n \times n}$ の **条件数** は以下で定義される:
 
-```math
+$$
 \kappa(A) = \|A\| \cdot \|A^{-1}\| = \frac{\sigma_{\max}(A)}{\sigma_{\min}(A)}
-```
+$$
 
-ここで `$\sigma_{\max}, \sigma_{\min}$` は最大・最小特異値。
+ここで $\sigma_{\max}, \sigma_{\min}$ は最大・最小特異値。
 
 **直感的解釈**:
-- `$\kappa(A) = 1$`: 理想的（直交行列）
-- `$\kappa(A) \sim 10^2$`: 良好
-- `$\kappa(A) \sim 10^{6}$`: 警戒（単精度FP32で桁落ち発生）
-- `$\kappa(A) \sim 10^{14}$`: 危険（倍精度FP64でも精度喪失）
-- `$\kappa(A) = \infty$`: 特異行列（逆行列なし）
+- $\kappa(A) = 1$: 理想的（直交行列）
+- $\kappa(A) \sim 10^2$: 良好
+- $\kappa(A) \sim 10^{6}$: 警戒（単精度FP32で桁落ち発生）
+- $\kappa(A) \sim 10^{14}$: 危険（倍精度FP64でも精度喪失）
+- $\kappa(A) = \infty$: 特異行列（逆行列なし）
 
 
 #### 条件数が大きくなる実例
@@ -1197,9 +1197,9 @@ mindmap
 
 ##### 2. Hilbert 行列（教科書的な病的行列）
 
-```math
+$$
 H_{ij} = \frac{1}{i+j-1}, \quad i, j = 1, \ldots, n
-```
+$$
 
 
 ##### 3. 深層学習の重み行列
@@ -1217,7 +1217,7 @@ H_{ij} = \frac{1}{i+j-1}, \quad i, j = 1, \ldots, n
 ##### パターン1: 連立方程式は逆行列ではなく直接法で
 
 
-**理論的根拠**: `$\kappa(A)$` が大きいとき、`$A^{-1}$` の計算誤差が解 `$x$` に増幅される。直接法は安定性が高い。
+**理論的根拠**: $\kappa(A)$ が大きいとき、$A^{-1}$ の計算誤差が解 $x$ に増幅される。直接法は安定性が高い。
 
 ##### パターン2: 正定値行列には Cholesky 分解
 
@@ -1231,11 +1231,11 @@ H_{ij} = \frac{1}{i+j-1}, \quad i, j = 1, \ldots, n
 
 Zhao et al. (2020)[^19] は、高次元データの共分散行列推定において、条件数制約を課すことで数値安定性と正定値性を同時に保証する手法を提案:
 
-```math
+$$
 \min_{S \succ 0} \|S - \hat{\Sigma}\|_F^2 \quad \text{s.t.} \quad \kappa(S) \leq \kappa_{\max}
-```
+$$
 
-ここで `$\hat{\Sigma}$` はサンプル共分散行列、`$\kappa_{\max}$` は許容条件数。
+ここで $\hat{\Sigma}$ はサンプル共分散行列、$\kappa_{\max}$ は許容条件数。
 
 
 この手法は、Ridge回帰・正則化共分散推定・カーネル法などの理論的基盤となっている。
@@ -1244,11 +1244,11 @@ Zhao et al. (2020)[^19] は、高次元データの共分散行列推定にお�
 
 | 状況 | 条件数範囲 | 推奨対策 |
 |:---|:---|:---|
-| 線形回帰（高相関特徴） | `$\kappa \geq 10^6$` | Ridge / Lasso / PCA で次元削減 |
-| 共分散行列（`$n < p$`） | `$\kappa = \infty$` | 正則化 or Ledoit-Wolf 推定 |
+| 線形回帰（高相関特徴） | $\kappa \geq 10^6$ | Ridge / Lasso / PCA で次元削減 |
+| 共分散行列（$n < p$） | $\kappa = \infty$ | 正則化 or Ledoit-Wolf 推定 |
 | ニューラルネット訓練 | 層数に応じて増大 | Batch Norm / Layer Norm / ResNet |
-| 数値最適化（Hessian） | `$\kappa \geq 10^4$` | Preconditioner / Adam / 2次手法 |
-| GPU での FP16 計算 | `$\kappa \geq 10^3$` | Mixed precision training（FP32 accumulation） |
+| 数値最適化（Hessian） | $\kappa \geq 10^4$ | Preconditioner / Adam / 2次手法 |
+| GPU での FP16 計算 | $\kappa \geq 10^3$ | Mixed precision training（FP32 accumulation） |
 
 
 #### まとめ: 数値安定性の原則
@@ -1256,7 +1256,7 @@ Zhao et al. (2020)[^19] は、高次元データの共分散行列推定にお�
 1. **逆行列は避ける** — `solve()` を使う
 2. **正定値行列には Cholesky** — 高速 + 安定
 3. **条件数を監視** — `np.linalg.cond()` で定期チェック
-4. **正則化は万能薬** — `$\lambda \sim \sigma_{\min}$` が目安
+4. **正則化は万能薬** — $\lambda \sim \sigma_{\min}$ が目安
 5. **SVD は最後の砦** — 疑似逆行列で頑健に解く
 
 ```mermaid
@@ -1274,25 +1274,25 @@ graph TD
 
 **1. 内積 = 類似度の数学的基盤**
 
-```math
+$$
 \langle \mathbf{q}_i, \mathbf{k}_j \rangle = \mathbf{q}_i^\top \mathbf{k}_j
-```
+$$
 
-Attention[^1]の核心は内積による類似度計算。Cauchy-Schwarz不等式がコサイン類似度の値域 `$[-1, 1]$` を保証する。
+Attention[^1]の核心は内積による類似度計算。Cauchy-Schwarz不等式がコサイン類似度の値域 $[-1, 1]$ を保証する。
 
 **2. 固有値分解 = 行列の「X線写真」**
 
-```math
+$$
 A = Q\Lambda Q^\top
-```
+$$
 
 対称行列は固有ベクトルで対角化でき、固有値が行列の本質的な情報（分散の大きさ、安定性、凸性）を明らかにする。PCA[^6][^7]はこの直接的な応用。
 
 **3. 正定値性 = 安全装置**
 
-```math
+$$
 \mathbf{x}^\top A \mathbf{x} > 0 \quad \forall \mathbf{x} \neq \mathbf{0}
-```
+$$
 
 共分散行列の正定値性、ヘシアンの正定値性による凸性保証、Cholesky分解による効率的な計算。
 
@@ -1309,7 +1309,7 @@ A = Q\Lambda Q^\top
 </details>
 
 <details><summary>Q: 逆行列の計算はどのくらい避けるべき？</summary>
-明示的に `$A^{-1}$` が必要な場面はほぼない。`$A^{-1}\mathbf{b}$` → `solve(A, b)`、`$A^{-1}B$` → `solve(A, B)`、`$\det(A^{-1})$` → `1/det(A)`。`$A^{-1}$` 自体が必要なのは、射影行列 `$P = A(A^\top A)^{-1}A^\top$` の可視化くらい。
+明示的に $A^{-1}$ が必要な場面はほぼない。$A^{-1}\mathbf{b}$ → `solve(A, b)`、$A^{-1}B$ → `solve(A, B)`、$\det(A^{-1})$ → `1/det(A)`。$A^{-1}$ 自体が必要なのは、射影行列 $P = A(A^\top A)^{-1}A^\top$ の可視化くらい。
 </details>
 
 <details><summary>Q: PCA で次元をいくつに落とすべき？</summary>
@@ -1327,9 +1327,9 @@ A = Q\Lambda Q^\top
 </details>
 
 <details><summary>Q: 大きな行列の固有値分解は遅いのでは？</summary>
-その通り。`$n \times n$` 行列の完全な固有値分解は `$O(n^3)$` で、`$n > 10000$` では実用的でない。実務では:
+その通り。$n \times n$ 行列の完全な固有値分解は $O(n^3)$ で、$n > 10000$ では実用的でない。実務では:
 
-1. **Power Iteration / Lanczos法**: 上位 `$k$` 個の固有値・固有ベクトルだけを `$O(kn^2)$` で計算
+1. **Power Iteration / Lanczos法**: 上位 $k$ 個の固有値・固有ベクトルだけを $O(kn^2)$ で計算
 2. **Randomized SVD**: ランダム射影で次元を落としてからSVD。scikit-learn の PCA はこれを使う
 3. **Sparse solver**: 疎行列なら `scipy.sparse.linalg.eigsh` で大規模問題に対応
 4. **GPU計算**: cuSOLVER で GPU上の大規模固有値分解
@@ -1350,12 +1350,12 @@ A = Q\Lambda Q^\top
 
 #### 間違い1: 行列積は交換可能
 
-```math
+$$
 AB \neq BA \quad \text{（一般には成り立たない）}
-```
+$$
 
 
-**正しい理解**: 行列積は一般に非可換。`$AB = BA$` が成り立つのは特殊な場合（`$B = \alpha I$`、`$A$` と `$B$` が同時対角化可能な場合など）のみ。ただし、トレースについては `$\text{tr}(AB) = \text{tr}(BA)$`（巡回性）が**常に**成り立つ。
+**正しい理解**: 行列積は一般に非可換。$AB = BA$ が成り立つのは特殊な場合（$B = \alpha I$、$A$ と $B$ が同時対角化可能な場合など）のみ。ただし、トレースについては $\text{tr}(AB) = \text{tr}(BA)$（巡回性）が**常に**成り立つ。
 
 #### 間違い2: 逆行列で連立方程式を解く
 
@@ -1364,13 +1364,13 @@ AB \neq BA \quad \text{（一般には成り立たない）}
 
 #### 間違い3: 固有値分解はどの行列でもできる
 
-**正しい理解**: 全ての `$n \times n$` 行列が対角化可能なわけではない。対角化可能性の条件は「`$n$` 個の線形独立な固有ベクトルが存在すること」。対称行列は常に対角化可能（スペクトル定理）だが、一般の行列では保証されない。
+**正しい理解**: 全ての $n \times n$ 行列が対角化可能なわけではない。対角化可能性の条件は「$n$ 個の線形独立な固有ベクトルが存在すること」。対称行列は常に対角化可能（スペクトル定理）だが、一般の行列では保証されない。
 
-```math
+$$
 A = \begin{pmatrix} 0 & 1 \\ 0 & 0 \end{pmatrix}
-```
+$$
 
-この行列は固有値 `$\lambda = 0$`（重複度2）を持つが、固有ベクトルは1つしかない。対角化不可能。
+この行列は固有値 $\lambda = 0$（重複度2）を持つが、固有ベクトルは1つしかない。対角化不可能。
 
 #### 間違い4: eig と eigh の混同
 
@@ -1381,29 +1381,29 @@ A = \begin{pmatrix} 0 & 1 \\ 0 & 0 \end{pmatrix}
 | 対象 | 一般正方行列 | 対称/エルミート行列 |
 | 固有値 | 複素数になりうる | 実数保証 |
 | 固有ベクトル | 直交性なし | 直交性保証 |
-| 速度 | 遅い（`$O(n^3)$`） | 速い（係数が小さい） |
+| 速度 | 遅い（$O(n^3)$） | 速い（係数が小さい） |
 
-共分散行列 `$\Sigma$`（対称正定値）に `eig` を使うと、数値誤差で固有値に虚部が乗ることがある。`eigh` を使えば実数かつ昇順ソートで返ってくる。**対称行列には必ず `eigh`**。
+共分散行列 $\Sigma$（対称正定値）に `eig` を使うと、数値誤差で固有値に虚部が乗ることがある。`eigh` を使えば実数かつ昇順ソートで返ってくる。**対称行列には必ず `eigh`**。
 
 #### 間違い5: 行列のランクと逆行列の関係の誤解
 
-| 条件 | `$\text{rank}(A) = n$` | `$\text{rank}(A) < n$` |
+| 条件 | $\text{rank}(A) = n$ | $\text{rank}(A) < n$ |
 |:-----|:---------------------|:--------------------|
-| 逆行列 | 存在する（`$A$` は正則） | 存在しない（`$A$` は特異） |
-| 連立方程式 `$A\mathbf{x} = \mathbf{b}$` | 唯一解 | 解なし or 無限に解がある |
-| 固有値 | `$0$` は固有値でない | `$0$` が固有値に含まれる |
-| 行列式 | `$\det(A) \neq 0$` | `$\det(A) = 0$` |
+| 逆行列 | 存在する（$A$ は正則） | 存在しない（$A$ は特異） |
+| 連立方程式 $A\mathbf{x} = \mathbf{b}$ | 唯一解 | 解なし or 無限に解がある |
+| 固有値 | $0$ は固有値でない | $0$ が固有値に含まれる |
+| 行列式 | $\det(A) \neq 0$ | $\det(A) = 0$ |
 
 <details><summary>間違い6: ベクトルの線形独立性の誤判定</summary>
 「どのベクトルも平行でなければ線形独立」は**2次元でのみ正しい**。3次元以上では、どの2本も平行でなくても線形従属になり得る。
 
-```math
+$$
 \mathbf{v}_1 = \begin{pmatrix} 1 \\ 0 \\ 1 \end{pmatrix}, \quad
 \mathbf{v}_2 = \begin{pmatrix} 0 \\ 1 \\ 1 \end{pmatrix}, \quad
 \mathbf{v}_3 = \begin{pmatrix} 1 \\ 1 \\ 2 \end{pmatrix}
-```
+$$
 
-どの2本も平行でないが、`$\mathbf{v}_3 = \mathbf{v}_1 + \mathbf{v}_2$` なので線形従属。
+どの2本も平行でないが、$\mathbf{v}_3 = \mathbf{v}_1 + \mathbf{v}_2$ なので線形従属。
 
 正しい判定方法はランクを見ること:
 
@@ -1425,10 +1425,10 @@ A = \begin{pmatrix} 0 & 1 \\ 0 & 0 \end{pmatrix}
 
 本講義の理解度を自己採点する（各チェックが「スラスラ言える」レベルで ✓）:
 
-- [ ] 内積 `$\mathbf{a}^\top\mathbf{b} = \|\mathbf{a}\|\|\mathbf{b}\|\cos\theta$` の意味を図で説明できる
-- [ ] `$A \in \mathbb{R}^{m \times n}$`, `$B \in \mathbb{R}^{n \times p}$` → `$AB \in \mathbb{R}^{m \times p}$` を即答できる
-- [ ] `$QK^\top$` が「全トークン対の類似度行列」だと言える
-- [ ] 固有値分解 `$A = Q\Lambda Q^\top$`（対称行列）の意味を一文で言える
+- [ ] 内積 $\mathbf{a}^\top\mathbf{b} = \|\mathbf{a}\|\|\mathbf{b}\|\cos\theta$ の意味を図で説明できる
+- [ ] $A \in \mathbb{R}^{m \times n}$, $B \in \mathbb{R}^{n \times p}$ → $AB \in \mathbb{R}^{m \times p}$ を即答できる
+- [ ] $QK^\top$ が「全トークン対の類似度行列」だと言える
+- [ ] 固有値分解 $A = Q\Lambda Q^\top$（対称行列）の意味を一文で言える
 - [ ] 正定値行列の条件（全固有値 > 0）と「なぜ重要か」を言える
 - [ ] `np.linalg.solve(A, b)` vs `np.linalg.inv(A) @ b` の違いを説明できる
 - [ ] `eig` と `eigh` を使い分けられる
@@ -1443,41 +1443,41 @@ A = \begin{pmatrix} 0 & 1 \\ 0 & 0 \end{pmatrix}
 2. **行列微分** — ニューラルネットワーク学習の数学的基盤。ヤコビアン・ヘシアン・連鎖律の行列版
 3. **自動微分** — PyTorchの `loss.backward()` の中で何が起きているか。Forward mode vs Reverse mode の完全理解
 
-**SVDのプレビュー**: 任意の行列 `$A \in \mathbb{R}^{m \times n}$` は次のように分解できる:
+**SVDのプレビュー**: 任意の行列 $A \in \mathbb{R}^{m \times n}$ は次のように分解できる:
 
-```math
+$$
 A = U\Sigma V^\top, \quad U \in \mathbb{R}^{m \times m},\ \Sigma \in \mathbb{R}^{m \times n},\ V \in \mathbb{R}^{n \times n}
-```
+$$
 
-`$U$`、`$V$` は直交行列、`$\Sigma$` は非負の対角成分（特異値 `$\sigma_1 \geq \sigma_2 \geq \cdots \geq 0$`）を持つ対角行列。
+$U$、$V$ は直交行列、$\Sigma$ は非負の対角成分（特異値 $\sigma_1 \geq \sigma_2 \geq \cdots \geq 0$）を持つ対角行列。
 
 本講義で学んだ固有値分解は「対称行列専用」。SVDは**任意の行列**に適用できる「固有値分解の一般化」だ。両者の接続:
 
-```math
+$$
 A^\top A = V \Sigma^\top \Sigma V^\top \quad \text{（右特異ベクトルが } A^\top A \text{ の固有ベクトル）}
-```
+$$
 
-```math
+$$
 A A^\top = U \Sigma \Sigma^\top U^\top \quad \text{（左特異ベクトルが } AA^\top \text{ の固有ベクトル）}
-```
+$$
 
-**行列微分のプレビュー**: スカラー損失 `$L$` を行列 `$W$` で微分すると、同じ形の行列が返ってくる:
+**行列微分のプレビュー**: スカラー損失 $L$ を行列 $W$ で微分すると、同じ形の行列が返ってくる:
 
-```math
+$$
 \frac{\partial L}{\partial W} \in \mathbb{R}^{m \times n} \quad \text{if } W \in \mathbb{R}^{m \times n}
-```
+$$
 
 基本公式（**Numerator layout**、Matrix Cookbook[^9]記法）:
 
-```math
+$$
 \frac{\partial}{\partial W} \text{tr}(W^\top A) = A, \qquad \frac{\partial}{\partial W} \text{tr}(W^\top A W B) = AWB + A^\top W B^\top
-```
+$$
 
-```math
+$$
 \frac{\partial}{\partial \mathbf{w}} \|\mathbf{w}\|_2^2 = 2\mathbf{w}, \qquad \frac{\partial}{\partial \mathbf{w}} \|A\mathbf{w} - \mathbf{b}\|_2^2 = 2A^\top(A\mathbf{w} - \mathbf{b})
-```
+$$
 
-今の自分が `$\partial L / \partial W$` をどう計算するか想像しながら次回を待とう。
+今の自分が $\partial L / \partial W$ をどう計算するか想像しながら次回を待とう。
 
 **キーとなるLLM/Transformer接点**:
 - ヤコビアン → Flow Model（第25回）
@@ -1501,7 +1501,7 @@ A A^\top = U \Sigma \Sigma^\top U^\top \quad \text{（左特異ベクトルが }
 
 Flash Attention[^12]は、Attention の計算を行列ブロック単位で再構成してメモリアクセスを最適化した。これは線形代数の知識なしには発想できない。LoRA[^10]は重み行列の更新を低ランク行列の積で近似した。これもSVD的な発想の直接的な応用だ。
 
-考えてみてほしい。GPT-4の推論は、結局のところ何をしているのか。トークンを埋め込みベクトルに変換し（行列の行選択）、Queryと Keyの内積を計算し（行列積 `$QK^\top$`）、Softmaxで正規化し（ベクトル演算）、Valueの加重和を取り（行列積 `$AV$`）、線形射影する（行列積 `$W_O$`）。**全てが行列演算だ。**
+考えてみてほしい。GPT-4の推論は、結局のところ何をしているのか。トークンを埋め込みベクトルに変換し（行列の行選択）、Queryと Keyの内積を計算し（行列積 $QK^\top$）、Softmaxで正規化し（ベクトル演算）、Valueの加重和を取り（行列積 $AV$）、線形射影する（行列積 $W_O$）。**全てが行列演算だ。**
 
 この事実は、AIの理解を根本から変える。AIは「知能の模倣」ではなく「高次元線形代数の大規模並列実行」だ。線形代数の理論的限界がAIの限界を規定し、線形代数の計算効率がAIの実用性を決定する。
 
@@ -1510,7 +1510,7 @@ Flash Attention[^12]は、Attention の計算を行列ブロック単位で再�
 1. **もしGPUが行列積以外の計算も得意だったら、AIのアーキテクチャは変わっていたか？** — Transformerが支配的になった理由の一つは、そのコア計算が行列積であり、GPUと相性が良いことにある。RNNは逐次的な計算が必要でGPUの並列性を活かしきれなかった。
 2. **線形代数の限界はどこにあるか？** — 非線形性（活性化関数）なしには任意の関数を近似できない。線形代数は「土台」であって「全て」ではない。ただし、ReLU は区分線形関数であり、ニューラルネットは「区分的に線形な」写像だ。
 3. **量子コンピュータは線形代数を加速するか？** — 量子コンピュータは特定の線形代数演算（HHL algorithm）で指数関数的な高速化を達成できる可能性がある。量子機械学習の理論的基盤も線形代数だ。
-4. **低ランク近似はどこまで有効か？** — LoRA[^10]は重み更新を rank-`$r$` 近似することで、パラメータ数を `$O(d^2) \to O(dr)$` に削減した。これは「重み更新が本質的に低ランクである」という経験的発見に基づく。だが、この仮定は常に正しいのか？ どのタスクで低ランク近似が失敗するかは、まだ完全には理解されていない。
+4. **低ランク近似はどこまで有効か？** — LoRA[^10]は重み更新を rank-$r$ 近似することで、パラメータ数を $O(d^2) \to O(dr)$ に削減した。これは「重み更新が本質的に低ランクである」という経験的発見に基づく。だが、この仮定は常に正しいのか？ どのタスクで低ランク近似が失敗するかは、まだ完全には理解されていない。
 </details>
 
 ---

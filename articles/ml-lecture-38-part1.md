@@ -1337,9 +1337,9 @@ Zhang+ (2023) の**DiffFlow**は、さらに野心的な問いを投げかける
 
 DiffFlowの核心は次の**統一SDE**だ：
 
-```math
+$$
 \mathrm{d}\mathbf{x}_t = \mathbf{f}(\mathbf{x}_t, t)\,\mathrm{d}t + g(t)\,\mathrm{d}\mathbf{w}_t
-```
+$$
 
 ここで：
 - $\mathbf{f}(\mathbf{x}_t, t)$: ドリフト項（決定論的変化）
@@ -1362,23 +1362,23 @@ DiffFlowの核心は次の**統一SDE**だ：
 
 Score-based Diffusion Model の SDE：
 
-```math
+$$
 \mathrm{d}\mathbf{x}_t = -\frac{1}{2}\beta(t)\mathbf{x}_t\,\mathrm{d}t + \sqrt{\beta(t)}\,\mathrm{d}\mathbf{w}_t
-```
+$$
 
 を Probability Flow ODE に変換（前述の変換式を使用）：
 
-```math
+$$
 \mathrm{d}\mathbf{x}_t = \left[-\frac{1}{2}\beta(t)\mathbf{x}_t - \frac{1}{2}\beta(t)\nabla_{\mathbf{x}}\log p_t(\mathbf{x}_t)\right]\mathrm{d}t
-```
+$$
 
 **Step 2: 時刻反転 + 変数置換**
 
 時刻を $t' = 1 - t$ に反転し、$\mathbf{z}_{t'} = \mathbf{x}_t$ と置くと：
 
-```math
+$$
 \mathrm{d}\mathbf{z}_{t'} = \mathbf{g}(\mathbf{z}_{t'}, t')\,\mathrm{d}t'
-```
+$$
 
 ここで $\mathbf{g}$ は**生成ベクトル場**（Generator in GANs）。
 
@@ -1386,9 +1386,9 @@ Score-based Diffusion Model の SDE：
 
 このとき、Diffusion Modelの**score function** $\nabla_{\mathbf{x}}\log p_t(\mathbf{x})$ は、GANの**Discriminator**と以下の関係にある：
 
-```math
+$$
 D(\mathbf{x}, t) \propto \log\frac{p_t(\mathbf{x})}{q_t(\mathbf{x})}
-```
+$$
 
 ここで：
 - $p_t(\mathbf{x})$: データ分布
@@ -1402,9 +1402,9 @@ D(\mathbf{x}, t) \propto \log\frac{p_t(\mathbf{x})}{q_t(\mathbf{x})}
 
 DiffFlowは、次の**統一目的関数**を提案する：
 
-```math
+$$
 \mathcal{L}_{\text{DiffFlow}} = \mathbb{E}_{t,\mathbf{x}_0,\mathbf{x}_t}\left[\left\|\mathbf{v}_\theta(\mathbf{x}_t, t) - \mathbf{u}_t(\mathbf{x}_t | \mathbf{x}_0)\right\|^2\right] + \lambda\,\mathcal{R}(D_\phi)
-```
+$$
 
 ここで：
 - 第1項：**Flow Matching Loss**（前述の CFM Loss）
@@ -1464,9 +1464,9 @@ Zhang+ (2023) は、CIFAR-10 / ImageNet で次を示した：
 
 2つの確率分布 $p, q$ の**Wasserstein-2距離**は：
 
-```math
+$$
 W_2(p, q) = \inf_{\pi \in \Pi(p, q)} \left(\int \|\mathbf{x} - \mathbf{y}\|^2\,\mathrm{d}\pi(\mathbf{x}, \mathbf{y})\right)^{1/2}
-```
+$$
 
 ここで：
 - $\Pi(p, q)$：周辺分布が$p, q$となる同時分布の集合
@@ -1481,15 +1481,15 @@ W_2(p, q) = \inf_{\pi \in \Pi(p, q)} \left(\int \|\mathbf{x} - \mathbf{y}\|^2\,\
 
 確率分布の時間発展 $p_t$ が次の**連続方程式**（continuity equation）を満たすとする：
 
-```math
+$$
 \frac{\partial p_t}{\partial t} + \nabla \cdot (p_t \mathbf{v}_t) = 0
-```
+$$
 
 このとき、$p_t$が**関数$\mathcal{F}[p]$のWasserstein勾配流**であるとは：
 
-```math
+$$
 \mathbf{v}_t = -\nabla \frac{\delta \mathcal{F}}{\delta p}\bigg|_{p=p_t}
-```
+$$
 
 を満たすこと。ここで：
 - $\frac{\delta \mathcal{F}}{\delta p}$：関数微分（functional derivative）
@@ -1504,21 +1504,21 @@ W_2(p, q) = \inf_{\pi \in \Pi(p, q)} \left(\int \|\mathbf{x} - \mathbf{y}\|^2\,\
 
 具体例を見よう。関数$\mathcal{F}$を**KL divergence**とする：
 
-```math
+$$
 \mathcal{F}[p] = \mathrm{KL}(p \| p_{\text{data}}) = \int p(\mathbf{x})\log\frac{p(\mathbf{x})}{p_{\text{data}}(\mathbf{x})}\,\mathrm{d}\mathbf{x}
-```
+$$
 
 この関数微分は：
 
-```math
+$$
 \frac{\delta \mathcal{F}}{\delta p} = \log\frac{p(\mathbf{x})}{p_{\text{data}}(\mathbf{x})} + 1
-```
+$$
 
 したがって、勾配流は：
 
-```math
+$$
 \mathbf{v}_t = -\nabla\left(\log\frac{p_t(\mathbf{x})}{p_{\text{data}}(\mathbf{x})}\right) = \nabla\log p_{\text{data}}(\mathbf{x}) - \nabla\log p_t(\mathbf{x})
-```
+$$
 
 **重要な観察**：
 右辺の第2項 $-\nabla\log p_t(\mathbf{x})$ は**score function**だ！
@@ -1531,15 +1531,15 @@ W_2(p, q) = \inf_{\pi \in \Pi(p, q)} \left(\int \|\mathbf{x} - \mathbf{y}\|^2\,\
 
 Flow Matchingの目的関数：
 
-```math
+$$
 \mathcal{L}_{\text{FM}} = \mathbb{E}_{t}\left[\int p_t(\mathbf{x})\left\|\mathbf{v}_\theta(\mathbf{x}, t) - \mathbf{u}_t(\mathbf{x})\right\|^2\,\mathrm{d}\mathbf{x}\right]
-```
+$$
 
 ここで、$\mathbf{u}_t$が**最適輸送の速度場**であるとき、これは次と等価：
 
-```math
+$$
 \mathbf{u}_t = \arg\min_{\mathbf{v}}\,W_2(p_0, p_1)^2
-```
+$$
 
 すなわち、Flow Matchingの訓練は**Wasserstein距離を最小化する勾配流を学習すること**に対応する。
 
@@ -1549,9 +1549,9 @@ Flow Matchingの目的関数：
 
 Jordan-Kinderlehrer-Otto (JKO) スキームは、勾配流の**離散化**手法だ：
 
-```math
+$$
 p_{k+1} = \arg\min_{p} \left[\mathcal{F}[p] + \frac{1}{2\tau}W_2(p, p_k)^2\right]
-```
+$$
 
 ここで：
 - $\tau$：時間ステップ
@@ -1569,15 +1569,15 @@ p_{k+1} = \arg\min_{p} \left[\mathcal{F}[p] + \frac{1}{2\tau}W_2(p, p_k)^2\right
 :::details JKOスキームの導出（補足）
 変分問題：
 
-```math
+$$
 \min_{p} \left[\mathcal{F}[p] + \frac{1}{2\tau}W_2(p, p_k)^2\right]
-```
+$$
 
 の最適性条件（Euler-Lagrange方程式）は：
 
-```math
+$$
 \frac{\delta \mathcal{F}}{\delta p} + \frac{1}{\tau}\left(\mathbf{x} - \mathbf{T}_k(\mathbf{x})\right) = 0
-```
+$$
 
 ここで$\mathbf{T}_k$は$p_k$から$p$への最適輸送写像。$\tau \to 0$の極限で連続勾配流に収束する。
 :::

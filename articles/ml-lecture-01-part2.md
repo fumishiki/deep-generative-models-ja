@@ -356,9 +356,9 @@ GitHub がコードの宝庫なら、**Hugging Face** (huggingface.co) は学習
 uv add transformers torch
 ```
 
-```math
+$$
 p_\theta(y \mid x) = \mathrm{softmax}(W h_\theta(x) + b)
-```
+$$
 
 
 ここでの記号対応を明記する:
@@ -384,9 +384,9 @@ graph LR
 
 #### モデルのダウンロードと推論
 
-```math
+$$
 H = \mathrm{Encoder}_\theta(x_{1:T}) \in \mathbb{R}^{T \times d_{\text{model}}}
-```
+$$
 
 
 このコードと式の1:1対応:
@@ -588,13 +588,13 @@ graph LR
 
 1. **記号の洗い出し**: 新しい記号が出たら、定義を探す
 2. **次元の確認**: 各変数の shape を追跡する
-3. **特殊ケースの確認**: `$n=1$` や `$d=1$` で式を単純化して意味を確認
+3. **特殊ケースの確認**: $n=1$ や $d=1$ で式を単純化して意味を確認
 4. **コードとの対応**: 数式を Python に翻訳してみる
 
 例: VAE[^4] の再パラメータ化トリック
-```math
+$$
 \mathbf{z} = \boldsymbol{\mu} + \boldsymbol{\sigma} \odot \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(0, I)
-```
+$$
 
 </details>
 
@@ -615,9 +615,9 @@ Pass 3 は全論文で行う必要はない。自分の研究に直結する論�
 | 結果 | WMT 2014 英独翻訳で BLEU 28.4（当時SOTA）。訓練時間は1/10以下 |
 | 影響 | BERT, GPT, ViT, DALL-E, ... 現代のほぼ全モデルの基盤 |
 
-```math
+$$
 \mathrm{Attention}(Q,K,V) = \mathrm{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
-```
+$$
 
 
 #### 論文・知識管理 — Obsidian で知識をグラフ化する
@@ -684,8 +684,8 @@ lecture: 2
 # 第2回: 線形代数 I
 
 ## Key Concepts
-- [[行列積]]: `$\mathbf{C}=\mathbf{A}\mathbf{B}$`（shape と添字で読む）
-- [[固有値分解]]: `$\mathbf{A}\mathbf{v}=\lambda\mathbf{v}$`（固有ベクトル=方向）
+- [[行列積]]: $\mathbf{C}=\mathbf{A}\mathbf{B}$（shape と添字で読む）
+- [[固有値分解]]: $\mathbf{A}\mathbf{v}=\lambda\mathbf{v}$（固有ベクトル=方向）
 
 ## Questions
 - 図のどの矢印が、数式のどの項か？（対応が言えるか）
@@ -711,32 +711,32 @@ Notion はクラウド依存でエクスポートが面倒。Scrapbox は双方�
 
 | 数式 | LaTeX | 出力 |
 |:---|:---|:---|
-| 分数 | `\frac{a}{b}` | `$\frac{a}{b}$` |
-| 上付き | `x^{2}` | `$x^{2}$` |
-| 下付き | `x_{i}` | `$x_{i}$` |
-| 平方根 | `\sqrt{x}` | `$\sqrt{x}$` |
-| 総和 | `\sum_{i=1}^{n} x_i` | `$\sum_{i=1}^{n} x_i$` |
-| 総乗 | `\prod_{i=1}^{n} x_i` | `$\prod_{i=1}^{n} x_i$` |
-| 積分 | `\int_{a}^{b} f(x) dx` | `$\int_{a}^{b} f(x) dx$` |
-| 偏微分 | `\frac{\partial f}{\partial x}` | `$\frac{\partial f}{\partial x}$` |
-| ベクトル | `\mathbf{x}` | `$\mathbf{x}$` |
-| 行列 | `\mathbf{A}` or `\mathbf{W}` | `$\mathbf{A}$` |
-| 集合 | `\mathbb{R}^n` | `$\mathbb{R}^n$` |
-| 損失関数 | `\mathcal{L}` | `$\mathcal{L}$` |
-| 期待値 | `\mathbb{E}[X]` | `$\mathbb{E}[X]$` |
+| 分数 | `\frac{a}{b}` | $\frac{a}{b}$ |
+| 上付き | `x^{2}` | $x^{2}$ |
+| 下付き | `x_{i}` | $x_{i}$ |
+| 平方根 | `\sqrt{x}` | $\sqrt{x}$ |
+| 総和 | `\sum_{i=1}^{n} x_i` | $\sum_{i=1}^{n} x_i$ |
+| 総乗 | `\prod_{i=1}^{n} x_i` | $\prod_{i=1}^{n} x_i$ |
+| 積分 | `\int_{a}^{b} f(x) dx` | $\int_{a}^{b} f(x) dx$ |
+| 偏微分 | `\frac{\partial f}{\partial x}` | $\frac{\partial f}{\partial x}$ |
+| ベクトル | `\mathbf{x}` | $\mathbf{x}$ |
+| 行列 | `\mathbf{A}` or `\mathbf{W}` | $\mathbf{A}$ |
+| 集合 | `\mathbb{R}^n` | $\mathbb{R}^n$ |
+| 損失関数 | `\mathcal{L}` | $\mathcal{L}$ |
+| 期待値 | `\mathbb{E}[X]` | $\mathbb{E}[X]$ |
 
 #### Zenn での数式記法
 
-Zenn は KaTeX をサポートしている。本シリーズでは「読める」ことを優先して、インライン数式は **コードスパンで包んだ `$...$`**、ブロック数式は **```math フェンス**で統一する（前編と同じルール）。
+Zenn は KaTeX をサポートしている。本シリーズでは「読める」ことを優先して、インライン数式は **コードスパンで包んだ $...$**、ブロック数式は **```math フェンス**で統一する（前編と同じルール）。
 
 ```markdown
 <!-- インライン数式 -->
-Softmax は `$\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_j e^{z_j}}$` で定義される。
+Softmax は $\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_j e^{z_j}}$ で定義される。
 
 <!-- ブロック数式 -->
-```math
+$$
 \mathcal{L}_{\text{CE}} = -\sum_{i=1}^{C} y_i \log \hat{y}_i
-```
+$$
 ```
 
 <details><summary>KaTeX で使えない LaTeX コマンド（注意）</summary>
@@ -756,9 +756,9 @@ KaTeX は LaTeX の完全互換ではない。以下は注意:
 
 以下の数式を LaTeX で書いてみよう:
 
-```math
+$$
 \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
-```
+$$
 
 <details><summary>解答</summary>
 
@@ -782,21 +782,21 @@ KaTeX は LaTeX の完全互換ではない。以下は注意:
 3. **演算を3種類に分ける**: 集約（`Σ/Π/E`）| 変換（`AB/⊙/T`）| 非線形（`softmax/log/exp`）
 4. **数値の罠を潰す**: `log(0)`、指数のオーバーフロー、割り算のゼロ割りを先に想像する
 
-#### Pattern 1: `$\sum$` → `np.sum()` / `sum()`
+#### Pattern 1: $\sum$ → `np.sum()` / `sum()`
 
-```math
+$$
 \bar{x} = \frac{1}{N} \sum_{i=1}^{N} x_i
-```
+$$
 
 ```python
 x_bar = np.mean(x)  # = np.sum(x) / len(x)
 ```
 
-#### Pattern 2: `$\prod$` → `np.prod()` / 対数和
+#### Pattern 2: $\prod$ → `np.prod()` / 対数和
 
-```math
+$$
 p(\mathcal{D}) = \prod_{i=1}^{N} p(x^{(i)})
-```
+$$
 
 ```python
 import numpy as np
@@ -811,11 +811,11 @@ print(f"p(D)     = {likelihood:.6f}")
 # 直接 np.prod を使うと N が大きいとアンダーフローする
 ```
 
-#### Pattern 3: `$\arg\max$` → `np.argmax()`
+#### Pattern 3: $\arg\max$ → `np.argmax()`
 
-```math
+$$
 \hat{y} = \arg\max_c p(y = c \mid \mathbf{x})
-```
+$$
 
 ```python
 # クラス確率ベクトル（Softmax出力）
@@ -827,11 +827,11 @@ class_names = ["cat", "dog", "bird", "fish"]
 print(f"予測ラベル: {class_names[y_hat]}")  # → dog
 ```
 
-#### Pattern 4: `$\mathbb{E}[\cdot]$` → `np.mean()` (モンテカルロ)
+#### Pattern 4: $\mathbb{E}[\cdot]$ → `np.mean()` (モンテカルロ)
 
-```math
+$$
 \mathbb{E}_{p(x)}[f(x)] \approx \frac{1}{N} \sum_{i=1}^{N} f(x^{(i)}), \quad x^{(i)} \sim p
-```
+$$
 
 ```python
 # E[x^2] for x ~ N(0,1): 理論値 = 1.0
@@ -842,11 +842,11 @@ E_f = np.mean(f_samples)                  # (1/N) Σ f(x^(i))
 print(f"E[x²] ≈ {E_f:.4f}  (理論値: 1.0)")
 ```
 
-#### Pattern 5: 行列積 `$AB$` → `A @ B`
+#### Pattern 5: 行列積 $AB$ → `A @ B`
 
-```math
+$$
 \mathbf{h} = W\mathbf{x} + \mathbf{b}
-```
+$$
 
 ```python
 d_in, d_out = 4, 3
@@ -857,11 +857,11 @@ h = W @ x + b                      # h = Wx + b ∈ R^{d_out}
 print(f"W.shape={W.shape}, x.shape={x.shape} → h.shape={h.shape}")
 ```
 
-#### Pattern 6: 要素ごとの演算 `$\odot$` → `*`
+#### Pattern 6: 要素ごとの演算 $\odot$ → `*`
 
-```math
+$$
 \mathbf{z} = \boldsymbol{\mu} + \boldsymbol{\sigma} \odot \boldsymbol{\epsilon}
-```
+$$
 
 ```python
 # VAE の reparameterization trick: z = μ + σ ⊙ ε, ε ~ N(0,I)
@@ -873,11 +873,11 @@ z     = mu + sigma * eps                 # ⊙ は要素積 → Python では *
 print(f"z = {np.round(z, 3)}")
 ```
 
-#### Pattern 7: `$\nabla_\theta \mathcal{L}$` → 自動微分
+#### Pattern 7: $\nabla_\theta \mathcal{L}$ → 自動微分
 
-```math
+$$
 \theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)
-```
+$$
 
 ```python
 # 手動SGDステップ（勾配は計算済みとして）
@@ -893,17 +893,17 @@ print(f"更新後 θ = {np.round(theta, 4)}")
 <details><summary>翻訳パターン対応表（まとめ）</summary>
 | 数式 | Python (NumPy) | 備考 |
 |:---|:---|:---|
-| `$\sum_i x_i$` | `np.sum(x)` | axis 指定で次元制御 |
-| `$\prod_i x_i$` | `np.prod(x)` | 対数空間推奨 |
-| `$\arg\max$` | `np.argmax(x)` | |
-| `$\mathbb{E}[f(x)]$` | `np.mean(f(samples))` | モンテカルロ |
-| `$AB$` | `A @ B` | 行列積 |
-| `$A \odot B$` | `A * B` | 要素積 |
-| `$A^\top$` | `A.T` | 転置 |
-| `$\|x\|_2$` | `np.linalg.norm(x)` | |
-| `$\nabla f$` | 手動 or autograd | 第3回以降 |
-| `$\mathcal{N}(\mu, \sigma^2)$` | `np.random.normal(mu, sigma)` | |
-| `$\mathbb{1}[c]$` | `(condition).astype(int)` | 指示関数 |
+| $\sum_i x_i$ | `np.sum(x)` | axis 指定で次元制御 |
+| $\prod_i x_i$ | `np.prod(x)` | 対数空間推奨 |
+| $\arg\max$ | `np.argmax(x)` | |
+| $\mathbb{E}[f(x)]$ | `np.mean(f(samples))` | モンテカルロ |
+| $AB$ | `A @ B` | 行列積 |
+| $A \odot B$ | `A * B` | 要素積 |
+| $A^\top$ | `A.T` | 転置 |
+| $\|x\|_2$ | `np.linalg.norm(x)` | |
+| $\nabla f$ | 手動 or autograd | 第3回以降 |
+| $\mathcal{N}(\mu, \sigma^2)$ | `np.random.normal(mu, sigma)` | |
+| $\mathbb{1}[c]$ | `(condition).astype(int)` | 指示関数 |
 </details>
 
 > **Checkpoint:** 開発環境、プラットフォーム活用、論文読解・知識管理、LaTeX、コード翻訳パターンまで押さえた。残りは全体地図の統合と次回への接続。
@@ -970,16 +970,16 @@ flowchart TD
 
 生成モデルがやりたいことは、突き詰めるとこれだ。
 
-```math
+$$
 \max_\theta \;\; \mathbb{E}_{\mathbf{x}\sim p_{\text{data}}}[\log p_\theta(\mathbf{x})]
-```
+$$
 
 データ分布 `p_{\text{data}}` は未知なので、現実にはデータセット上の平均で近似する。
 
-```math
+$$
 \mathbb{E}_{\mathbf{x}\sim p_{\text{data}}}[\log p_\theta(\mathbf{x})]
 \approx \frac{1}{N}\sum_{i=1}^{N}\log p_\theta(\mathbf{x}^{(i)})
-```
+$$
 
 ここで「LLMが最小化している Cross-Entropy」も「画像生成で最大化している log-likelihood」も、棚としては同じ場所にある。
 
@@ -991,24 +991,24 @@ flowchart TD
 
 自己回帰は、確率の連鎖律だけで `p_\theta(\mathbf{x})` を分解する。
 
-```math
+$$
 p_\theta(\mathbf{x}) = p_\theta(x_1,\ldots,x_T)
   = \prod_{t=1}^{T} p_\theta(x_t \mid x_{<t})
-```
+$$
 
 対数を取れば、積が和に落ちる。
 
-```math
+$$
 \log p_\theta(\mathbf{x})
   = \sum_{t=1}^{T} \log p_\theta(x_t \mid x_{<t})
-```
+$$
 
 この `p_\theta(x_t \mid x_{<t})` を実装するとき、結局 Softmax に戻ってくる。
 
-```math
+$$
 p_\theta(x_t=c \mid x_{<t})
   = \mathrm{softmax}(\text{logits}_t)_c
-```
+$$
 
 この形の美点は「積分がない」こと。弱点は「サンプリングが逐次」になること。
 
@@ -1023,43 +1023,43 @@ p_\theta(x_t=c \mid x_{<t})
 
 潜在変数モデルは、生成を「潜在 `\mathbf{z}` を引いてから `\mathbf{x}` を出す」形で定義する。
 
-```math
+$$
 p_\theta(\mathbf{x}) = \int p_\theta(\mathbf{x},\mathbf{z})\, d\mathbf{z}
   = \int p_\theta(\mathbf{x}\mid \mathbf{z})p(\mathbf{z})\, d\mathbf{z}
-```
+$$
 
 ここで詰まる。積分が重い。閉形式で出ないことが多い。
 
 そこで `q_\phi(\mathbf{z}\mid\mathbf{x})` を導入して、次の恒等式から始める。
 
-```math
+$$
 \log p_\theta(\mathbf{x})
   = \log \int q_\phi(\mathbf{z}\mid\mathbf{x})
       \frac{p_\theta(\mathbf{x},\mathbf{z})}{q_\phi(\mathbf{z}\mid\mathbf{x})}
     d\mathbf{z}
   = \log \mathbb{E}_{\mathbf{z}\sim q_\phi(\cdot\mid\mathbf{x})}
       \left[\frac{p_\theta(\mathbf{x},\mathbf{z})}{q_\phi(\mathbf{z}\mid\mathbf{x})}\right]
-```
+$$
 
 ここで **Jensen の不等式**（凹関数版: ` \log \mathbb{E}[\cdot] \ge \mathbb{E}[\log(\cdot)] `）を使うと、
 
 > **Note:** Jensenの不等式の直感: `log` は**上に凸（凹）な関数**。凸の帽子を被っているグラフでは、「平均をとってからlogをとる」と「logをとってから平均をとる」を比べると、前者の方が常に大きい（または等しい）。不等号の向きはこの「凸形状」から来ている。等号成立は `q_\phi(\mathbf{z}\mid\mathbf{x}) = p_\theta(\mathbf{z}\mid\mathbf{x})` のとき（近似分布が真の事後分布に一致したとき）。
 
-```math
+$$
 \log p_\theta(\mathbf{x})
   \ge \mathbb{E}_{\mathbf{z}\sim q_\phi(\cdot\mid\mathbf{x})}
         \left[\log p_\theta(\mathbf{x},\mathbf{z})-\log q_\phi(\mathbf{z}\mid\mathbf{x})\right]
-```
+$$
 
 右辺を ELBO（evidence lower bound）と呼ぶ。
 
-> **Note:** なぜ `\log p_\theta(\mathbf{x},\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})` が「再構成+KL」に変形できるのか？ `p_\theta(\mathbf{x},\mathbf{z}) = p_\theta(\mathbf{x}|\mathbf{z})p(\mathbf{z})` と分解すると、対数は和になる: `\log p_\theta(\mathbf{x}|\mathbf{z}) + \log p(\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})`。期待値の線形性を使ってまとめると、後ろ2項が `$-D_{\text{KL}}(q_\phi \| p)$` に対応する。
+> **Note:** なぜ `\log p_\theta(\mathbf{x},\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})` が「再構成+KL」に変形できるのか？ `p_\theta(\mathbf{x},\mathbf{z}) = p_\theta(\mathbf{x}|\mathbf{z})p(\mathbf{z})` と分解すると、対数は和になる: `\log p_\theta(\mathbf{x}|\mathbf{z}) + \log p(\mathbf{z}) - \log q_\phi(\mathbf{z}|\mathbf{x})`。期待値の線形性を使ってまとめると、後ろ2項が $-D_{\text{KL}}(q_\phi \| p)$ に対応する。
 
-```math
+$$
 \mathcal{L}_{\text{ELBO}}(\theta,\phi;\mathbf{x})
   := \mathbb{E}_{q_\phi(\mathbf{z}\mid\mathbf{x})}\left[\log p_\theta(\mathbf{x}\mid\mathbf{z})\right]
      - D_{\mathrm{KL}}(q_\phi(\mathbf{z}\mid\mathbf{x})\|p(\mathbf{z}))
-```
+$$
 
 ここまで来ると、**何を最適化しているか** が見える。
 
@@ -1070,10 +1070,10 @@ VAE の本質は「積分が無理」を「下界最大化」に落としたこ�
 
 さらに先で必ず出会うのが再パラメータ化トリックだ。
 
-```math
+$$
 \mathbf{z} = \boldsymbol{\mu}_\phi(\mathbf{x}) + \boldsymbol{\sigma}_\phi(\mathbf{x})\odot \boldsymbol{\epsilon},
 \quad \boldsymbol{\epsilon}\sim \mathcal{N}(0,I)
-```
+$$
 
 この形にすると、`q_\phi` からのサンプルが「ノイズ `\epsilon` を通じた決定的写像」になり、勾配が通る。
 
@@ -1087,11 +1087,11 @@ GAN は `\log p_\theta(\mathbf{x})` を書かない。書けないのではな�
 
 代わりに「本物か偽物か」を当てる識別器 `D` と、偽物を作る生成器 `G` のゲームにする。
 
-```math
+$$
 \min_G \max_D \;
 \mathbb{E}_{\mathbf{x}\sim p_{\text{data}}}[\log D(\mathbf{x})]
  + \mathbb{E}_{\mathbf{z}\sim p(\mathbf{z})}[\log(1-D(G(\mathbf{z})))]
-```
+$$
 
 この式の読み方は単純だ。
 
@@ -1116,10 +1116,10 @@ GAN が厄介で面白いのは「最適化が二重」なことだ。
 
 DDPM の典型的な forward は、次のガウス遷移で書かれる[^5]。
 
-```math
+$$
 q(\mathbf{x}_t\mid \mathbf{x}_{t-1})
   = \mathcal{N}(\sqrt{1-\beta_t}\mathbf{x}_{t-1}, \beta_t I)
-```
+$$
 
 この形の重要ポイントは2つ。
 
@@ -1128,18 +1128,18 @@ q(\mathbf{x}_t\mid \mathbf{x}_{t-1})
 
 逆過程は `p_\theta(\mathbf{x}_{t-1}\mid\mathbf{x}_t)` として定義するが、ここが難しい。そこで多くの実装は「平均/分散」を直接出すのではなく、ノイズ `\epsilon` を予測する形に落とす。
 
-```math
+$$
 \boldsymbol{\epsilon}_\theta(\mathbf{x}_t,t) \approx \boldsymbol{\epsilon}
-```
+$$
 
 なぜ「ノイズ予測」になるのか。理由は、forward がガウスで閉じているからだ。` \mathbf{x}_t ` が ` \mathbf{x}_0 ` と ` \epsilon ` の線形結合として書ける。
 
-ここで `$\bar{\alpha}_t = \prod_{s=1}^{t}(1-\beta_s)$` はノイズスケジュール `$\beta_1,\ldots,\beta_T$` の累積積（`$t$` ステップ分を一気にまとめた係数）。`$t$` が大きいほど `$\bar{\alpha}_t \to 0$` になり、元データ `$\mathbf{x}_0$` の情報が消えてほぼ純粋なノイズになる。
+ここで $\bar{\alpha}_t = \prod_{s=1}^{t}(1-\beta_s)$ はノイズスケジュール $\beta_1,\ldots,\beta_T$ の累積積（$t$ ステップ分を一気にまとめた係数）。$t$ が大きいほど $\bar{\alpha}_t \to 0$ になり、元データ $\mathbf{x}_0$ の情報が消えてほぼ純粋なノイズになる。
 
-```math
+$$
 \mathbf{x}_t = \sqrt{\bar{\alpha}_t}\mathbf{x}_0 + \sqrt{1-\bar{\alpha}_t}\boldsymbol{\epsilon},
 \quad \boldsymbol{\epsilon}\sim \mathcal{N}(0,I)
-```
+$$
 
 この「線形結合」は、次回の線形代数で徹底的に扱うテーマそのものだ。
 
@@ -1155,16 +1155,16 @@ Diffusion の棚はこうなる。
 
 Flow は「単純な分布から複雑な分布へ」写像で運ぶ。
 
-```math
+$$
 \mathbf{x} = f_\theta(\mathbf{z}), \quad \mathbf{z}\sim p(\mathbf{z})
-```
+$$
 
 写像が可逆なら、変数変換公式で尤度が書ける。
 
-```math
+$$
 \log p_\theta(\mathbf{x})
   = \log p(\mathbf{z}) - \log \left|\det \frac{\partial f_\theta}{\partial \mathbf{z}}\right|
-```
+$$
 
 この `\det`（行列式）が、計算量と設計の制約を生む。行列式は「写像が体積をどれだけ拡大・縮小するか」を表す量。これがゼロになると逆変換が存在しなくなるし、大きな行列の行列式を計算するのはコストが高い。ここでも線形代数が支配する。
 
@@ -1348,13 +1348,13 @@ Obsidian に貼れる形で「1枚のノート」を作る。ここで重要な�
 - Sampling: {逐次/反復/写像}
 
 ## Key Equations
-```math
+$$
 {load-bearing equation 1}
-```
+$$
 
-```math
+$$
 {load-bearing equation 2}
-```
+$$
 
 ## Symbols (記号辞書)
 - `x`: {meaning}, shape: {...}
@@ -1419,15 +1419,15 @@ Obsidian に貼れる形で「1枚のノート」を作る。ここで重要な�
 <details><summary>用語集（クリックで展開）</summary>
 | 用語 | 英語 | 定義 |
 |:---|:---|:---|
-| 勾配 | gradient | 多変数関数の各偏微分を並べたベクトル。`$\nabla f$` |
+| 勾配 | gradient | 多変数関数の各偏微分を並べたベクトル。$\nabla f$ |
 | 勾配降下法 | gradient descent | 勾配の逆方向にパラメータを更新する最適化手法 |
 | 誤差逆伝播法 | backpropagation | 合成関数の連鎖律を用いて勾配を効率的に計算する手法[^2] |
-| 損失関数 | loss function | モデルの予測と正解の乖離を測る関数。`$\mathcal{L}$` |
+| 損失関数 | loss function | モデルの予測と正解の乖離を測る関数。$\mathcal{L}$ |
 | 交差エントロピー | cross-entropy | 2つの確率分布の差異を測る損失関数 |
 | ソフトマックス | softmax | 実数ベクトルを確率分布に変換する関数[^1] |
 | 温度パラメータ | temperature | Softmax のシャープさを制御するスカラー[^3] |
 | アテンション | attention | クエリとキーの類似度で値を重み付け集約する機構[^1] |
-| 潜在変数 | latent variable | データの背後にある観測されない変数。`$\mathbf{z}$` |
+| 潜在変数 | latent variable | データの背後にある観測されない変数。$\mathbf{z}$ |
 | 変分推論 | variational inference | 事後分布を近似するための最適化ベースの推論手法[^4] |
 | ELBO | evidence lower bound | 周辺尤度の下界。VAEの目的関数[^4] |
 | KLダイバージェンス | KL divergence | 2つの分布間の非対称な「距離」 |
@@ -1436,7 +1436,7 @@ Obsidian に貼れる形で「1枚のノート」を作る。ここで重要な�
 | arXiv | arXiv | 物理学・数学・計算機科学のプレプリントサーバー |
 | プレプリント | preprint | 査読前の論文 |
 | 写像 | mapping / function | 定義域の各要素を値域の要素に対応させる規則 |
-| 確率単体 | probability simplex | 非負で総和1のベクトルの集合。`$\Delta^{C-1}$` |
+| 確率単体 | probability simplex | 非負で総和1のベクトルの集合。$\Delta^{C-1}$ |
 </details>
 
 ### 7.2 第1回の知識マップ
@@ -1574,7 +1574,7 @@ mindmap
 
 > **もし「数式」という表現形式が存在しなかったら、人類は深層学習を発明できただろうか？**
 
-数式は「厳密さ」と「汎用性」を両立する唯一の言語だ。「入力 `$\mathbf{x}$` を重み `$W$` で線形変換し、バイアス `$\mathbf{b}$` を加え、非線形関数 `$\sigma$` を通す」— この操作を `$\sigma(W\mathbf{x} + \mathbf{b})$` という7文字で表現できる。自然言語では同じ情報量に50文字以上かかる。
+数式は「厳密さ」と「汎用性」を両立する唯一の言語だ。「入力 $\mathbf{x}$ を重み $W$ で線形変換し、バイアス $\mathbf{b}$ を加え、非線形関数 $\sigma$ を通す」— この操作を $\sigma(W\mathbf{x} + \mathbf{b})$ という7文字で表現できる。自然言語では同じ情報量に50文字以上かかる。
 
 しかし、別の可能性もある:
 - **プログラミング言語で直接定義する世界**: `h = relu(W @ x + b)` — 実際、多くの実務者はコードで考えている
@@ -1585,7 +1585,7 @@ mindmap
 
 **考えてみてほしいこと**:
 
-1. **Transformer[^1] は数式から生まれたのか、実験から生まれたのか？** 原論文を読むと、Scaled Dot-Product Attention の `$\sqrt{d_k}$` というスケーリング因子は、数学的解析（内積の分散が `$d_k$` に比例するという観察）から導かれている。一方で、Multi-Head Attention のヘッド数 `$h=8$` という選択は、実験的に最良だった数値であり、数学的な必然性はない。
+1. **Transformer[^1] は数式から生まれたのか、実験から生まれたのか？** 原論文を読むと、Scaled Dot-Product Attention の $\sqrt{d_k}$ というスケーリング因子は、数学的解析（内積の分散が $d_k$ に比例するという観察）から導かれている。一方で、Multi-Head Attention のヘッド数 $h=8$ という選択は、実験的に最良だった数値であり、数学的な必然性はない。
 
 2. **拡散モデル[^5] のノイズスケジュール**は、物理学の拡散方程式にインスピレーションを得ているが、実際に機能するスケジュール（linear, cosine）は物理的に自然なものではなく、実験的に発見されたものだ。「物理の数式からAIを設計する」という方向は本当に正しいのか、それとも「AIの振る舞いを事後的に物理で解釈する」方が生産的なのか。
 
@@ -1595,9 +1595,9 @@ mindmap
 
 <details><summary>歴史的な視点: 表現形式とブレイクスルーの関係</summary>
 
-- **ライプニッツの微積分記法** (`$\frac{dy}{dx}$`) がニュートンの記法 (`$\dot{y}$`) より広く普及したのは、連鎖律が機械的に適用できたから。記法が思考を加速した例。
-- **アインシュタインの縮約記法** (`$a_i b^i = \sum_i a_i b_i$`) がテンソル計算を劇的に簡略化し、一般相対性理論の発展を加速した。
-- **Dirac のブラケット記法** (`$\langle \psi | \phi \rangle$`) が量子力学の計算を直感的にした。
+- **ライプニッツの微積分記法** ($\frac{dy}{dx}$) がニュートンの記法 ($\dot{y}$) より広く普及したのは、連鎖律が機械的に適用できたから。記法が思考を加速した例。
+- **アインシュタインの縮約記法** ($a_i b^i = \sum_i a_i b_i$) がテンソル計算を劇的に簡略化し、一般相対性理論の発展を加速した。
+- **Dirac のブラケット記法** ($\langle \psi | \phi \rangle$) が量子力学の計算を直感的にした。
 - そして今、**PyTorch/JAX の自動微分** が「勾配を手計算で求める」必要をなくし、新しいアーキテクチャの実験コストを劇的に下げた。
 
 表現形式の進化は、新しい発見を可能にする。数式→コード→自然言語（LLMプロンプト）という表現形式の進化は、次にどんな発見を可能にするだろうか。

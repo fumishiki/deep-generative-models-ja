@@ -19,7 +19,7 @@ keywords: ["数式記法", "LaTeX", "Softmax", "Attention", "Cross-Entropy"]
 ## 🗺️ この回の地図（5トピック）
 
 - **数式記法マスター**: ギリシャ文字 / 添字 / 演算子 / 集合 / 論理 / 関数 / 微分 / 確率（記号を「音」にして、意味に落とす）
-- **Boss Battle: Attention完全読解**: `$\mathrm{Attention}(Q,K,V)=\mathrm{softmax}(QK^\top/\sqrt{d_k})V$` を一文字残らず分解する
+- **Boss Battle: Attention完全読解**: $\mathrm{Attention}(Q,K,V)=\mathrm{softmax}(QK^\top/\sqrt{d_k})V$ を一文字残らず分解する
 - **論文読解法**: arXiv / 3パスリーディング / 構造スキャン（Abstract→図→数式→実験）
 - **LaTeX & 数式↔コード**: 数式の最小語彙と、翻訳の型（式→変数→shape→実装）
 - **環境構築**: Python/IDE/ノートの型（手を動かすのは後編）
@@ -29,7 +29,7 @@ keywords: ["数式記法", "LaTeX", "Softmax", "Attention", "Cross-Entropy"]
 
 ---
 
-この1文に「いやいや、そんなわけないだろ」と思っただろうか。気持ちはわかる。論文を開いて `$\mathcal{L}(\theta, \phi; \mathbf{x})$` のような記号が並ぶと、反射的に閉じたくなる。あの感覚を覚えている人は多いはずだ。
+この1文に「いやいや、そんなわけないだろ」と思っただろうか。気持ちはわかる。論文を開いて $\mathcal{L}(\theta, \phi; \mathbf{x})$ のような記号が並ぶと、反射的に閉じたくなる。あの感覚を覚えている人は多いはずだ。
 
 だが考えてほしい。英語を読めなかった頃、英字新聞は暗号に見えた。アルファベットを覚え、単語を覚え、文法を理解した今、それは「普通の文章」になっている。数式も同じだ。記号のアルファベットを覚え、記法の文法を理解すれば、論文は「著者の思考を追体験できるドキュメント」に変わる。
 
@@ -74,11 +74,11 @@ sum:    1.000000
 
 **この3行の裏にある数式**:
 
-```math
+$$
 p_i = \frac{\exp(x_i)}{\sum_{j=1}^{K} \exp(x_j)}
-```
+$$
 
-見てほしい。`np.exp(logits)` が `$\exp(x_i)$`、`np.sum(np.exp(logits))` が `$\sum_j \exp(x_j)$`。数式とコードが1対1で対応している。
+見てほしい。`np.exp(logits)` が $\exp(x_i)$、`np.sum(np.exp(logits))` が $\sum_j \exp(x_j)$。数式とコードが1対1で対応している。
 
 このSoftmax関数は現代のLLMの心臓部だ。GPT、Claude、Gemini — 全てがこの関数を使って次のトークンの確率分布を計算している。Transformerの原論文 [^1] でもAttention機構の中核としてSoftmaxが使われている。
 
@@ -98,9 +98,9 @@ p_i = \frac{\exp(x_i)}{\sum_{j=1}^{K} \exp(x_j)}
 
 以下の数式を声に出して読んでみてほしい。
 
-```math
+$$
 \nabla_\theta \mathcal{L}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \nabla_\theta \ell(f_\theta(\mathbf{x}_i), y_i)
-```
+$$
 
 **読み方**: 「ナブラ シータ エル シータ イコール イチ エヌ ぶんの シグマ アイ イコール イチ から エヌ ナブラ シータ スモール エル エフ シータ エックス アイ カンマ ワイ アイ」
 
@@ -108,56 +108,56 @@ p_i = \frac{\exp(x_i)}{\sum_{j=1}^{K} \exp(x_j)}
 
 | 記号 | 読み | 意味 |
 |:-----|:-----|:-----|
-| `$\nabla_\theta$` | ナブラ シータ | パラメータ `$\theta$` に関する勾配 |
-| `$\mathcal{L}(\theta)$` | エル シータ | 損失関数（全体の平均） |
-| `$\frac{1}{N}\sum_{i=1}^{N}$` | エヌぶんのイチ シグマ | N個のデータの平均 |
-| `$\ell(f_\theta(\mathbf{x}_i), y_i)$` | スモール エル | 1個のデータの損失 |
-| `$f_\theta(\mathbf{x}_i)$` | エフ シータ エックス アイ | モデルの予測 |
+| $\nabla_\theta$ | ナブラ シータ | パラメータ $\theta$ に関する勾配 |
+| $\mathcal{L}(\theta)$ | エル シータ | 損失関数（全体の平均） |
+| $\frac{1}{N}\sum_{i=1}^{N}$ | エヌぶんのイチ シグマ | N個のデータの平均 |
+| $\ell(f_\theta(\mathbf{x}_i), y_i)$ | スモール エル | 1個のデータの損失 |
+| $f_\theta(\mathbf{x}_i)$ | エフ シータ エックス アイ | モデルの予測 |
 
 **これが勾配降下法の数式だ。** ニューラルネットの学習で毎ステップ計算される式 — 誤差逆伝播（backpropagation）はこの微分規則を計算グラフに沿って適用することで勾配を効率に計算する[^2]。「ナブラ」を見たら「勾配」と反射的に読めるようになれば、もう数式はただの文章だ。
 
-> **Note:** ここで多くの人が混乱するのが `$\mathcal{L}$`（カリグラフィック体のエル）と `$\ell$`（スモールエル）の違いだ。慣例として `$\mathcal{L}$` は「全体の損失」、`$\ell$` は「1サンプルの損失」を指すことが多い。だが著者によって流儀が異なるので、必ず論文中の定義を確認すること。
+> **Note:** ここで多くの人が混乱するのが $\mathcal{L}$（カリグラフィック体のエル）と $\ell$（スモールエル）の違いだ。慣例として $\mathcal{L}$ は「全体の損失」、$\ell$ は「1サンプルの損失」を指すことが多い。だが著者によって流儀が異なるので、必ず論文中の定義を確認すること。
 
 ### 1.2 数式パラメータを触って遊ぶ
 
 数式の感覚を掴むには、パラメータを変えて挙動を見るのが一番早い。
 
-logits を `$[2.0, 1.0, 0.1]$` に固定して、温度 `$T$` だけ変えると確率分布はどう変わるか。下表で確認しよう（数値は手計算で確認できる）。
+logits を $[2.0, 1.0, 0.1]$ に固定して、温度 $T$ だけ変えると確率分布はどう変わるか。下表で確認しよう（数値は手計算で確認できる）。
 
-| 温度 `$T$` | `$p_1$`（最大logit） | `$p_2$` | `$p_3$` | 特徴 |
+| 温度 $T$ | $p_1$（最大logit） | $p_2$ | $p_3$ | 特徴 |
 |:---------|:------|:------|:------|:----|
-| `$T=0.1$` | ≈ 1.000 | ≈ 0 | ≈ 0 | ほぼ one-hot。greedy decoding に近い |
-| `$T=0.5$` | 0.864 | 0.117 | 0.019 | やや確信的。多くの実用設定 |
-| `$T=0.7$` | 0.766 | 0.184 | 0.051 | バランス型。Claude/GPT のデフォルト付近 |
-| `$T=1.0$` | 0.659 | 0.242 | 0.099 | 標準（Z1 の softmax と同じ）。上限に近い |
+| $T=0.1$ | ≈ 1.000 | ≈ 0 | ≈ 0 | ほぼ one-hot。greedy decoding に近い |
+| $T=0.5$ | 0.864 | 0.117 | 0.019 | やや確信的。多くの実用設定 |
+| $T=0.7$ | 0.766 | 0.184 | 0.051 | バランス型。Claude/GPT のデフォルト付近 |
+| $T=1.0$ | 0.659 | 0.242 | 0.099 | 標準（Z1 の softmax と同じ）。上限に近い |
 
-**温度 `$T$` が低いと「確信的」、高いと「均等」になる。** Claude や Gemini などの LLM API では `$T \in [0, 1]$` が設定範囲。`temperature` パラメータの正体がこの数式だ。
+**温度 $T$ が低いと「確信的」、高いと「均等」になる。** Claude や Gemini などの LLM API では $T \in [0, 1]$ が設定範囲。`temperature` パラメータの正体がこの数式だ。
 
-```math
+$$
 p_i = \frac{\exp(x_i / T)}{\sum_{j=1}^{K} \exp(x_j / T)}
-```
+$$
 
-`$T \to 0$` で one-hot（argmax）に近づき、`$T \to \infty$` で一様分布に近づく。数式から読み取れる性質だ。
+$T \to 0$ で one-hot（argmax）に近づき、$T \to \infty$ で一様分布に近づく。数式から読み取れる性質だ。
 
-この温度付きSoftmaxは、Hintonらの知識蒸留（Knowledge Distillation）論文 [^3] で体系的に導入された。大きなモデル（教師）の「柔らかい」出力分布を小さなモデル（生徒）に学習させる手法であり、高温の `$T$` で教師の出力を「ソフト化」するのが鍵だ。
+この温度付きSoftmaxは、Hintonらの知識蒸留（Knowledge Distillation）論文 [^3] で体系的に導入された。大きなモデル（教師）の「柔らかい」出力分布を小さなモデル（生徒）に学習させる手法であり、高温の $T$ で教師の出力を「ソフト化」するのが鍵だ。
 
 <details><summary>温度パラメータの数学的直感</summary>
-`$T \to 0$` のとき、`$x_i / T$` は最大の `$x_i$` だけが `$+\infty$` に発散し、他は相対的に `$-\infty$` に近づく。`$T \to 0$` の極限で、最大の `$x_i$` に対応する Softmax 出力が 1 に収束し、他は 0 に収束するから one-hot。
+$T \to 0$ のとき、$x_i / T$ は最大の $x_i$ だけが $+\infty$ に発散し、他は相対的に $-\infty$ に近づく。$T \to 0$ の極限で、最大の $x_i$ に対応する Softmax 出力が 1 に収束し、他は 0 に収束するから one-hot。
 
-`$T = 1$`（上限付近）では生の logit の差がそのまま確率差に反映される。`$T > 1$` は数学的には定義できるが、API の設定範囲（`$[0, 1]$`）を超えると「調整済みの logit スケール」の意図から外れるため実用上は使わない。
+$T = 1$（上限付近）では生の logit の差がそのまま確率差に反映される。$T > 1$ は数学的には定義できるが、API の設定範囲（$[0, 1]$）を超えると「調整済みの logit スケール」の意図から外れるため実用上は使わない。
 
 この 2 つの極限を紙に書いて確かめてみてほしい。数式の性質を直接「導出」する感覚が身につく。
 
-ちなみに、LLMの推論で `$T = 0$` を指定するとgreedy decodingになるのは、まさにこの数学的性質のためだ。この話は第15回（自己回帰モデル）で本格的に扱う。
+ちなみに、LLMの推論で $T = 0$ を指定するとgreedy decodingになるのは、まさにこの数学的性質のためだ。この話は第15回（自己回帰モデル）で本格的に扱う。
 </details>
 
 ### 1.3 Attention — 現代AIの心臓部を触る
 
 もう1つ、現代の機械学習で最も重要な数式を体験しよう。
 
-```math
+$$
 \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
-```
+$$
 
 GPT、BERT、Vision Transformer、Stable Diffusion — 2024-2026年の主要モデル全てがこの数式の上に立っている。**たった1つの数式が、AIの全てを動かしている**というのは言い過ぎではない。この式はVaswaniらの "Attention Is All You Need" [^1] で提案され、それ以降の深層学習の方向性を決定的に変えた。
 
@@ -166,63 +166,63 @@ GPT、BERT、Vision Transformer、Stable Diffusion — 2024-2026年の主要モ�
 
 | 数式 | コード | 意味 |
 |:-----|:-------|:-----|
-| `$QK^\top$` | `Q @ K.T` | クエリとキーの類似度行列 |
-| `$\sqrt{d_k}$` | `np.sqrt(d_k)` | スケーリング因子 |
-| `$\text{softmax}(\cdot)$` | `np.exp(...) / sum` | 確率への正規化 |
-| `$(\cdot) V$` | `weights @ V` | 値の加重和 |
+| $QK^\top$ | `Q @ K.T` | クエリとキーの類似度行列 |
+| $\sqrt{d_k}$ | `np.sqrt(d_k)` | スケーリング因子 |
+| $\text{softmax}(\cdot)$ | `np.exp(...) / sum` | 確率への正規化 |
+| $(\cdot) V$ | `weights @ V` | 値の加重和 |
 
 この数式→コード対応が「見える」なら、すでに数式リテラシーの第一歩を踏み出している。
 
-ここで「なぜ `$\sqrt{d_k}$` で割るのか？」という疑問が湧いた人は鋭い。内積 `$QK^\top$` の値は次元数 `$d_k$` が大きいほど絶対値が大きくなる傾向がある。大きすぎる値にSoftmaxをかけると one-hot に近づいてしまい、勾配が消失する。`$\sqrt{d_k}$` で割ることで値のスケールを安定させているのだ。Vaswaniら [^1] は原論文でこの理由を明確に述べている:「`$d_k$` が大きいとき、内積の大きさが増大してSoftmaxが極端に飽和した領域に押し込まれ、勾配が非常に小さくなる」。
+ここで「なぜ $\sqrt{d_k}$ で割るのか？」という疑問が湧いた人は鋭い。内積 $QK^\top$ の値は次元数 $d_k$ が大きいほど絶対値が大きくなる傾向がある。大きすぎる値にSoftmaxをかけると one-hot に近づいてしまい、勾配が消失する。$\sqrt{d_k}$ で割ることで値のスケールを安定させているのだ。Vaswaniら [^1] は原論文でこの理由を明確に述べている:「$d_k$ が大きいとき、内積の大きさが増大してSoftmaxが極端に飽和した領域に押し込まれ、勾配が非常に小さくなる」。
 
 > **一言で言えば**: Attention = 「類似度で重みづけした値の加重和」
 
 この直感を第2回（線形代数 I）と第16回（Transformer完全版）で数学的に深める。
 
 <details><summary>Attentionの計算量</summary>
-`$Q, K, V \in \mathbb{R}^{n \times d}$` のとき:
-- `$QK^\top$`: `$O(n^2 d)$` — 全トークン対の類似度を計算
-- softmax: `$O(n^2)$`
-- weights `$\times V$`: `$O(n^2 d)$`
+$Q, K, V \in \mathbb{R}^{n \times d}$ のとき:
+- $QK^\top$: $O(n^2 d)$ — 全トークン対の類似度を計算
+- softmax: $O(n^2)$
+- weights $\times V$: $O(n^2 d)$
 
-合計 `$O(n^2 d)$`。シーケンス長 `$n$` に対して二乗で計算量が増える。これが「長い文脈は高コスト」の理由であり、Flash Attention（第16回）やSSM（第26回）で解決を試みる対象だ。
+合計 $O(n^2 d)$。シーケンス長 $n$ に対して二乗で計算量が増える。これが「長い文脈は高コスト」の理由であり、Flash Attention（第16回）やSSM（第26回）で解決を試みる対象だ。
 </details>
 
 ### 1.4 LLMの学習目標 — Cross-Entropy Loss
 
 LLMが毎ステップ最小化しているのが以下の損失関数だ:
 
-```math
+$$
 \mathcal{L}(\theta) = -\frac{1}{T} \sum_{t=1}^{T} \log p_\theta(x_t \mid x_{<t})
-```
+$$
 
 分解すると:
-- `$\theta$` — モデルパラメータ
-- `$T$` — シーケンス長（トークン数）
-- `$x_t$` — `$t$` 番目のトークン（正解）
-- `$x_{<t}$` — `$t$` より前のトークン列（文脈）
-- `$p_\theta(x_t \mid x_{<t})$` — モデルが `$x_t$` に割り当てた確率
-- `$\log$` — 対数（確率の積を和に変換する技）
-- `$-$` — 最小化のための符号反転
+- $\theta$ — モデルパラメータ
+- $T$ — シーケンス長（トークン数）
+- $x_t$ — $t$ 番目のトークン（正解）
+- $x_{<t}$ — $t$ より前のトークン列（文脈）
+- $p_\theta(x_t \mid x_{<t})$ — モデルが $x_t$ に割り当てた確率
+- $\log$ — 対数（確率の積を和に変換する技）
+- $-$ — 最小化のための符号反転
 
 **一言で言えば**: 「各トークンについて、モデルが正解に割り当てた確率の対数を取り、平均の符号を反転したもの」。
 
-**数値例で確認しよう。** シーケンス長 `$T=3$`（"猫", "は", "眠る"）で、モデルの正解確率が次のとき:
+**数値例で確認しよう。** シーケンス長 $T=3$（"猫", "は", "眠る"）で、モデルの正解確率が次のとき:
 
-| トークン `$x_t$` | 正解確率 `$p_\theta(x_t|x_{<t})$` | `$\log p$` |
+| トークン $x_t$ | 正解確率 $p_\theta(x_t|x_{<t})$ | $\log p$ |
 |:---|:---|:---|
 | "猫" | 0.80 | −0.223 |
 | "は" | 0.60 | −0.511 |
 | "眠る" | 0.30 | −1.204 |
 
-```math
+$$
 \mathcal{L} = -\frac{1}{3}((-0.223) + (-0.511) + (-1.204)) = \frac{1.938}{3} \approx 0.646
-```
+$$
 
-正解確率が高いほど `$\log p$` は 0 に近く（損失小）、低いほど大きな負の値になる（損失大）。"眠る" の予測が不確か（0.30）なのが損失を引き上げている。モデルの学習 = この `$\mathcal{L}$` を下げること = 正解トークンの確率を上げること。
+正解確率が高いほど $\log p$ は 0 に近く（損失小）、低いほど大きな負の値になる（損失大）。"眠る" の予測が不確か（0.30）なのが損失を引き上げている。モデルの学習 = この $\mathcal{L}$ を下げること = 正解トークンの確率を上げること。
 
 
-この Cross-Entropy Loss は第6回（情報理論）で理論的に深堀りし、Perplexity `$= \exp(\mathcal{L})$` の情報理論的意味を `$2^{H(p)}$` と接続する。今は「LLMの学習 = この数式の最小化」とだけ覚えておけば十分だ。
+この Cross-Entropy Loss は第6回（情報理論）で理論的に深堀りし、Perplexity $= \exp(\mathcal{L})$ の情報理論的意味を $2^{H(p)}$ と接続する。今は「LLMの学習 = この数式の最小化」とだけ覚えておけば十分だ。
 
 ### 1.5 4つの数式はどう接続するか
 
@@ -245,7 +245,7 @@ graph LR
 
 **推論時**（生成時）: 入力 → Attention → ロジット → Softmax → サンプリング → 次トークン。この繰り返しがテキスト生成だ。
 
-**学習時**: 推論と同じ前半に加えて、正解トークンに対する Cross-Entropy Loss を計算 → 勾配 `$\nabla_\theta \mathcal{L}$` を逆伝播 → パラメータ更新。学習とは「正解トークンを高確率で予測できるように `$\theta$` を調整する繰り返し」だ。
+**学習時**: 推論と同じ前半に加えて、正解トークンに対する Cross-Entropy Loss を計算 → 勾配 $\nabla_\theta \mathcal{L}$ を逆伝播 → パラメータ更新。学習とは「正解トークンを高確率で予測できるように $\theta$ を調整する繰り返し」だ。
 
 4つの数式の役割分担を1行で言い切ると:
 - **Softmax**: ロジット → 確率分布への変換器
@@ -276,7 +276,7 @@ graph LR
 
 理解度を確認しましょう:
 
-1. **`$\mathcal{L}_{\text{CE}} = -\sum_{i=1}^{C} y_i \log \hat{y}_i$` の各記号が何を指すか？**
+1. **$\mathcal{L}_{\text{CE}} = -\sum_{i=1}^{C} y_i \log \hat{y}_i$ の各記号が何を指すか？**
    <details><summary>解答</summary>
    `\mathcal{L}_{\text{CE}}`: Cross-Entropy Loss、`C`: クラス数、`y_i`: 正解（one-hot の第i成分）、`\hat{y}_i`: 予測確率（Softmax出力）、`\sum`: 全クラスに足し上げる
    </details>
@@ -338,12 +338,12 @@ graph LR
 | 回 | テーマ | 核心 | LLM/Transformerとの接点 |
 |:---|:------|:-----|:----------------------|
 | **第1回** | 概論: 数式と論文の読み方 | 数式リテラシー | Softmax, Attention [^1], Cross-Entropy |
-| **第2回** | 線形代数 I | ベクトル空間・行列 | `$QK^\top$` の内積、埋め込み空間 |
+| **第2回** | 線形代数 I | ベクトル空間・行列 | $QK^\top$ の内積、埋め込み空間 |
 | **第3回** | 線形代数 II | SVD・行列微分 | ヤコビアン、Backpropagation [^2] |
-| **第4回** | 確率論・統計学 | 分布・ベイズ | `$p(x_t \mid x_{<t})$` 自己回帰、Softmax分布 |
+| **第4回** | 確率論・統計学 | 分布・ベイズ | $p(x_t \mid x_{<t})$ 自己回帰、Softmax分布 |
 | **第5回** | 測度論・確率過程 | 厳密な確率 | トークン空間上の確率測度 |
-| **第6回** | 情報理論・最適化 | KL・SGD | Perplexity `$= 2^H$`、Cross-Entropy Loss |
-| **第7回** | 生成モデル概要 & MLE | 尤度最大化 | 次トークン予測 `$= \arg\max p(x_t \mid x_{<t}; \theta)$` |
+| **第6回** | 情報理論・最適化 | KL・SGD | Perplexity $= 2^H$、Cross-Entropy Loss |
+| **第7回** | 生成モデル概要 & MLE | 尤度最大化 | 次トークン予測 $= \arg\max p(x_t \mid x_{<t}; \theta)$ |
 | **第8回** | 潜在変数 & EM算法 | 隠れ変数 | Transformer隠れ層、VAE [^4] への橋渡し |
 
 **各講義の「限界」が、次講義の「動機」になる。** これが40回を貫く設計原則だ。
@@ -358,7 +358,7 @@ graph LR
 
 **比喩1: 楽譜**
 
-五線譜が読めない人にとって、楽譜はただの黒い点の集合だ。だが音楽理論を学べば、楽譜から音楽が「聞こえる」ようになる。数式も同じ — 記号の意味を知れば、数式から「動作」が見える。`$\sum_{i=1}^{N}$` を見て「ループだ」とわかる。`$\nabla_\theta$` を見て「勾配降下の方向だ」とわかる。
+五線譜が読めない人にとって、楽譜はただの黒い点の集合だ。だが音楽理論を学べば、楽譜から音楽が「聞こえる」ようになる。数式も同じ — 記号の意味を知れば、数式から「動作」が見える。$\sum_{i=1}^{N}$ を見て「ループだ」とわかる。$\nabla_\theta$ を見て「勾配降下の方向だ」とわかる。
 
 **比喩2: 設計図**
 
@@ -370,18 +370,18 @@ graph LR
 
 | プログラミング | 数学記法 | 例 |
 |:-------------|:---------|:---|
-| 変数宣言 | 集合への所属 | `x: float` ↔ `$x \in \mathbb{R}$` |
-| forループ | 総和 | `sum(...)` ↔ `$\sum$` |
-| 積の累積 | 総乗 | `prod(...)` ↔ `$\prod$` |
-| if文 | 指示関数 | `if cond:` ↔ `$\mathbb{1}[\cdot]$` |
-| 関数定義 | 写像 | `def f(x):` ↔ `$f: X \to Y$` |
-| 型注釈 | 空間の指定 | `x: np.ndarray` ↔ `$\mathbf{x} \in \mathbb{R}^d$` |
+| 変数宣言 | 集合への所属 | `x: float` ↔ $x \in \mathbb{R}$ |
+| forループ | 総和 | `sum(...)` ↔ $\sum$ |
+| 積の累積 | 総乗 | `prod(...)` ↔ $\prod$ |
+| if文 | 指示関数 | `if cond:` ↔ $\mathbb{1}[\cdot]$ |
+| 関数定義 | 写像 | `def f(x):` ↔ $f: X \to Y$ |
+| 型注釈 | 空間の指定 | `x: np.ndarray` ↔ $\mathbf{x} \in \mathbb{R}^d$ |
 
 プログラミング言語にある概念は、数学記法にも全て存在する。
 
-この対応は偶然ではない。プログラミング言語は数学の記法を形式化したものだからだ。だからこそ、プログラマは数式に対して本質的な優位性を持っている。`$\sum_{i=1}^{N} f(x_i)$` を見て `sum(f(x[i]) for i in range(N))` と読める能力は、プログラミング未経験者にはない。
+この対応は偶然ではない。プログラミング言語は数学の記法を形式化したものだからだ。だからこそ、プログラマは数式に対して本質的な優位性を持っている。$\sum_{i=1}^{N} f(x_i)$ を見て `sum(f(x[i]) for i in range(N))` と読める能力は、プログラミング未経験者にはない。
 
-**あなたが数式を「難しい」と感じるのは、文法が違うだけだ。** 同じ計算を、一方は `$\sum$` で書き、他方は `for` で書く。中身は同じ。本稿では常に両方を並べて示す。数式を見たら「これをコードにするとどうなるか？」と考える癖をつける。それが最も効率的な学習法だ。
+**あなたが数式を「難しい」と感じるのは、文法が違うだけだ。** 同じ計算を、一方は $\sum$ で書き、他方は `for` で書く。中身は同じ。本稿では常に両方を並べて示す。数式を見たら「これをコードにするとどうなるか？」と考える癖をつける。それが最も効率的な学習法だ。
 
 **ここで一つ断言する。** 数式が「読めない」のではない。「読み方を教わっていない」だけだ。アルファベットを教わらずに英語を読めないのは当然で、数式記号の読み方を教わらずに論文を読めないのも当然だ。
 
@@ -420,7 +420,7 @@ Course I（第1-8回）は合成データ・2Dトイデータのみを使い、�
 
 紙のノートに以下の3つを書く。デジタルでもいいが、数式は手書きの方が定着する。
 
-1. **記号辞書**: 新しい記号に出会ったら「`$\nabla$` = 勾配（ナブラ）」のように書き溜める
+1. **記号辞書**: 新しい記号に出会ったら「$\nabla$ = 勾配（ナブラ）」のように書き溜める
 2. **数式→コード対応表**: `Σ → np.sum`, `∫ → np.mean(samples)` のように
 3. **???リスト**: わからなかったことを書く。次の講義で解消されたら線を引く
 
@@ -518,9 +518,9 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 | 応用 | 基盤モデル | 数学的核心 | 本シリーズの対応 |
 |:---|:---|:---|:---|
-| ChatGPT | Transformer (自己回帰) | `$p(x_t \mid x_{<t})$` | 第13-16回 |
-| DALL-E 3 | U-Net + Diffusion | `$\epsilon_\theta(\mathbf{x}_t, t)$` | 第11-14回 |
-| Stable Diffusion 3 | DiT + Flow Matching | `$v_\theta(\mathbf{x}_t, t)$` | 第17-24回 |
+| ChatGPT | Transformer (自己回帰) | $p(x_t \mid x_{<t})$ | 第13-16回 |
+| DALL-E 3 | U-Net + Diffusion | $\epsilon_\theta(\mathbf{x}_t, t)$ | 第11-14回 |
+| Stable Diffusion 3 | DiT + Flow Matching | $v_\theta(\mathbf{x}_t, t)$ | 第17-24回 |
 | GPT-4V | Vision Transformer + LLM | Multi-modal fusion | 第33-36回 |
 | Sora | Spatial-temporal DiT | 3D attention + diffusion | 第37-40回 |
 
@@ -565,13 +565,13 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 **例: 勾配降下法**
 
-```math
+$$
 \theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)
-```
+$$
 
 1行翻訳はこうだ。
 
-「パラメータ `$\theta$` を、損失 `$\mathcal{L}$` を下げる向き（勾配）へ、学習率 `$\alpha$` の大きさだけ動かす」
+「パラメータ $\theta$ を、損失 $\mathcal{L}$ を下げる向き（勾配）へ、学習率 $\alpha$ の大きさだけ動かす」
 
 この翻訳が即答できれば、以降に出てくる更新式は全て読める。更新式は表面が違っても、構造は似ているからだ。
 
@@ -583,29 +583,29 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 | 記号 | 読み | LaTeX | 典型的な用途 |
 |:---:|:---:|:---:|:---|
-| `$\theta$` | シータ | `\theta` | モデルのパラメータ全般。`$p_\theta(\mathbf{x})$` のように下付きで「このモデルのパラメータは `$\theta$`」と示す |
-| `$\phi$` | ファイ | `\phi` | `$\theta$` と区別したい第2のパラメータ群。VAE[^4]ではエンコーダのパラメータを `$\phi$`、デコーダを `$\theta$` とする |
-| `$\psi$` | プサイ | `\psi` | 第3のパラメータ群。Teacher-Student 構成[^3]で教師を `$\psi$`、生徒を `$\theta$` とすることがある |
-| `$\omega, w$` | オメガ | `\omega` | 個々の重み（weight）。`$\theta = \{w_1, w_2, \ldots\}$` |
+| $\theta$ | シータ | `\theta` | モデルのパラメータ全般。$p_\theta(\mathbf{x})$ のように下付きで「このモデルのパラメータは $\theta$」と示す |
+| $\phi$ | ファイ | `\phi` | $\theta$ と区別したい第2のパラメータ群。VAE[^4]ではエンコーダのパラメータを $\phi$、デコーダを $\theta$ とする |
+| $\psi$ | プサイ | `\psi` | 第3のパラメータ群。Teacher-Student 構成[^3]で教師を $\psi$、生徒を $\theta$ とすることがある |
+| $\omega, w$ | オメガ | `\omega` | 個々の重み（weight）。$\theta = \{w_1, w_2, \ldots\}$ |
 
-> **Note:** **覚え方**: `$\theta$`（主役）→ `$\phi$`（相方）→ `$\psi$`（第三者）の順で「パラメータ三兄弟」と覚える。Kingma & Welling の VAE 論文[^4]を読めば、`$\theta$` と `$\phi$` の役割分担が自然に身につく。
+> **Note:** **覚え方**: $\theta$（主役）→ $\phi$（相方）→ $\psi$（第三者）の順で「パラメータ三兄弟」と覚える。Kingma & Welling の VAE 論文[^4]を読めば、$\theta$ と $\phi$ の役割分担が自然に身につく。
 
 #### 統計量系（データの性質を表す）
 
 | 記号 | 読み | LaTeX | 典型的な用途 |
 |:---:|:---:|:---:|:---|
-| `$\mu$` | ミュー | `\mu` | 平均（mean）。`$\mu = \mathbb{E}[X]$` |
-| `$\sigma$` | シグマ | `\sigma` | 標準偏差（standard deviation）。`$\sigma^2$` は分散 |
-| `$\Sigma$` | 大シグマ | `\Sigma` | 共分散行列。`$\Sigma \in \mathbb{R}^{d \times d}$`。小文字 `$\sigma$` と大文字 `$\Sigma$` は意味が違う |
-| `$\rho$` | ロー | `\rho` | 相関係数。`$\rho \in [-1, 1]$` |
-| `$\tau$` | タウ | `\tau` | 温度パラメータ（Temperature）。Zone 1 で見た Softmax の `$T$` はこの `$\tau$` で書かれることも多い |
+| $\mu$ | ミュー | `\mu` | 平均（mean）。$\mu = \mathbb{E}[X]$ |
+| $\sigma$ | シグマ | `\sigma` | 標準偏差（standard deviation）。$\sigma^2$ は分散 |
+| $\Sigma$ | 大シグマ | `\Sigma` | 共分散行列。$\Sigma \in \mathbb{R}^{d \times d}$。小文字 $\sigma$ と大文字 $\Sigma$ は意味が違う |
+| $\rho$ | ロー | `\rho` | 相関係数。$\rho \in [-1, 1]$ |
+| $\tau$ | タウ | `\tau` | 温度パラメータ（Temperature）。Zone 1 で見た Softmax の $T$ はこの $\tau$ で書かれることも多い |
 
 <details><summary>ミニ演習: 温度パラメータの記号揺れ</summary>
 同じ概念でも、論文によって記号が異なる。温度パラメータは以下のバリエーションがある:
 
-- Hinton et al. (2015)[^3]: `$T$` を使用 — `$q_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$`
-- 他の論文: `$\tau$` を使用 — `$\text{softmax}(z_i / \tau)$`
-- 一部の強化学習論文: `$\beta$` を使用（逆温度 `$\beta = 1/T$` として）
+- Hinton et al. (2015)[^3]: $T$ を使用 — $q_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$
+- 他の論文: $\tau$ を使用 — $\text{softmax}(z_i / \tau)$
+- 一部の強化学習論文: $\beta$ を使用（逆温度 $\beta = 1/T$ として）
 
 **重要**: 記号は著者が定義するものであり、「正解」は存在しない。論文を読むときは冒頭の記号定義を**必ず**確認する習慣をつけよう。
 </details>
@@ -614,22 +614,22 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 | 記号 | 読み | LaTeX | 典型的な用途 |
 |:---:|:---:|:---:|:---|
-| `$\nabla$` | ナブラ | `\nabla` | 勾配演算子。`$\nabla_\theta \mathcal{L}$` は「損失 `$\mathcal{L}$` の `$\theta$` についての勾配」 |
-| `$\partial$` | パーシャル/デル | `\partial` | 偏微分。`$\frac{\partial f}{\partial x}$` |
-| `$\alpha$` | アルファ | `\alpha` | 学習率。`$\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}$` |
-| `$\epsilon$` | イプシロン | `\epsilon` | 微小量。数値安定化の `$\log(p + \epsilon)$` や、ノイズ `$\epsilon \sim \mathcal{N}(0, I)$` |
-| `$\lambda$` | ラムダ | `\lambda` | 正則化係数。`$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{main}} + \lambda \mathcal{L}_{\text{reg}}$` |
-| `$\eta$` | イータ | `\eta` | 学習率（`$\alpha$` の代替）。文献によって `$\alpha$` か `$\eta$` のどちらか |
-| `$\gamma$` | ガンマ | `\gamma` | 割引率（強化学習）、モメンタム係数 |
+| $\nabla$ | ナブラ | `\nabla` | 勾配演算子。$\nabla_\theta \mathcal{L}$ は「損失 $\mathcal{L}$ の $\theta$ についての勾配」 |
+| $\partial$ | パーシャル/デル | `\partial` | 偏微分。$\frac{\partial f}{\partial x}$ |
+| $\alpha$ | アルファ | `\alpha` | 学習率。$\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}$ |
+| $\epsilon$ | イプシロン | `\epsilon` | 微小量。数値安定化の $\log(p + \epsilon)$ や、ノイズ $\epsilon \sim \mathcal{N}(0, I)$ |
+| $\lambda$ | ラムダ | `\lambda` | 正則化係数。$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{main}} + \lambda \mathcal{L}_{\text{reg}}$ |
+| $\eta$ | イータ | `\eta` | 学習率（$\alpha$ の代替）。文献によって $\alpha$ か $\eta$ のどちらか |
+| $\gamma$ | ガンマ | `\gamma` | 割引率（強化学習）、モメンタム係数 |
 
 #### 確率・分布系
 
 | 記号 | 読み | LaTeX | 典型的な用途 |
 |:---:|:---:|:---:|:---|
-| `$\pi$` | パイ | `\pi` | 方策（policy）。確率分布を直接意味することは少ない |
-| `$\xi$` | グザイ | `\xi` | 潜在変数の別名。`$\xi \sim p(\xi)$` |
-| `$\zeta$` | ゼータ | `\zeta` | 補助変数。頻度は低いが理論系論文で登場 |
-| `$\kappa$` | カッパ | `\kappa` | 集中度パラメータ（von Mises分布など） |
+| $\pi$ | パイ | `\pi` | 方策（policy）。確率分布を直接意味することは少ない |
+| $\xi$ | グザイ | `\xi` | 潜在変数の別名。$\xi \sim p(\xi)$ |
+| $\zeta$ | ゼータ | `\zeta` | 補助変数。頻度は低いが理論系論文で登場 |
+| $\kappa$ | カッパ | `\kappa` | 集中度パラメータ（von Mises分布など） |
 
 > **Note:** **全部覚える必要はない。** ここは辞書だ。論文を読んでいて「この記号なんだっけ」となったら戻ってくればいい。繰り返し参照するうちに自然に覚える。
 
@@ -637,23 +637,23 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 以下を「声に出して」読んで、用途を1行で言えるか確認しよう。詰まった記号は、ノートの「記号辞書」に追記する。
 
-1. `$\theta$` と `$\phi$` の役割分担は？
-2. `$\mu$` と `$\Sigma$` は何を表すことが多い？
-3. `$\epsilon \sim \mathcal{N}(0, I)$` は何の典型か？
-4. `$\lambda$` が出たら、まず何を疑う？
-5. `$\tau$` が出たら、Softmax と何が繋がる？
-6. `$\nabla_\theta$` の下付きは何を意味する？
-7. `$\partial$` が出たら、何が「偏」なのか？
-8. `$\pi$` が出たら「円周率」ではなく何を想像すべき？
+1. $\theta$ と $\phi$ の役割分担は？
+2. $\mu$ と $\Sigma$ は何を表すことが多い？
+3. $\epsilon \sim \mathcal{N}(0, I)$ は何の典型か？
+4. $\lambda$ が出たら、まず何を疑う？
+5. $\tau$ が出たら、Softmax と何が繋がる？
+6. $\nabla_\theta$ の下付きは何を意味する？
+7. $\partial$ が出たら、何が「偏」なのか？
+8. $\pi$ が出たら「円周率」ではなく何を想像すべき？
 
 <details><summary>解答</summary>
 
-1. 多くの論文で `$\theta$` は生成モデル（デコーダ）、`$\phi$` は近似事後（エンコーダ）を表す（VAE[^4]が典型）。
-2. `$\mu$` は平均、`$\Sigma$` は共分散行列（ガウス分布など）。
+1. 多くの論文で $\theta$ は生成モデル（デコーダ）、$\phi$ は近似事後（エンコーダ）を表す（VAE[^4]が典型）。
+2. $\mu$ は平均、$\Sigma$ は共分散行列（ガウス分布など）。
 3. ノイズ注入の典型。拡散モデル[^5]やVAE[^4]で頻出。
 4. 正則化項の係数（L2、KL、制約ペナルティなど）を疑う。
 5. 温度付きSoftmax。分布の鋭さ（エントロピー）制御に繋がる。
-6. `$\theta$` に関する勾配、つまり「どのパラメータを動かすか」の指定。
+6. $\theta$ に関する勾配、つまり「どのパラメータを動かすか」の指定。
 7. 多変数のうち、特定の変数だけを動かす偏微分。
 8. 強化学習なら方策（policy）。生成モデルなら混合分布の重みとして出ることもある。
 </details>
@@ -661,229 +661,229 @@ Zone 4 の目的は、この5語を支える記号を「読める」状態にす
 
 ### 3.2 添字（Subscript / Superscript）の文法
 
-数式の「文法」の中で最も重要なのが**添字**だ。`$x$` と `$x_i$` と `$x_i^{(t)}$` と `$x_{i,j}^{(l)}$` は、同じ `$x$` でもまったく異なる情報を持つ。
+数式の「文法」の中で最も重要なのが**添字**だ。$x$ と $x_i$ と $x_i^{(t)}$ と $x_{i,j}^{(l)}$ は、同じ $x$ でもまったく異なる情報を持つ。
 
 #### 下付き添字（Subscript）: 「どの要素か」
 
-```math
+$$
 \mathbf{x} = \begin{pmatrix} x_1 \\ x_2 \\ \vdots \\ x_n \end{pmatrix}
 \quad \text{ベクトル } \mathbf{x} \text{ の } i \text{ 番目の成分を } x_i \text{ と書く}
-```
+$$
 
 | パターン | 例 | 意味 |
 |:---|:---|:---|
-| 要素番号 | `$x_i$` | ベクトルの `$i$` 番目 |
-| 行列要素 | `$A_{ij}$` or `$a_{ij}$` | `$i$` 行 `$j$` 列 |
-| パラメータ指定 | `$p_\theta$` | パラメータ `$\theta$` を持つ分布 `$p$` |
-| 時刻 | `$x_t$` | 時刻 `$t$` でのデータ |
-| 層番号 | `$h_l$` | `$l$` 番目の層の隠れ状態 |
+| 要素番号 | $x_i$ | ベクトルの $i$ 番目 |
+| 行列要素 | $A_{ij}$ or $a_{ij}$ | $i$ 行 $j$ 列 |
+| パラメータ指定 | $p_\theta$ | パラメータ $\theta$ を持つ分布 $p$ |
+| 時刻 | $x_t$ | 時刻 $t$ でのデータ |
+| 層番号 | $h_l$ | $l$ 番目の層の隠れ状態 |
 
-> **Note:** **紛らわしいケース**: `$x_t$` が「時刻 `$t$`」か「`$t$` 番目の要素」かは文脈依存。論文の冒頭で定義されるので、必ず確認する。拡散モデル[^5]では `$x_t$` は「ノイズステップ `$t$` での画像」を意味する。
+> **Note:** **紛らわしいケース**: $x_t$ が「時刻 $t$」か「$t$ 番目の要素」かは文脈依存。論文の冒頭で定義されるので、必ず確認する。拡散モデル[^5]では $x_t$ は「ノイズステップ $t$ での画像」を意味する。
 
 #### 上付き添字（Superscript）: 「何乗か」「何回目か」
 
 | パターン | 例 | 意味 |
 |:---|:---|:---|
-| べき乗 | `$x^2$` | `$x$` の2乗 |
-| サンプル番号 | `$x^{(i)}$` | `$i$` 番目のサンプル。丸括弧で区別 |
-| 反復回数 | `$\theta^{(t)}$` | `$t$` 回目の更新後のパラメータ |
-| 層番号 | `$W^{(l)}$` | `$l$` 番目の層の重み行列 |
-| 転置 | `$A^\top$` or `$A^T$` | 行列の転置 |
-| 逆行列 | `$A^{-1}$` | 逆行列 |
+| べき乗 | $x^2$ | $x$ の2乗 |
+| サンプル番号 | $x^{(i)}$ | $i$ 番目のサンプル。丸括弧で区別 |
+| 反復回数 | $\theta^{(t)}$ | $t$ 回目の更新後のパラメータ |
+| 層番号 | $W^{(l)}$ | $l$ 番目の層の重み行列 |
+| 転置 | $A^\top$ or $A^T$ | 行列の転置 |
+| 逆行列 | $A^{-1}$ | 逆行列 |
 
 <details><summary>ミニ演習: 添字を「住所」として読む</summary>
 次の3つを、1行の日本語に翻訳せよ。
 
-1. `$x_i$`
-2. `$x_t$`
-3. `$W_{ij}^{(l)}$`
+1. $x_i$
+2. $x_t$
+3. $W_{ij}^{(l)}$
 
 <details><summary>解答</summary>
 
-1. ベクトル（または列）`$x$` の `$i$` 番目の成分。
-2. 文脈次第だが、時刻 `$t$` の値（拡散ならノイズステップ `$t$` の状態）。
-3. 第 `$l$` 層の重み行列 `$W$` の `$i$` 行 `$j$` 列成分。
+1. ベクトル（または列）$x$ の $i$ 番目の成分。
+2. 文脈次第だが、時刻 $t$ の値（拡散ならノイズステップ $t$ の状態）。
+3. 第 $l$ 層の重み行列 $W$ の $i$ 行 $j$ 列成分。
 </details>
 </details>
 
 
-#### 複合添字: `$W_{ij}^{(l)}$`
+#### 複合添字: $W_{ij}^{(l)}$
 
 複数の添字が組み合わさる場合:
 
-```math
+$$
 W_{ij}^{(l)} = \text{第 } l \text{ 層の重み行列の } (i, j) \text{ 成分}
-```
+$$
 
 **読み方のルール**:
-1. まず上付き添字を読む: 「`$l$` 層目の」
-2. 次に下付き添字を読む: 「`$i$` 行 `$j$` 列の」
-3. 本体を読む: 「重み `$W$`」
+1. まず上付き添字を読む: 「$l$ 層目の」
+2. 次に下付き添字を読む: 「$i$ 行 $j$ 列の」
+3. 本体を読む: 「重み $W$」
 
-→ 全体: 「`$l$` 層目の重み行列 `$W$` の `$i$` 行 `$j$` 列成分」
+→ 全体: 「$l$ 層目の重み行列 $W$ の $i$ 行 $j$ 列成分」
 
 
 ### 3.3 演算子・特殊記法
 
-#### 総和 `$\sum$` と総乗 `$\prod$`
+#### 総和 $\sum$ と総乗 $\prod$
 
 機械学習で最も頻繁に登場する演算子:
 
-```math
+$$
 \sum_{i=1}^{n} x_i = x_1 + x_2 + \cdots + x_n
-```
+$$
 
-```math
+$$
 \prod_{i=1}^{n} x_i = x_1 \cdot x_2 \cdots x_n
-```
+$$
 
-**Cross-Entropy Loss（再掲）**を `$\sum$` で書き直す:
+**Cross-Entropy Loss（再掲）**を $\sum$ で書き直す:
 
-```math
+$$
 \mathcal{L}_{\text{CE}} = -\sum_{i=1}^{C} y_i \log \hat{y}_i
-```
+$$
 
-ここで `$C$` はクラス数、`$y_i$` は正解ラベル（one-hot）、`$\hat{y}_i$` はモデルの予測確率。
+ここで $C$ はクラス数、$y_i$ は正解ラベル（one-hot）、$\hat{y}_i$ はモデルの予測確率。
 
-`$\prod$` は**尤度関数**で登場する。独立なデータ `$\{x^{(1)}, \ldots, x^{(N)}\}$` の同時確率:
+$\prod$ は**尤度関数**で登場する。独立なデータ $\{x^{(1)}, \ldots, x^{(N)}\}$ の同時確率:
 
-```math
+$$
 p(\mathbf{x}^{(1)}, \ldots, \mathbf{x}^{(N)} \mid \theta) = \prod_{i=1}^{N} p(\mathbf{x}^{(i)} \mid \theta)
-```
+$$
 
-対数を取ると `$\prod$` が `$\sum$` になる — これが**対数尤度**を使う理由:
+対数を取ると $\prod$ が $\sum$ になる — これが**対数尤度**を使う理由:
 
-```math
+$$
 \log p = \sum_{i=1}^{N} \log p(\mathbf{x}^{(i)} \mid \theta)
-```
+$$
 
-ここで重要なのは「`$\log$` を取ると `$\prod$` が `$\sum$` になる」だけではない。`$\log$` は次の3つを同時に満たす強い道具だ。
+ここで重要なのは「$\log$ を取ると $\prod$ が $\sum$ になる」だけではない。$\log$ は次の3つを同時に満たす強い道具だ。
 
-1. **単調増加**: `$\theta$` に関する最適化で、`$\prod$` を最大化する代わりに `$\sum$` を最大化できる
-2. **数値安定**: 小さい確率を掛け続けると0に潰れる（アンダーフロー）。`$\log$` はそれを防ぐ
+1. **単調増加**: $\theta$ に関する最適化で、$\prod$ を最大化する代わりに $\sum$ を最大化できる
+2. **数値安定**: 小さい確率を掛け続けると0に潰れる（アンダーフロー）。$\log$ はそれを防ぐ
 3. **微分が簡単**: 積の微分より和の微分の方が計算グラフが単純になる
 
 #### 最尤推定（MLE）と負の対数尤度（NLL）
 
 機械学習の多くは「尤度を最大化する」問題として書ける。
 
-```math
+$$
 \hat{\theta} = \arg\max_\theta \prod_{i=1}^{N} p(\mathbf{x}^{(i)} \mid \theta)
-```
+$$
 
 対数を取っても最適解は変わらない（単調性）。したがって、
 
-```math
+$$
 \hat{\theta} = \arg\max_\theta \sum_{i=1}^{N} \log p(\mathbf{x}^{(i)} \mid \theta)
-```
+$$
 
 さらに「最大化」は「最小化」に直せる。これが負の対数尤度（NLL）だ。
 
-```math
+$$
 \hat{\theta} = \arg\min_\theta \left( - \sum_{i=1}^{N} \log p(\mathbf{x}^{(i)} \mid \theta) \right)
-```
+$$
 
-Zone 1 で出てきた Cross-Entropy は、この NLL の特殊ケースとして現れる。分類の文脈では、正解クラスの確率を最大化したいので、結局「`$-\log p$`」を足し上げる形になる。
+Zone 1 で出てきた Cross-Entropy は、この NLL の特殊ケースとして現れる。分類の文脈では、正解クラスの確率を最大化したいので、結局「$-\log p$」を足し上げる形になる。
 
 #### log-sum-exp と Softmax の数値安定性
 
 Softmax の定義は次だ。
 
-```math
+$$
 \mathrm{softmax}(\mathbf{z})_i = \frac{\exp(z_i)}{\sum_{j=1}^{K}\exp(z_j)}
-```
+$$
 
-しかし、そのまま計算すると `$\exp(z)$` が容易に発散する。そこで使うのが次の恒等式だ。
+しかし、そのまま計算すると $\exp(z)$ が容易に発散する。そこで使うのが次の恒等式だ。
 
-```math
+$$
 \log \sum_{j=1}^{K}\exp(z_j) = m + \log \sum_{j=1}^{K}\exp(z_j - m)
-```
+$$
 
-ただし `$m = \max_j z_j$`。`$z_j - m \le 0$` なので、指数が安全な範囲に収まる。
+ただし $m = \max_j z_j$。$z_j - m \le 0$ なので、指数が安全な範囲に収まる。
 
 Softmax を安定化する典型変形は「最大値を引いてから計算する」だ。
 
-```math
+$$
 \mathrm{softmax}(\mathbf{z})_i
 = \frac{\exp(z_i - m)}{\sum_{j=1}^{K}\exp(z_j - m)}
-```
+$$
 
-この変形は値を変えない（分子分母を同じ `$\exp(-m)$` で割っているだけ）一方で、計算の安定性を劇的に改善する。
+この変形は値を変えない（分子分母を同じ $\exp(-m)$ で割っているだけ）一方で、計算の安定性を劇的に改善する。
 
 <details><summary>ミニ演習: Softmax の不変性</summary>
 次を証明せよ。
 
-```math
+$$
 \mathrm{softmax}(\mathbf{z}) = \mathrm{softmax}(\mathbf{z} + c\mathbf{1})
-```
+$$
 
-ここで `$c\in\mathbb{R}$`、`$\mathbf{1}$` は全要素が1のベクトル。
+ここで $c\in\mathbb{R}$、$\mathbf{1}$ は全要素が1のベクトル。
 
 <details><summary>解答</summary>
-分子は `$\exp(z_i + c) = \exp(c)\exp(z_i)$`、分母は `$\sum_j \exp(z_j + c) = \exp(c)\sum_j \exp(z_j)$`。よって `$\exp(c)$` が約分され、値は不変。
+分子は $\exp(z_i + c) = \exp(c)\exp(z_i)$、分母は $\sum_j \exp(z_j + c) = \exp(c)\sum_j \exp(z_j)$。よって $\exp(c)$ が約分され、値は不変。
 </details>
 </details>
 
 
 #### argmax / argmin
 
-```math
+$$
 \hat{y} = \arg\max_{i} p(y = i \mid \mathbf{x})
-```
+$$
 
-「確率を最大にする**インデックス**を返す」演算。`$\max$` が**値**を返すのに対し、`$\arg\max$` は**位置**を返す。
+「確率を最大にする**インデックス**を返す」演算。$\max$ が**値**を返すのに対し、$\arg\max$ は**位置**を返す。
 
 
-#### 期待値 `$\mathbb{E}$`
+#### 期待値 $\mathbb{E}$
 
-```math
+$$
 \mathbb{E}_{x \sim p}[f(x)] = \int f(x) \, p(x) \, dx
-```
+$$
 
-> **Note:** 厳密にはルベーグ測度 `$d\mu(x)$` に対する積分ですが、第5回で測度論を扱うまではリーマン積分の記法 `$dx$` を使います。
+> **Note:** 厳密にはルベーグ測度 $d\mu(x)$ に対する積分ですが、第5回で測度論を扱うまではリーマン積分の記法 $dx$ を使います。
 
-「`$x$` を分布 `$p$` からサンプリングしたとき、`$f(x)$` の平均値」。離散の場合は積分が総和になる:
+「$x$ を分布 $p$ からサンプリングしたとき、$f(x)$ の平均値」。離散の場合は積分が総和になる:
 
-```math
+$$
 \mathbb{E}_{x \sim p}[f(x)] = \sum_{x} f(x) \, p(x)
-```
+$$
 
 VAE[^4] の目的関数 ELBO は期待値で書かれる:
 
-```math
+$$
 \text{ELBO} = \mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})} \left[ \log p_\theta(\mathbf{x}|\mathbf{z}) \right] - D_{\text{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))
-```
+$$
 
-「エンコーダ `$q_\phi$` からサンプルした `$\mathbf{z}$` で、デコーダ `$p_\theta$` がデータ `$\mathbf{x}$` を復元する対数確率の期待値」に、KLダイバージェンス正則化項を引いたもの。
+「エンコーダ $q_\phi$ からサンプルした $\mathbf{z}$ で、デコーダ $p_\theta$ がデータ $\mathbf{x}$ を復元する対数確率の期待値」に、KLダイバージェンス正則化項を引いたもの。
 
 
-#### ノルム `$\|\cdot\|$`
+#### ノルム $\|\cdot\|$
 
-```math
+$$
 \|\mathbf{x}\|_2 = \sqrt{\sum_{i=1}^{n} x_i^2} \quad \text{(L2ノルム / ユークリッドノルム)}
-```
+$$
 
-```math
+$$
 \|\mathbf{x}\|_1 = \sum_{i=1}^{n} |x_i| \quad \text{(L1ノルム / マンハッタンノルム)}
-```
+$$
 
-Attention[^1] で `$\sqrt{d_k}$` でスケーリングするのは、`$\mathbf{q}^\top \mathbf{k}$` の分散が `$d_k$` に比例するため、ノルムのスケールを揃える目的がある。
+Attention[^1] で $\sqrt{d_k}$ でスケーリングするのは、$\mathbf{q}^\top \mathbf{k}$ の分散が $d_k$ に比例するため、ノルムのスケールを揃える目的がある。
 
 
-#### KL ダイバージェンス `$D_{\text{KL}}$`
+#### KL ダイバージェンス $D_{\text{KL}}$
 
 2つの確率分布の「距離」（厳密には非対称なので距離ではない）:
 
-```math
+$$
 D_{\text{KL}}(q \| p) = \mathbb{E}_{q}\left[\log \frac{q(x)}{p(x)}\right] = \sum_{x} q(x) \log \frac{q(x)}{p(x)}
-```
+$$
 
 **性質**:
-- `$D_{\text{KL}}(q \| p) \geq 0$`（非負性、ギブスの不等式）
-- `$D_{\text{KL}}(q \| p) = 0 \iff q = p$`
-- `$D_{\text{KL}}(q \| p) \neq D_{\text{KL}}(p \| q)$`（非対称）
+- $D_{\text{KL}}(q \| p) \geq 0$（非負性、ギブスの不等式）
+- $D_{\text{KL}}(q \| p) = 0 \iff q = p$
+- $D_{\text{KL}}(q \| p) \neq D_{\text{KL}}(p \| q)$（非対称）
 
-VAE[^4] では `$D_{\text{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$` が正則化として機能する。エンコーダが出力する分布を事前分布 `$p(\mathbf{z}) = \mathcal{N}(0, I)$` に近づける役割を持つ。
+VAE[^4] では $D_{\text{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$ が正則化として機能する。エンコーダが出力する分布を事前分布 $p(\mathbf{z}) = \mathcal{N}(0, I)$ に近づける役割を持つ。
 
 
 ### 3.4 集合論の記号 — データの「住所」を表す
@@ -892,27 +892,27 @@ VAE[^4] では `$D_{\text{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$`
 
 | 記号 | 名前 | 意味 | 例 |
 |:---:|:---|:---|:---|
-| `$\mathbb{N}$` | 自然数 | `$\{0, 1, 2, \ldots\}$` or `$\{1, 2, 3, \ldots\}$` | クラスラベル `$y \in \{0, 1, \ldots, C-1\}$` |
-| `$\mathbb{Z}$` | 整数 | `$\{\ldots, -2, -1, 0, 1, 2, \ldots\}$` | インデックス |
-| `$\mathbb{R}$` | 実数 | 連続値全体 | 重みパラメータ `$w \in \mathbb{R}$` |
-| `$\mathbb{R}^n$` | `$n$`次元実数ベクトル空間 | | 入力 `$\mathbf{x} \in \mathbb{R}^n$` |
-| `$\mathbb{R}^{m \times n}$` | `$m \times n$` 実数行列の空間 | | 重み行列 `$W \in \mathbb{R}^{m \times n}$` |
-| `$\mathbb{R}^+$` | 正の実数 | `$(0, \infty)$` | 標準偏差 `$\sigma \in \mathbb{R}^+$` |
+| $\mathbb{N}$ | 自然数 | $\{0, 1, 2, \ldots\}$ or $\{1, 2, 3, \ldots\}$ | クラスラベル $y \in \{0, 1, \ldots, C-1\}$ |
+| $\mathbb{Z}$ | 整数 | $\{\ldots, -2, -1, 0, 1, 2, \ldots\}$ | インデックス |
+| $\mathbb{R}$ | 実数 | 連続値全体 | 重みパラメータ $w \in \mathbb{R}$ |
+| $\mathbb{R}^n$ | $n$次元実数ベクトル空間 | | 入力 $\mathbf{x} \in \mathbb{R}^n$ |
+| $\mathbb{R}^{m \times n}$ | $m \times n$ 実数行列の空間 | | 重み行列 $W \in \mathbb{R}^{m \times n}$ |
+| $\mathbb{R}^+$ | 正の実数 | $(0, \infty)$ | 標準偏差 $\sigma \in \mathbb{R}^+$ |
 
-> **Note:** **「`$\mathbf{x} \in \mathbb{R}^{768}$`」の読み方**: 「`$\mathbf{x}$` は768次元の実数ベクトル空間の要素」。つまり768個の実数値を並べたベクトル。BERT の隠れ層の次元が768なので、BERT の出力は `$\mathbb{R}^{768}$` に住んでいる。
+> **Note:** **「$\mathbf{x} \in \mathbb{R}^{768}$」の読み方**: 「$\mathbf{x}$ は768次元の実数ベクトル空間の要素」。つまり768個の実数値を並べたベクトル。BERT の隠れ層の次元が768なので、BERT の出力は $\mathbb{R}^{768}$ に住んでいる。
 
 #### 集合の演算
 
 | 記号 | 読み | 意味 | 例 |
 |:---:|:---|:---|:---|
-| `$\in$` | 属する | 要素が集合に含まれる | `$x \in \mathbb{R}$` |
-| `$\notin$` | 属さない | | `$-1 \notin \mathbb{N}$` (0始まりの場合) |
-| `$\subset$` | 部分集合 | | `$\mathbb{N} \subset \mathbb{Z} \subset \mathbb{R}$` |
-| `$\cup$` | 和集合 | OR | 訓練データ `$\cup$` 検証データ |
-| `$\cap$` | 共通集合 | AND | `$A \cap B = \emptyset$`（互いに素） |
-| `$\setminus$` | 差集合 | 引く | `$\mathbb{R} \setminus \{0\}$`（0を除く実数） |
-| `$\emptyset$` | 空集合 | 要素なし | |
-| `$|A|$` or `$\#A$` | 濃度 | 集合の要素数 | `$|\mathcal{D}| = N$`（データセットのサイズ） |
+| $\in$ | 属する | 要素が集合に含まれる | $x \in \mathbb{R}$ |
+| $\notin$ | 属さない | | $-1 \notin \mathbb{N}$ (0始まりの場合) |
+| $\subset$ | 部分集合 | | $\mathbb{N} \subset \mathbb{Z} \subset \mathbb{R}$ |
+| $\cup$ | 和集合 | OR | 訓練データ $\cup$ 検証データ |
+| $\cap$ | 共通集合 | AND | $A \cap B = \emptyset$（互いに素） |
+| $\setminus$ | 差集合 | 引く | $\mathbb{R} \setminus \{0\}$（0を除く実数） |
+| $\emptyset$ | 空集合 | 要素なし | |
+| $|A|$ or $\#A$ | 濃度 | 集合の要素数 | $|\mathcal{D}| = N$（データセットのサイズ） |
 
 #### 直積（Cartesian Product）と冪集合（Power Set）
 
@@ -920,35 +920,35 @@ VAE[^4] では `$D_{\text{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$`
 
 **直積**
 
-```math
+$$
 X \times Y = \{(x,y) : x\in X,\ y\in Y\}
-```
+$$
 
-例: 画像 `$\mathbf{x}\in\mathbb{R}^{H\times W\times C}$` とラベル `$y\in\{1,\ldots,C\}$` のペアは、
+例: 画像 $\mathbf{x}\in\mathbb{R}^{H\times W\times C}$ とラベル $y\in\{1,\ldots,C\}$ のペアは、
 
-```math
+$$
 (\mathbf{x},y)\in \mathbb{R}^{H\times W\times C}\times \{1,\ldots,C\}
-```
+$$
 
 という「直積空間」に住む。
 
 **冪集合**
 
-```math
+$$
 \mathcal{P}(X) = \{A : A \subseteq X\}
-```
+$$
 
-冪集合は「`$X$` の部分集合全体の集合」。例えば特徴選択やサブセット最適化で登場する。
+冪集合は「$X$ の部分集合全体の集合」。例えば特徴選択やサブセット最適化で登場する。
 
 <details><summary>ミニ演習: 直積を読む</summary>
 次を日本語1行に翻訳せよ。
 
-```math
+$$
 f: \mathbb{R}^d \times \mathbb{N} \to \mathbb{R}
-```
+$$
 
 <details><summary>解答</summary>
-「`$d$` 次元実数ベクトルと自然数（インデックスなど）のペアを入力に取り、実数を返す関数」。
+「$d$ 次元実数ベクトルと自然数（インデックスなど）のペアを入力に取り、実数を返す関数」。
 </details>
 </details>
 
@@ -956,22 +956,22 @@ f: \mathbb{R}^d \times \mathbb{N} \to \mathbb{R}
 
 | 記法 | 意味 | 範囲 |
 |:---|:---|:---|
-| `$[a, b]$` | 閉区間 | `$a \leq x \leq b$` |
-| `$(a, b)$` | 開区間 | `$a < x < b$` |
-| `$[a, b)$` | 半開区間 | `$a \leq x < b$` |
-| `$[0, 1]$` | — | 確率値の範囲。Sigmoid の値域 |
-| `$(0, \infty)$` | — | 正の実数。ReLU の正の部分 |
-| `$(-\infty, \infty)$` | — | `$\mathbb{R}$` 全体 |
+| $[a, b]$ | 閉区間 | $a \leq x \leq b$ |
+| $(a, b)$ | 開区間 | $a < x < b$ |
+| $[a, b)$ | 半開区間 | $a \leq x < b$ |
+| $[0, 1]$ | — | 確率値の範囲。Sigmoid の値域 |
+| $(0, \infty)$ | — | 正の実数。ReLU の正の部分 |
+| $(-\infty, \infty)$ | — | $\mathbb{R}$ 全体 |
 
 #### データセットの集合表現
 
 機械学習では、データセットを集合として記述する:
 
-```math
+$$
 \mathcal{D} = \{(\mathbf{x}^{(i)}, y^{(i)})\}_{i=1}^{N}
-```
+$$
 
-「`$N$` 個の入力-ラベルのペアからなるデータセット `$\mathcal{D}$`」
+「$N$ 個の入力-ラベルのペアからなるデータセット $\mathcal{D}$」
 
 
 ### 3.5 論理記号 — 数式の「接続詞」
@@ -980,69 +980,69 @@ f: \mathbb{R}^d \times \mathbb{N} \to \mathbb{R}
 
 | 記号 | 読み | 意味 | Python |
 |:---:|:---|:---|:---|
-| `$\forall$` | for all | すべての〜について | `all(...)` |
-| `$\exists$` | there exists | 〜が存在する | `any(...)` |
-| `$\implies$` | implies | ならば | `if ... then ...` |
-| `$\iff$` | if and only if | 同値 | `==` (論理的等価) |
-| `$\land$` | and | かつ | `and` |
-| `$\lor$` | or | または | `or` |
-| `$\neg$` | not | 否定 | `not` |
+| $\forall$ | for all | すべての〜について | `all(...)` |
+| $\exists$ | there exists | 〜が存在する | `any(...)` |
+| $\implies$ | implies | ならば | `if ... then ...` |
+| $\iff$ | if and only if | 同値 | `==` (論理的等価) |
+| $\land$ | and | かつ | `and` |
+| $\lor$ | or | または | `or` |
+| $\neg$ | not | 否定 | `not` |
 
 #### 論文でよく見る論理表現
 
-**1. 全称量化子 `$\forall$`**
+**1. 全称量化子 $\forall$**
 
-```math
+$$
 \forall x \in \mathbb{R}: \quad e^x > 0
-```
+$$
 
-「すべての実数 `$x$` について、`$e^x$` は正」
+「すべての実数 $x$ について、$e^x$ は正」
 
 
-**2. 存在量化子 `$\exists$`**
+**2. 存在量化子 $\exists$**
 
-```math
+$$
 \exists \theta^* : \quad \mathcal{L}(\theta^*) \leq \mathcal{L}(\theta) \quad \forall \theta
-```
+$$
 
-「損失を最小にするパラメータ `$\theta^*$` が存在する」
+「損失を最小にするパラメータ $\theta^*$ が存在する」
 
-**3. 含意 `$\implies$`**
+**3. 含意 $\implies$**
 
-```math
+$$
 \text{Softmax}(\mathbf{z})_i > 0 \quad \forall i \implies \sum_i \text{Softmax}(\mathbf{z})_i = 1
-```
+$$
 
 Softmax[^1] の性質: 「すべての出力が正ならば、合計は1」。実際にはこれは Softmax の定義から自動的に成り立つ。
 
-**4. 同値 `$\iff$`**
+**4. 同値 $\iff$**
 
-```math
+$$
 \hat{y} = \arg\max_i p_i \iff p_{\hat{y}} \geq p_j \quad \forall j
-```
+$$
 
-「`$\hat{y}$` が argmax であることと、`$p_{\hat{y}}$` がすべての `$p_j$` 以上であることは同値」
+「$\hat{y}$ が argmax であることと、$p_{\hat{y}}$ がすべての $p_j$ 以上であることは同値」
 
 <details><summary>ミニ演習: 含意の読み替え（対偶）</summary>
 次の主張を「対偶」の形に書き換えよ。
 
-```math
+$$
 P \implies Q
-```
+$$
 
 また、次の2つが一般には同値でない理由を一言で述べよ。
 
-```math
+$$
 P \implies Q,\quad Q \implies P
-```
+$$
 
 <details><summary>解答</summary>
-対偶は `$\neg Q \implies \neg P$`。含意は向きを持ち、一般には片方向の条件しか言っていないため、逆向き `$Q\implies P$` は別物。
+対偶は $\neg Q \implies \neg P$。含意は向きを持ち、一般には片方向の条件しか言っていないため、逆向き $Q\implies P$ は別物。
 </details>
 </details>
 
 > **Note:** 論理記号は「文章の圧縮」だ。記号を見て意味が出ないなら、逆に文章へ展開してから読み直すと一気に通る。
-> 特に `$\forall$` と `$\exists$` は「範囲」が全てなので、`$x\in X$` を必ずセットで読む。
+> 特に $\forall$ と $\exists$ は「範囲」が全てなので、$x\in X$ を必ずセットで読む。
 > 「どの集合の上で主張しているか」を落とすと、数式は途端に意味が崩れる。
 > だから最初に「範囲」を読む。
 
@@ -1051,73 +1051,73 @@ P \implies Q,\quad Q \implies P
 
 | 記号 | 英語表現 |
 |:---:|:---|
-| `$\forall$` | "for all", "for any", "for every" |
-| `$\exists$` | "there exists", "there is" |
-| `$\implies$` | "implies", "then", "it follows that" |
-| `$\iff$` | "if and only if", "iff", "is equivalent to" |
-| s.t. | "such that", "subject to" — `$\exists x \text{ s.t. } f(x) = 0$` |
+| $\forall$ | "for all", "for any", "for every" |
+| $\exists$ | "there exists", "there is" |
+| $\implies$ | "implies", "then", "it follows that" |
+| $\iff$ | "if and only if", "iff", "is equivalent to" |
+| s.t. | "such that", "subject to" — $\exists x \text{ s.t. } f(x) = 0$ |
 
 特に "s.t." は最適化問題で頻出:
-```math
+$$
 \min_\theta \mathcal{L}(\theta) \quad \text{s.t.} \quad \|\theta\|_2 \leq \lambda
-```
+$$
 </details>
 
 ### 3.6 関数の記法 — 写像の読み方
 
 #### 関数の定義域・値域
 
-```math
+$$
 f: \mathbb{R}^n \to \mathbb{R}^m
-```
+$$
 
-「`$f$` は `$n$` 次元実数ベクトルを受け取り、`$m$` 次元実数ベクトルを返す関数（写像）」
+「$f$ は $n$ 次元実数ベクトルを受け取り、$m$ 次元実数ベクトルを返す関数（写像）」
 
 | 要素 | 記号 | 意味 |
 |:---|:---|:---|
-| 関数名 | `$f$` | 写像そのもの |
-| 定義域 (domain) | `$\mathbb{R}^n$` | 入力の住所 |
-| 値域 (codomain) | `$\mathbb{R}^m$` | 出力の住所 |
-| 矢印 | `$\to$` | 「〜から〜への対応」 |
+| 関数名 | $f$ | 写像そのもの |
+| 定義域 (domain) | $\mathbb{R}^n$ | 入力の住所 |
+| 値域 (codomain) | $\mathbb{R}^m$ | 出力の住所 |
+| 矢印 | $\to$ | 「〜から〜への対応」 |
 
 #### ニューラルネットワークを写像として読む
 
 1層のニューラルネットワーク:
 
-```math
+$$
 f_\theta: \mathbb{R}^n \to \mathbb{R}^m, \quad f_\theta(\mathbf{x}) = \sigma(W\mathbf{x} + \mathbf{b})
-```
+$$
 
-- `$\theta = \{W, \mathbf{b}\}$`: パラメータ集合
-- `$W \in \mathbb{R}^{m \times n}$`: 重み行列
-- `$\mathbf{b} \in \mathbb{R}^m$`: バイアスベクトル
-- `$\sigma$`: 活性化関数
+- $\theta = \{W, \mathbf{b}\}$: パラメータ集合
+- $W \in \mathbb{R}^{m \times n}$: 重み行列
+- $\mathbf{b} \in \mathbb{R}^m$: バイアスベクトル
+- $\sigma$: 活性化関数
 
 **多層の合成**:
 
-```math
+$$
 f = f^{(L)} \circ f^{(L-1)} \circ \cdots \circ f^{(1)}
-```
+$$
 
-`$\circ$` は**関数合成**（composition）。`$(g \circ f)(x) = g(f(x))$`。
+$\circ$ は**関数合成**（composition）。$(g \circ f)(x) = g(f(x))$。
 
 
 #### 特殊な関数記法
 
 | 記法 | 意味 | 例 |
 |:---|:---|:---|
-| `$f: X \to Y$` | `$X$` から `$Y$` への写像 | `$\text{Softmax}: \mathbb{R}^C \to \Delta^{C-1}$` |
-| `$f \circ g$` | 関数合成 | 多層ネットワーク |
-| `$f^{-1}$` | 逆関数 | Normalizing Flow |
-| `$f'(x)$` or `$\frac{df}{dx}$` | 導関数 | 勾配計算 |
-| `$\nabla f$` | 勾配（多変数） | `$\nabla_\theta \mathcal{L}$` |
-| `$\mathcal{O}(n)$` | 計算量 | Attention は `$\mathcal{O}(n^2 d)$` |
-| `$\mathbb{1}[\cdot]$` | 指示関数 | `$\mathbb{1}[y = k]$` — one-hot |
+| $f: X \to Y$ | $X$ から $Y$ への写像 | $\text{Softmax}: \mathbb{R}^C \to \Delta^{C-1}$ |
+| $f \circ g$ | 関数合成 | 多層ネットワーク |
+| $f^{-1}$ | 逆関数 | Normalizing Flow |
+| $f'(x)$ or $\frac{df}{dx}$ | 導関数 | 勾配計算 |
+| $\nabla f$ | 勾配（多変数） | $\nabla_\theta \mathcal{L}$ |
+| $\mathcal{O}(n)$ | 計算量 | Attention は $\mathcal{O}(n^2 d)$ |
+| $\mathbb{1}[\cdot]$ | 指示関数 | $\mathbb{1}[y = k]$ — one-hot |
 
-> **Note:** **`$\Delta^{C-1}$`** は**確率単体** (probability simplex)。`$C$` 次元ベクトルで「全要素が非負かつ総和が1」を満たすものの集合:
-> ```math
+> **Note:** **$\Delta^{C-1}$** は**確率単体** (probability simplex)。$C$ 次元ベクトルで「全要素が非負かつ総和が1」を満たすものの集合:
+> $$
 > \Delta^{C-1} = \left\{ \mathbf{p} \in \mathbb{R}^C : p_i \geq 0, \sum_{i=1}^{C} p_i = 1 \right\}
-> ```
+> $$
 > Softmax[^1] の値域はまさにこの確率単体。
 
 
@@ -1127,35 +1127,35 @@ f = f^{(L)} \circ f^{(L-1)} \circ \cdots \circ f^{(1)}
 
 #### 導関数（1変数）
 
-```math
+$$
 f'(x) = \frac{df}{dx} = \lim_{h \to 0} \frac{f(x+h) - f(x)}{h}
-```
+$$
 
-`$f'(x)$` と `$\frac{df}{dx}$` は同じもの。前者はラグランジュ記法、後者はライプニッツ記法と呼ばれる。
+$f'(x)$ と $\frac{df}{dx}$ は同じもの。前者はラグランジュ記法、後者はライプニッツ記法と呼ばれる。
 
 | 関数 | 導関数 | 機械学習での用途 |
 |:---|:---|:---|
-| `$f(x) = x^n$` | `$f'(x) = nx^{n-1}$` | べき乗の微分 |
-| `$f(x) = e^x$` | `$f'(x) = e^x$` | Softmax の微分 |
-| `$f(x) = \log x$` | `$f'(x) = \frac{1}{x}$` | Cross-Entropy の微分 |
-| `$f(x) = \max(0, x)$` | `$f'(x) = \mathbb{1}[x > 0]$` | ReLU の微分 |
-| `$\sigma(x) = \frac{1}{1+e^{-x}}$` | `$\sigma'(x) = \sigma(x)(1-\sigma(x))$` | Sigmoid の微分 |
+| $f(x) = x^n$ | $f'(x) = nx^{n-1}$ | べき乗の微分 |
+| $f(x) = e^x$ | $f'(x) = e^x$ | Softmax の微分 |
+| $f(x) = \log x$ | $f'(x) = \frac{1}{x}$ | Cross-Entropy の微分 |
+| $f(x) = \max(0, x)$ | $f'(x) = \mathbb{1}[x > 0]$ | ReLU の微分 |
+| $\sigma(x) = \frac{1}{1+e^{-x}}$ | $\sigma'(x) = \sigma(x)(1-\sigma(x))$ | Sigmoid の微分 |
 
 #### 偏微分（多変数）
 
-```math
+$$
 \frac{\partial f}{\partial x_i} = \lim_{h \to 0} \frac{f(x_1, \ldots, x_i + h, \ldots, x_n) - f(x_1, \ldots, x_n)}{h}
-```
+$$
 
-「他の変数を固定して、`$x_i$` だけ動かしたときの変化率」。`$\partial$` (パーシャル/デル) が `$d$` (ディー) と異なるのは、多変数であることを明示するため。
+「他の変数を固定して、$x_i$ だけ動かしたときの変化率」。$\partial$ (パーシャル/デル) が $d$ (ディー) と異なるのは、多変数であることを明示するため。
 
-#### 勾配ベクトル `$\nabla f$`
+#### 勾配ベクトル $\nabla f$
 
-```math
+$$
 \nabla f(\mathbf{x}) = \begin{pmatrix} \frac{\partial f}{\partial x_1} \\ \frac{\partial f}{\partial x_2} \\ \vdots \\ \frac{\partial f}{\partial x_n} \end{pmatrix}
-```
+$$
 
-すべての偏微分を縦に並べたベクトル。「`$f$` が最も急速に増加する方向」を指す。勾配降下法では、この逆方向（`$-\nabla f$`）にパラメータを更新する。
+すべての偏微分を縦に並べたベクトル。「$f$ が最も急速に増加する方向」を指す。勾配降下法では、この逆方向（$-\nabla f$）にパラメータを更新する。
 
 #### 形状（shape）で読む: 勾配/Jacobian/Hessian の違い
 
@@ -1163,43 +1163,43 @@ f'(x) = \frac{df}{dx} = \lim_{h \to 0} \frac{f(x+h) - f(x)}{h}
 
 | 対象 | 入力 | 出力 | 微分の形 | 名前 |
 |:---|:---|:---|:---|:---|
-| `$f:\mathbb{R}^n\to\mathbb{R}$` | ベクトル | スカラー | `$\nabla f(\mathbf{x})\in\mathbb{R}^n$` | 勾配 |
-| `$\mathbf{f}:\mathbb{R}^n\to\mathbb{R}^m$` | ベクトル | ベクトル | `$J(\mathbf{x})\in\mathbb{R}^{m\times n}$` | ヤコビ行列 |
-| `$f:\mathbb{R}^n\to\mathbb{R}$` | ベクトル | スカラー | `$H(\mathbf{x})\in\mathbb{R}^{n\times n}$` | ヘッセ行列 |
+| $f:\mathbb{R}^n\to\mathbb{R}$ | ベクトル | スカラー | $\nabla f(\mathbf{x})\in\mathbb{R}^n$ | 勾配 |
+| $\mathbf{f}:\mathbb{R}^n\to\mathbb{R}^m$ | ベクトル | ベクトル | $J(\mathbf{x})\in\mathbb{R}^{m\times n}$ | ヤコビ行列 |
+| $f:\mathbb{R}^n\to\mathbb{R}$ | ベクトル | スカラー | $H(\mathbf{x})\in\mathbb{R}^{n\times n}$ | ヘッセ行列 |
 
 「勾配はベクトル」「ヤコビは行列」「ヘッセも行列」。この3行だけは、反射で出てくるまで染み込ませたい。
 
 <details><summary>ミニ演習: 形状の即答</summary>
 次の関数の微分の形状（ベクトル/行列）を答えよ。
 
-1. `$f(\mathbf{x}) = \|\mathbf{x}\|_2^2$`（`$\mathbf{x}\in\mathbb{R}^d$`）
-2. `$\mathbf{f}(\mathbf{x}) = W\mathbf{x} + \mathbf{b}$`（`$W\in\mathbb{R}^{m\times n}$`）
-3. `$g(W) = \|W\|_F^2$`（`$W\in\mathbb{R}^{m\times n}$`）
+1. $f(\mathbf{x}) = \|\mathbf{x}\|_2^2$（$\mathbf{x}\in\mathbb{R}^d$）
+2. $\mathbf{f}(\mathbf{x}) = W\mathbf{x} + \mathbf{b}$（$W\in\mathbb{R}^{m\times n}$）
+3. $g(W) = \|W\|_F^2$（$W\in\mathbb{R}^{m\times n}$）
 
 <details><summary>解答</summary>
 
-1. 出力がスカラーなので勾配は `$\mathbb{R}^d$` のベクトル。
-2. 出力が `$\mathbb{R}^m$` なのでヤコビは `$m\times n$` 行列（実際は定数で `$J=W$`）。
-3. 出力がスカラーなので「`$W$` に関する勾配」は `$m\times n$` と同じ形（行列）になる。
+1. 出力がスカラーなので勾配は $\mathbb{R}^d$ のベクトル。
+2. 出力が $\mathbb{R}^m$ なのでヤコビは $m\times n$ 行列（実際は定数で $J=W$）。
+3. 出力がスカラーなので「$W$ に関する勾配」は $m\times n$ と同じ形（行列）になる。
 </details>
 </details>
 
 #### 例: 偏微分を「文章」に落とす
 
-```math
+$$
 f(x,y) = x^2y
-```
+$$
 
 このとき、
 
-```math
+$$
 \frac{\partial f}{\partial x} = 2xy,\quad \frac{\partial f}{\partial y} = x^2
-```
+$$
 
 翻訳はこうだ。
 
-1. `$\partial/\partial x$`: 「`$y$` を固定して `$x$` を動かす」ので `$x^2$` だけが微分され、`$2x$` になる。最後に `$y$` が掛かる。
-2. `$\partial/\partial y$`: 「`$x$` を固定して `$y$` を動かす」ので、`$y$` は1、`$x^2$` は定数として残る。
+1. $\partial/\partial x$: 「$y$ を固定して $x$ を動かす」ので $x^2$ だけが微分され、$2x$ になる。最後に $y$ が掛かる。
+2. $\partial/\partial y$: 「$x$ を固定して $y$ を動かす」ので、$y$ は1、$x^2$ は定数として残る。
 
 ここで重要なのは、計算よりも「固定する変数を言えるか」だ。
 
@@ -1207,27 +1207,27 @@ f(x,y) = x^2y
 
 合成関数の微分規則。誤差逆伝播（backpropagation）は、この規則を計算グラフに沿って系統的に適用するだけのアルゴリズムだ[^2]。
 
-```math
+$$
 \frac{df}{dx} = \frac{df}{dg} \cdot \frac{dg}{dx}
-```
+$$
 
 多変数版:
 
-```math
+$$
 \frac{\partial \mathcal{L}}{\partial W^{(l)}} = \frac{\partial \mathcal{L}}{\partial h^{(L)}} \cdot \frac{\partial h^{(L)}}{\partial h^{(L-1)}} \cdots \frac{\partial h^{(l+1)}}{\partial h^{(l)}} \cdot \frac{\partial h^{(l)}}{\partial W^{(l)}}
-```
+$$
 
-「損失 `$\mathcal{L}$` の第 `$l$` 層の重み `$W^{(l)}$` についての勾配は、出力層から第 `$l$` 層まで偏微分を**掛け算で伝播**させたもの」。これが **backpropagation** の名前の由来。
+「損失 $\mathcal{L}$ の第 $l$ 層の重み $W^{(l)}$ についての勾配は、出力層から第 $l$ 層まで偏微分を**掛け算で伝播**させたもの」。これが **backpropagation** の名前の由来。
 
 <details><summary>ミニ演習: 連鎖律を1行で読む</summary>
 次を「記号読解プロトコル（3.0）」に従って1行に翻訳せよ。
 
-```math
+$$
 \frac{d}{dx}\log(\sigma(x)) = \frac{1}{\sigma(x)}\cdot \sigma(x)(1-\sigma(x))
-```
+$$
 
 <details><summary>解答</summary>
-「`$\log$` の微分で `$1/\sigma(x)$` が出て、Sigmoid の微分で `$\sigma(x)(1-\sigma(x))$` が掛かる」なので、結果は `$1-\sigma(x)$`。
+「$\log$ の微分で $1/\sigma(x)$ が出て、Sigmoid の微分で $\sigma(x)(1-\sigma(x))$ が掛かる」なので、結果は $1-\sigma(x)$。
 </details>
 </details>
 
@@ -1239,8 +1239,8 @@ f(x,y) = x^2y
 
 | 行列 | 定義 | サイズ | 用途 |
 |:---|:---|:---|:---|
-| **ヤコビ行列** `$J$` | `$J_{ij} = \frac{\partial f_i}{\partial x_j}$` | `$m \times n$` | ベクトル値関数の微分。連鎖律の行列版 |
-| **ヘッセ行列** `$H$` | `$H_{ij} = \frac{\partial^2 f}{\partial x_i \partial x_j}$` | `$n \times n$` | 2次微分。曲率の情報。Newton 法で使用 |
+| **ヤコビ行列** $J$ | $J_{ij} = \frac{\partial f_i}{\partial x_j}$ | $m \times n$ | ベクトル値関数の微分。連鎖律の行列版 |
+| **ヘッセ行列** $H$ | $H_{ij} = \frac{\partial^2 f}{\partial x_i \partial x_j}$ | $n \times n$ | 2次微分。曲率の情報。Newton 法で使用 |
 
 ### 3.8 確率論の記法 — 生成モデルの言語
 
@@ -1250,33 +1250,33 @@ f(x,y) = x^2y
 
 | 記法 | 読み方 | 意味 |
 |:---|:---|:---|
-| `$p(x)$` | 「`$p$` の `$x$`」 | `$x$` の確率（離散）/ 確率密度（連続） |
-| `$p(x \mid y)$` | 「`$y$` が与えられたときの `$x$` の確率」 | 条件付き確率 |
-| `$p(x, y)$` | 「`$x$` と `$y$` の同時確率」 | 同時分布 |
-| `$x \sim p$` | 「`$x$` は `$p$` に従う」 | サンプリング |
-| `$\mathcal{N}(\mu, \sigma^2)$` | 「平均 `$\mu$`、分散 `$\sigma^2$` の正規分布」 | ガウス分布 |
-| `$\text{Cat}(\boldsymbol{\pi})$` | 「パラメータ `$\boldsymbol{\pi}$` のカテゴリカル分布」 | 離散分布 |
+| $p(x)$ | 「$p$ の $x$」 | $x$ の確率（離散）/ 確率密度（連続） |
+| $p(x \mid y)$ | 「$y$ が与えられたときの $x$ の確率」 | 条件付き確率 |
+| $p(x, y)$ | 「$x$ と $y$ の同時確率」 | 同時分布 |
+| $x \sim p$ | 「$x$ は $p$ に従う」 | サンプリング |
+| $\mathcal{N}(\mu, \sigma^2)$ | 「平均 $\mu$、分散 $\sigma^2$ の正規分布」 | ガウス分布 |
+| $\text{Cat}(\boldsymbol{\pi})$ | 「パラメータ $\boldsymbol{\pi}$ のカテゴリカル分布」 | 離散分布 |
 
-> **⚠️ Warning:** **注意**: 連続変数では `$p(x)$` は「確率」ではなく「密度」だ。`$p(x)=0.1$` と書いてあっても「`$x$` になる確率が0.1」とは言えない。確率は区間に対して定義される:
-> ```math
+> **⚠️ Warning:** **注意**: 連続変数では $p(x)$ は「確率」ではなく「密度」だ。$p(x)=0.1$ と書いてあっても「$x$ になる確率が0.1」とは言えない。確率は区間に対して定義される:
+> $$
 > P(a \le X \le b) = \int_a^b p(x)\,dx
-> ```
+> $$
 
 #### 確率の連鎖律（Chain Rule of Probability）
 
-確率にも「連鎖律」がある。`$T$` 個の確率変数 `$x_{1:T}$` に対して、
+確率にも「連鎖律」がある。$T$ 個の確率変数 $x_{1:T}$ に対して、
 
-```math
+$$
 p(x_{1:T}) = \prod_{t=1}^{T} p(x_t \mid x_{1:t-1})
-```
+$$
 
 これが自己回帰モデル（LLM）の出発点だ。Transformer[^1] の「次トークン予測」は、この式の右辺の各因子をモデル化している。
 
 <details><summary>ミニ演習: 連鎖律を展開せよ</summary>
-`$p(x_1,x_2,x_3)$` を条件付き確率の積に分解せよ。
+$p(x_1,x_2,x_3)$ を条件付き確率の積に分解せよ。
 
 <details><summary>解答</summary>
-`$p(x_1,x_2,x_3)=p(x_3\mid x_1,x_2)\,p(x_2\mid x_1)\,p(x_1)$`。
+$p(x_1,x_2,x_3)=p(x_3\mid x_1,x_2)\,p(x_2\mid x_1)\,p(x_1)$。
 </details>
 </details>
 
@@ -1284,36 +1284,36 @@ p(x_{1:T}) = \prod_{t=1}^{T} p(x_t \mid x_{1:t-1})
 
 独立は「情報が不要になる」ことを意味する。
 
-```math
+$$
 X \perp Y \iff p(x,y)=p(x)p(y)
-```
+$$
 
-条件付き独立は「`$Z$` を知ったら `$X$` と `$Y$` が独立になる」だ。
+条件付き独立は「$Z$ を知ったら $X$ と $Y$ が独立になる」だ。
 
-```math
+$$
 X \perp Y \mid Z \iff p(x,y\mid z)=p(x\mid z)p(y\mid z)
-```
+$$
 
-生成モデルでは「潜在変数 `$Z$` を入れると条件付き独立が生まれる」ことが多い。VAE[^4] の標準的な仮定がまさにそれだ。
+生成モデルでは「潜在変数 $Z$ を入れると条件付き独立が生まれる」ことが多い。VAE[^4] の標準的な仮定がまさにそれだ。
 
 #### ベイズの定理
 
-```math
+$$
 p(\theta \mid \mathcal{D}) = \frac{p(\mathcal{D} \mid \theta) \, p(\theta)}{p(\mathcal{D})}
-```
+$$
 
 | 項 | 名前 | 意味 |
 |:---|:---|:---|
-| `$p(\theta \mid \mathcal{D})$` | 事後分布 (posterior) | データを観測した後のパラメータの信念 |
-| `$p(\mathcal{D} \mid \theta)$` | 尤度 (likelihood) | パラメータが与えられたときのデータの生成確率 |
-| `$p(\theta)$` | 事前分布 (prior) | データを見る前のパラメータの信念 |
-| `$p(\mathcal{D})$` | エビデンス (evidence) | 周辺尤度。正規化定数 |
+| $p(\theta \mid \mathcal{D})$ | 事後分布 (posterior) | データを観測した後のパラメータの信念 |
+| $p(\mathcal{D} \mid \theta)$ | 尤度 (likelihood) | パラメータが与えられたときのデータの生成確率 |
+| $p(\theta)$ | 事前分布 (prior) | データを見る前のパラメータの信念 |
+| $p(\mathcal{D})$ | エビデンス (evidence) | 周辺尤度。正規化定数 |
 
-```math
+$$
 \underbrace{p(\theta \mid \mathcal{D})}_{\text{posterior}} \propto \underbrace{p(\mathcal{D} \mid \theta)}_{\text{likelihood}} \cdot \underbrace{p(\theta)}_{\text{prior}}
-```
+$$
 
-**VAE[^4] との接続**: VAE は `$p(\mathcal{D})$` = `$\int p(\mathbf{x}, \mathbf{z}) d\mathbf{z}$` が計算困難なため、事後分布 `$p(\mathbf{z} \mid \mathbf{x})$` を近似分布 `$q_\phi(\mathbf{z} \mid \mathbf{x})$` で近似する。これが変分推論の核心アイデア。
+**VAE[^4] との接続**: VAE は $p(\mathcal{D})$ = $\int p(\mathbf{x}, \mathbf{z}) d\mathbf{z}$ が計算困難なため、事後分布 $p(\mathbf{z} \mid \mathbf{x})$ を近似分布 $q_\phi(\mathbf{z} \mid \mathbf{x})$ で近似する。これが変分推論の核心アイデア。
 
 #### エントロピー / クロスエントロピー / KL（生成モデルの損失言語）
 
@@ -1321,33 +1321,33 @@ p(\theta \mid \mathcal{D}) = \frac{p(\mathcal{D} \mid \theta) \, p(\theta)}{p(\m
 
 **エントロピー（不確実性）**
 
-```math
+$$
 H(p) = -\sum_x p(x)\log p(x)
-```
+$$
 
 **クロスエントロピー（当てに行くコスト）**
 
-```math
+$$
 H(p,q) = -\sum_x p(x)\log q(x)
-```
+$$
 
 **KL（ズレのコスト）**
 
-```math
+$$
 D_{\mathrm{KL}}(p\|q)=\sum_x p(x)\log \frac{p(x)}{q(x)} = H(p,q)-H(p)
-```
+$$
 
-この関係式は超重要だ。なぜなら「`$H(p)$` はデータ生成過程が決める定数」なので、学習で最小化できるのは実質的に `$H(p,q)$`（クロスエントロピー）になるからだ。LLM の学習で最小化しているのが Cross-Entropy なのは、この理由による。
+この関係式は超重要だ。なぜなら「$H(p)$ はデータ生成過程が決める定数」なので、学習で最小化できるのは実質的に $H(p,q)$（クロスエントロピー）になるからだ。LLM の学習で最小化しているのが Cross-Entropy なのは、この理由による。
 
 <details><summary>ミニ演習: KLの非対称性</summary>
 次の主張が一般には成り立たない理由を説明せよ。
 
-```math
+$$
 D_{\mathrm{KL}}(p\|q)=D_{\mathrm{KL}}(q\|p)
-```
+$$
 
 <details><summary>解答</summary>
-定義の分数 `$\log(p/q)$` の向きが逆になるため、重み付けされる領域が変わる。特に `$p$` が大きいのに `$q$` が小さい領域は強く罰されるが、その逆は同じ強さでは罰されない。
+定義の分数 $\log(p/q)$ の向きが逆になるため、重み付けされる領域が変わる。特に $p$ が大きいのに $q$ が小さい領域は強く罰されるが、その逆は同じ強さでは罰されない。
 </details>
 </details>
 
@@ -1355,11 +1355,11 @@ D_{\mathrm{KL}}(p\|q)=D_{\mathrm{KL}}(q\|p)
 
 | 分布 | 記法 | パラメータ | 用途 |
 |:---|:---|:---|:---|
-| 正規 (Gaussian) | `$\mathcal{N}(\mu, \sigma^2)$` | 平均 `$\mu$`, 分散 `$\sigma^2$` | VAE の潜在空間、ノイズ |
-| 多変量正規 | `$\mathcal{N}(\boldsymbol{\mu}, \Sigma)$` | 平均ベクトル, 共分散行列 | 多次元潜在変数 |
-| カテゴリカル | `$\text{Cat}(\boldsymbol{\pi})$` | 確率ベクトル `$\boldsymbol{\pi}$` | 離散ラベル予測 |
-| ベルヌーイ | `$\text{Bern}(p)$` | 成功確率 `$p$` | 2値分類 |
-| 一様 | `$\text{Uniform}(a, b)$` | 区間 `$[a, b]$` | 初期化、事前分布 |
+| 正規 (Gaussian) | $\mathcal{N}(\mu, \sigma^2)$ | 平均 $\mu$, 分散 $\sigma^2$ | VAE の潜在空間、ノイズ |
+| 多変量正規 | $\mathcal{N}(\boldsymbol{\mu}, \Sigma)$ | 平均ベクトル, 共分散行列 | 多次元潜在変数 |
+| カテゴリカル | $\text{Cat}(\boldsymbol{\pi})$ | 確率ベクトル $\boldsymbol{\pi}$ | 離散ラベル予測 |
+| ベルヌーイ | $\text{Bern}(p)$ | 成功確率 $p$ | 2値分類 |
+| 一様 | $\text{Uniform}(a, b)$ | 区間 $[a, b]$ | 初期化、事前分布 |
 
 
 > **Note:** **ここまでの道のり**: 3.1 ギリシャ文字 → 3.2 添字 → 3.3 演算子 → 3.4 集合 → 3.5 論理 → 3.6 関数 → 3.7 微分 → 3.8 確率。これで数式を読む「語彙」と「文法」が揃った。Boss Battle で総力戦に臨もう。
@@ -1370,89 +1370,89 @@ D_{\mathrm{KL}}(p\|q)=D_{\mathrm{KL}}(q\|p)
 
 Vaswani et al. (2017) "Attention Is All You Need"[^1] の式 (1):
 
-```math
+$$
 \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V
-```
+$$
 
 #### Step 1: 記号の確認
 
 | 記号 | 意味 | 住所 |
 |:---:|:---|:---|
-| `$Q$` | Query 行列 | `$Q \in \mathbb{R}^{n \times d_k}$` |
-| `$K$` | Key 行列 | `$K \in \mathbb{R}^{m \times d_k}$` |
-| `$V$` | Value 行列 | `$V \in \mathbb{R}^{m \times d_v}$` |
-| `$K^\top$` | `$K$` の転置 | `$K^\top \in \mathbb{R}^{d_k \times m}$` |
-| `$d_k$` | Key の次元数 | `$d_k \in \mathbb{N}$` |
-| `$\sqrt{d_k}$` | スケーリング因子 | `$\sqrt{d_k} \in \mathbb{R}^+$` |
+| $Q$ | Query 行列 | $Q \in \mathbb{R}^{n \times d_k}$ |
+| $K$ | Key 行列 | $K \in \mathbb{R}^{m \times d_k}$ |
+| $V$ | Value 行列 | $V \in \mathbb{R}^{m \times d_v}$ |
+| $K^\top$ | $K$ の転置 | $K^\top \in \mathbb{R}^{d_k \times m}$ |
+| $d_k$ | Key の次元数 | $d_k \in \mathbb{N}$ |
+| $\sqrt{d_k}$ | スケーリング因子 | $\sqrt{d_k} \in \mathbb{R}^+$ |
 
 #### Step 2: 計算の分解
 
 
-**1. `$QK^\top \in \mathbb{R}^{n \times m}$`** — 類似度行列
+**1. $QK^\top \in \mathbb{R}^{n \times m}$** — 類似度行列
 
-`$(n \times d_k) \cdot (d_k \times m) = (n \times m)$`。`$n$` 個のクエリと `$m$` 個のキーの全ペアの内積を計算。
+$(n \times d_k) \cdot (d_k \times m) = (n \times m)$。$n$ 個のクエリと $m$ 個のキーの全ペアの内積を計算。
 
-**2. `$\frac{QK^\top}{\sqrt{d_k}}$`** — スケーリング
+**2. $\frac{QK^\top}{\sqrt{d_k}}$** — スケーリング
 
-内積の値は `$d_k$` が大きいほど大きくなる（各次元の寄与が加算されるため）。具体的には、`$Q$` と `$K$` の各要素が平均0、分散1のとき、`$\mathbf{q}^\top \mathbf{k}$` の分散は `$d_k$` になる[^1]。`$\sqrt{d_k}$` で割ることで分散を1に正規化する。
+内積の値は $d_k$ が大きいほど大きくなる（各次元の寄与が加算されるため）。具体的には、$Q$ と $K$ の各要素が平均0、分散1のとき、$\mathbf{q}^\top \mathbf{k}$ の分散は $d_k$ になる[^1]。$\sqrt{d_k}$ で割ることで分散を1に正規化する。
 
-**3. `$\text{softmax}(\cdot)$`** — 確率分布への変換
+**3. $\text{softmax}(\cdot)$** — 確率分布への変換
 
-各行に対して Softmax を適用。`$n$` 個のクエリそれぞれについて、`$m$` 個のキーに対する「注意の重み」が確率分布になる。
+各行に対して Softmax を適用。$n$ 個のクエリそれぞれについて、$m$ 個のキーに対する「注意の重み」が確率分布になる。
 
-**4. `$\text{softmax}(\cdot) V$`** — 加重平均
+**4. $\text{softmax}(\cdot) V$** — 加重平均
 
-`$(n \times m) \cdot (m \times d_v) = (n \times d_v)$`。重み付き平均で Value を集約。
+$(n \times m) \cdot (m \times d_v) = (n \times d_v)$。重み付き平均で Value を集約。
 
 #### Step 3: Python で完全再現
 ここは「数式を動かせる」感覚を、コードなしで固定する。最小例で手計算してみよう。
 
 **設定（超小型）**
 
-- クエリは1個（`$n=1$`）、キーは2個（`$m=2$`）
-- 次元は `$d_k=2$`
-- `$q = \begin{pmatrix}1 & 0\end{pmatrix}$`（`$1\times 2$`）
-- `$K = \begin{pmatrix}1 & 0\\ 0 & 1\end{pmatrix}$`（`$2\times 2$`）
-- `$V = \begin{pmatrix}10 & 0\\ 0 & 10\end{pmatrix}$`（`$2\times 2$`）
+- クエリは1個（$n=1$）、キーは2個（$m=2$）
+- 次元は $d_k=2$
+- $q = \begin{pmatrix}1 & 0\end{pmatrix}$（$1\times 2$）
+- $K = \begin{pmatrix}1 & 0\\ 0 & 1\end{pmatrix}$（$2\times 2$）
+- $V = \begin{pmatrix}10 & 0\\ 0 & 10\end{pmatrix}$（$2\times 2$）
 
-このとき `$Q$` は `$q$` 1行だけの行列として `$Q=q$`。
+このとき $Q$ は $q$ 1行だけの行列として $Q=q$。
 
 **Step A: 類似度（内積）**
 
-```math
+$$
 QK^\top = \begin{pmatrix}1 & 0\end{pmatrix}
 \begin{pmatrix}1 & 0\\ 0 & 1\end{pmatrix}
 =
 \begin{pmatrix}1 & 0\end{pmatrix}
-```
+$$
 
 つまり「キー1とは似ている（1）」「キー2とは似ていない（0）」。
 
 **Step B: スケーリング**
 
-```math
+$$
 \frac{QK^\top}{\sqrt{d_k}}
 =
 \frac{1}{\sqrt{2}}
 \begin{pmatrix}1 & 0\end{pmatrix}
 =
 \begin{pmatrix}\tfrac{1}{\sqrt{2}} & 0\end{pmatrix}
-```
+$$
 
 **Step C: Softmax（重み）**
 
-```math
+$$
 \mathrm{softmax}\left(\begin{pmatrix}\tfrac{1}{\sqrt{2}} & 0\end{pmatrix}\right)
 =
 \begin{pmatrix}
 \frac{e^{1/\sqrt{2}}}{e^{1/\sqrt{2}}+e^0} &
 \frac{e^0}{e^{1/\sqrt{2}}+e^0}
 \end{pmatrix}
-```
+$$
 
-`$1/\sqrt{2}\approx 0.707$` なので `$e^{0.707}\approx 2.03$`。よって重みはおおよそ、
+$1/\sqrt{2}\approx 0.707$ なので $e^{0.707}\approx 2.03$。よって重みはおおよそ、
 
-```math
+$$
 \begin{pmatrix}
 \frac{2.03}{2.03+1} &
 \frac{1}{2.03+1}
@@ -1461,16 +1461,16 @@ QK^\top = \begin{pmatrix}1 & 0\end{pmatrix}
 \begin{pmatrix}
 0.67 & 0.33
 \end{pmatrix}
-```
+$$
 
 **Step D: 加重平均**
 
-```math
+$$
 \begin{pmatrix}0.67 & 0.33\end{pmatrix}
 \begin{pmatrix}10 & 0\\ 0 & 10\end{pmatrix}
 =
 \begin{pmatrix}6.7 & 3.3\end{pmatrix}
-```
+$$
 
 読み替えると「値ベクトルの(10,0)を67%採用し、(0,10)を33%採用した混合」だ。Attention は、この混合を文脈に応じて動的に作る。
 
@@ -1478,18 +1478,18 @@ QK^\top = \begin{pmatrix}1 & 0\end{pmatrix}
 
 単一の Attention を複数の「ヘッド」で並列実行し、結果を連結する[^1]:
 
-```math
+$$
 \text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h) W^O
-```
+$$
 
-```math
+$$
 \text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)
-```
+$$
 
-- `$h$`: ヘッド数。原論文では `$h = 8$`
-- `$W_i^Q \in \mathbb{R}^{d_{\text{model}} \times d_k}$`: 第 `$i$` ヘッドの Query 射影
-- `$d_k = d_v = d_{\text{model}} / h$`: 各ヘッドの次元。`$d_{\text{model}} = 512$` なら `$d_k = 64$`
-- `$W^O \in \mathbb{R}^{hd_v \times d_{\text{model}}}$`: 出力射影
+- $h$: ヘッド数。原論文では $h = 8$
+- $W_i^Q \in \mathbb{R}^{d_{\text{model}} \times d_k}$: 第 $i$ ヘッドの Query 射影
+- $d_k = d_v = d_{\text{model}} / h$: 各ヘッドの次元。$d_{\text{model}} = 512$ なら $d_k = 64$
+- $W^O \in \mathbb{R}^{hd_v \times d_{\text{model}}}$: 出力射影
 
 
 > **Note:** **Boss Battle クリア！** Transformer の Attention 式を一文字残らず読めるようになった。Zone 1 で「なんとなく」理解していた Softmax、添字、スケーリングの意味が、今は**完全に**説明できるはずだ。
@@ -1502,55 +1502,55 @@ QK^\top = \begin{pmatrix}1 & 0\end{pmatrix}
 
 Boss Battle で Attention を読んだ。同じプロトコルを使って、深層生成モデル理論の核心式 — VAE の ELBO[^4] に挑もう。第9回で本格的に扱うが、今は「記号が全部読める」ことを確認するのが目的だ。
 
-```math
+$$
 \mathcal{L}_{\text{ELBO}}(\theta,\phi;\mathbf{x}) = \mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})}\!\left[\log p_\theta(\mathbf{x}|\mathbf{z})\right] - D_{\mathrm{KL}}\!\left(q_\phi(\mathbf{z}|\mathbf{x}) \,\|\, p(\mathbf{z})\right)
-```
+$$
 
 **Step 1: 記号の確認**（3.0 プロトコル ステップ1-5）
 
 | 記号 | 読み | 型 | 住所 | 意味 |
 |:---:|:---|:---|:---|:---|
-| `$\mathcal{L}_{\text{ELBO}}$` | エル・エルボ | スカラー | `$\mathbb{R}$` | Evidence Lower Bound（証拠下界） |
-| `$\theta$` | シータ | パラメータ | — | デコーダのパラメータ |
-| `$\phi$` | ファイ | パラメータ | — | エンコーダのパラメータ |
-| `$\mathbf{x}$` | ボールド エックス | ベクトル | `$\mathbb{R}^d$` | 観測データ（画像・テキスト等） |
-| `$\mathbf{z}$` | ボールド ゼット | ベクトル | `$\mathbb{R}^k$` | 潜在変数（隠れた表現） |
-| `$q_\phi(\mathbf{z}\mid\mathbf{x})$` | キュー ファイ | 分布 | — | 近似事後分布（エンコーダ出力） |
-| `$p_\theta(\mathbf{x}\mid\mathbf{z})$` | ピー シータ | 分布 | — | 尤度（デコーダ出力） |
-| `$p(\mathbf{z})$` | ピー ゼット | 分布 | — | 事前分布 `$= \mathcal{N}(0,I)$` |
-| `$\mathbb{E}_{q_\phi}[\cdot]$` | 期待値（キュー下） | スカラー | `$\mathbb{R}$` | `$q_\phi$` 分布下での平均 |
-| `$D_{\mathrm{KL}}(q\|p)$` | KL ダイバージェンス | スカラー | `$\mathbb{R}^{\geq 0}$` | 分布間のズレ（非対称） |
+| $\mathcal{L}_{\text{ELBO}}$ | エル・エルボ | スカラー | $\mathbb{R}$ | Evidence Lower Bound（証拠下界） |
+| $\theta$ | シータ | パラメータ | — | デコーダのパラメータ |
+| $\phi$ | ファイ | パラメータ | — | エンコーダのパラメータ |
+| $\mathbf{x}$ | ボールド エックス | ベクトル | $\mathbb{R}^d$ | 観測データ（画像・テキスト等） |
+| $\mathbf{z}$ | ボールド ゼット | ベクトル | $\mathbb{R}^k$ | 潜在変数（隠れた表現） |
+| $q_\phi(\mathbf{z}\mid\mathbf{x})$ | キュー ファイ | 分布 | — | 近似事後分布（エンコーダ出力） |
+| $p_\theta(\mathbf{x}\mid\mathbf{z})$ | ピー シータ | 分布 | — | 尤度（デコーダ出力） |
+| $p(\mathbf{z})$ | ピー ゼット | 分布 | — | 事前分布 $= \mathcal{N}(0,I)$ |
+| $\mathbb{E}_{q_\phi}[\cdot]$ | 期待値（キュー下） | スカラー | $\mathbb{R}$ | $q_\phi$ 分布下での平均 |
+| $D_{\mathrm{KL}}(q\|p)$ | KL ダイバージェンス | スカラー | $\mathbb{R}^{\geq 0}$ | 分布間のズレ（非対称） |
 
 **Step 2: 式の構造 — 1行翻訳**
 
-```math
+$$
 \underbrace{\mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})}\!\left[\log p_\theta(\mathbf{x}|\mathbf{z})\right]}_{\text{再構成項（大きいほどよい）}}
 -
 \underbrace{D_{\mathrm{KL}}\!\left(q_\phi(\mathbf{z}|\mathbf{x}) \,\|\, p(\mathbf{z})\right)}_{\text{正則化項（小さいほどよい）}}
-```
+$$
 
-「エンコーダ `$q_\phi$` が推定した潜在変数 `$\mathbf{z}$` からデータを再現する対数確率の期待値（再構成項）から、エンコーダ分布と事前分布のズレ（正則化項）を引いたもの」。最大化することで、データをよく再現しつつ潜在空間が構造を持つモデルを学習する。
+「エンコーダ $q_\phi$ が推定した潜在変数 $\mathbf{z}$ からデータを再現する対数確率の期待値（再構成項）から、エンコーダ分布と事前分布のズレ（正則化項）を引いたもの」。最大化することで、データをよく再現しつつ潜在空間が構造を持つモデルを学習する。
 
 **Step 3: なぜこれが「下界」なのか**
 
-```math
+$$
 \log p_\theta(\mathbf{x}) \;\geq\; \mathcal{L}_{\text{ELBO}}(\theta,\phi;\mathbf{x})
-```
+$$
 
-左辺 `$\log p_\theta(\mathbf{x}) = \log \int p_\theta(\mathbf{x},\mathbf{z})\,d\mathbf{z}$` は積分が解析的に解けず計算不能だ。右辺の ELBO は計算可能。だから ELBO を最大化することが、計算不能な「真の目標」への代理になる — これが変分推論の核心だ。証明は第9回で行う。
+左辺 $\log p_\theta(\mathbf{x}) = \log \int p_\theta(\mathbf{x},\mathbf{z})\,d\mathbf{z}$ は積分が解析的に解けず計算不能だ。右辺の ELBO は計算可能。だから ELBO を最大化することが、計算不能な「真の目標」への代理になる — これが変分推論の核心だ。証明は第9回で行う。
 
-> **Note:** ここで確認してほしい: この式の記号は全て3.1〜3.8で学んだものだ。`$\mathbb{E}$`（期待値, 3.3）、`$D_{\mathrm{KL}}$`（KL, 3.3）、`$q_\phi, p_\theta, p$`（確率記法, 3.8）、`$\mathbf{x},\mathbf{z}\in\mathbb{R}^d$`（集合, 3.4）、`$\theta,\phi$`（ギリシャ文字, 3.1）。第9回まで「この記号はあの節で習った」と指差せる状態が完成した。
+> **Note:** ここで確認してほしい: この式の記号は全て3.1〜3.8で学んだものだ。$\mathbb{E}$（期待値, 3.3）、$D_{\mathrm{KL}}$（KL, 3.3）、$q_\phi, p_\theta, p$（確率記法, 3.8）、$\mathbf{x},\mathbf{z}\in\mathbb{R}^d$（集合, 3.4）、$\theta,\phi$（ギリシャ文字, 3.1）。第9回まで「この記号はあの節で習った」と指差せる状態が完成した。
 
 ### 🎯 Quick Check — Zone 4
 
 数式記法の理解度を確認しましょう:
 
-1. **`$\nabla_\theta \mathcal{L}(\theta)$` を声に出して読み、意味を説明せよ**
+1. **$\nabla_\theta \mathcal{L}(\theta)$ を声に出して読み、意味を説明せよ**
    <details><summary>解答</summary>
    「ナブラ シータ エル シータ」= パラメータθに関する損失関数Lの勾配
    </details>
 
-2. **Attentionの式 `$\text{Attention}(Q,K,V) = \text{softmax}(QK^\top/\sqrt{d_k})V$` で、`$\sqrt{d_k}$` で割る理由は？**
+2. **Attentionの式 $\text{Attention}(Q,K,V) = \text{softmax}(QK^\top/\sqrt{d_k})V$ で、$\sqrt{d_k}$ で割る理由は？**
    <details><summary>解答</summary>
    内積の値が次元数dₖに応じて増大すると、Softmaxが極端に飽和して勾配消失するため、スケーリングで安定化する
    </details>
@@ -1565,13 +1565,13 @@ Boss Battle で Attention を読んだ。同じプロトコルを使って、深
 
 ### チェックポイント（Z4）
 
-- `$\forall, \exists, \Rightarrow, \Leftrightarrow$` を文章として読める
-- 写像 `$f: X \to Y$` を『入力空間→出力空間』として解釈できる
-- 期待値 `$\mathbb{E}$` と確率 `$P(\cdot)$` の役割を区別できる
+- $\forall, \exists, \Rightarrow, \Leftrightarrow$ を文章として読める
+- 写像 $f: X \to Y$ を『入力空間→出力空間』として解釈できる
+- 期待値 $\mathbb{E}$ と確率 $P(\cdot)$ の役割を区別できる
 - Attention式を『記号の辞書→積→softmax→加重和』に分解できる
-- `$D_{\mathrm{KL}}(p\|q)=H(p,q)-H(p)$` を「何が定数か」まで含めて説明できる
-- Softmaxの「定数シフト不変性」`$\text{softmax}(z)=\text{softmax}(z+c\mathbf{1})$` を証明できる
-- ELBO 式で `$\theta$` と `$\phi$` がそれぞれ何のパラメータか説明できる
+- $D_{\mathrm{KL}}(p\|q)=H(p,q)-H(p)$ を「何が定数か」まで含めて説明できる
+- Softmaxの「定数シフト不変性」$\text{softmax}(z)=\text{softmax}(z+c\mathbf{1})$ を証明できる
+- ELBO 式で $\theta$ と $\phi$ がそれぞれ何のパラメータか説明できる
 ## 参考文献
 
 ### 主要論文

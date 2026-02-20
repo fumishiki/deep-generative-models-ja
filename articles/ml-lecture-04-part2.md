@@ -36,11 +36,11 @@ keywords: ["確率分布実装", "MLE実装", "ベイズ推論", "SciPy", "統�
 
 **Gaussian: 最も重要な分布**
 
-`$X \sim \mathcal{N}(\mu, \sigma^2)$` のとき:
+$X \sim \mathcal{N}(\mu, \sigma^2)$ のとき:
 
-```math
+$$
 f(x; \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\!\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
-```
+$$
 
 - shape: `x` は `(N,)` スカラー列、`mu` と `sigma` はスカラー
 - `sigma` の符号: 分母は `sigma`（標準偏差）、`sigma^2` は分散。混同しやすい
@@ -71,40 +71,40 @@ print(f"ll(MLE)={ll_mle:.2f} > ll(perturbed)={ll_perturbed:.2f}")  # True
 
 **Bernoulli → Categorical: 離散分布の系譜**
 
-```math
+$$
 P(X=k \mid \mathbf{p}) = p_k, \quad k \in \{1,\ldots,K\},\quad \sum_k p_k = 1
-```
+$$
 
-Bernoulli は `$K=2$` の特殊ケース。Softmax が Categorical の出力層になる理由: `$\mathbf{p} = \text{softmax}(\mathbf{z})$` とすれば `$\sum_k p_k = 1$` が自動的に満たされる。
+Bernoulli は $K=2$ の特殊ケース。Softmax が Categorical の出力層になる理由: $\mathbf{p} = \text{softmax}(\mathbf{z})$ とすれば $\sum_k p_k = 1$ が自動的に満たされる。
 
-MLE: `$N$` 個の観測 `$x^{(1)},\ldots,x^{(N)}$` から:
+MLE: $N$ 個の観測 $x^{(1)},\ldots,x^{(N)}$ から:
 
-```math
+$$
 \hat{p}_k = \frac{\#\{i : x^{(i)} = k\}}{N}
-```
+$$
 
-カウントを `$N$` で割るだけ。交差エントロピー損失 `$-\sum_k y_k \log p_k$` の最小化 = Categorical MLE だ。
+カウントを $N$ で割るだけ。交差エントロピー損失 $-\sum_k y_k \log p_k$ の最小化 = Categorical MLE だ。
 
 **大数の法則 (LLN) と中心極限定理 (CLT) — 数値検証**
 
 理論的に保証されているが、具体的にどう収束するか数値で確認する。
 
-LLN: `$\bar{X}_N \xrightarrow{P} \mu$`（確率収束）
+LLN: $\bar{X}_N \xrightarrow{P} \mu$（確率収束）
 
-```math
+$$
 P(|\bar{X}_N - \mu| > \epsilon) \leq \frac{\sigma^2}{N \epsilon^2}
-```
+$$
 
-CLT: `$\sqrt{N}(\bar{X}_N - \mu) \xrightarrow{d} \mathcal{N}(0, \sigma^2)$`（分布収束）
+CLT: $\sqrt{N}(\bar{X}_N - \mu) \xrightarrow{d} \mathcal{N}(0, \sigma^2)$（分布収束）
 
-```math
+$$
 Z_N = \frac{\bar{X}_N - \mu}{\sigma/\sqrt{N}} \xrightarrow{d} \mathcal{N}(0, 1)
-```
+$$
 
 記号 ↔ 変数対応:
-- `$\bar{X}_N = \frac{1}{N}\sum_{i=1}^N X_i$` ↔ `X.mean(axis=1)` shape `(n_trials,)`
-- `$Z_N$`（標準化標本平均）↔ `Z_N: (n_trials,)` → `N(0,1)` に収束
-- `$\text{KS}$`（Kolmogorov-Smirnov検定量）↔ CLT収束の定量的評価
+- $\bar{X}_N = \frac{1}{N}\sum_{i=1}^N X_i$ ↔ `X.mean(axis=1)` shape `(n_trials,)`
+- $Z_N$（標準化標本平均）↔ `Z_N: (n_trials,)` → `N(0,1)` に収束
+- $\text{KS}$（Kolmogorov-Smirnov検定量）↔ CLT収束の定量的評価
 
 ```python
 import numpy as np
@@ -136,16 +136,16 @@ for N in [5, 20, 100, 500]:
 # N=500: KS p-value 大きい (正規分布に近い -> CLT収束)
 ```
 
-**解釈**: Exponential分布は右裾が重いが、N=500で標本平均の分布はほぼ正規分布に収束する。LLN誤差はNが増えるにつれ `$O(1/\sqrt{N})$` で減少 — Chebyshev不等式の `$O(1/N)$` より速い（期待値の収束速度）。
+**解釈**: Exponential分布は右裾が重いが、N=500で標本平均の分布はほぼ正規分布に収束する。LLN誤差はNが増えるにつれ $O(1/\sqrt{N})$ で減少 — Chebyshev不等式の $O(1/N)$ より速い（期待値の収束速度）。
 
 **Softmax と Categorical の完全実装**:
 
-`$p_k = \frac{\exp(z_k)}{\sum_j \exp(z_j)}$`（Softmax = Categorical の自然パラメータ `$\boldsymbol{\eta}$` から期待値パラメータ `$\boldsymbol{\pi}$` への変換）
+$p_k = \frac{\exp(z_k)}{\sum_j \exp(z_j)}$（Softmax = Categorical の自然パラメータ $\boldsymbol{\eta}$ から期待値パラメータ $\boldsymbol{\pi}$ への変換）
 
 記号 ↔ 変数対応:
-- `$\mathbf{z}$`（logit）↔ `z: (K,)`
-- `$\boldsymbol{\pi} = \text{softmax}(\mathbf{z})$` ↔ `pi: (K,)`, `sum=1`
-- `$\mathcal{H}(\boldsymbol{\pi}) = -\sum_k \pi_k \log \pi_k$`（エントロピー）↔ `H: float`
+- $\mathbf{z}$（logit）↔ `z: (K,)`
+- $\boldsymbol{\pi} = \text{softmax}(\mathbf{z})$ ↔ `pi: (K,)`, `sum=1`
+- $\mathcal{H}(\boldsymbol{\pi}) = -\sum_k \pi_k \log \pi_k$（エントロピー）↔ `H: float`
 
 ```python
 import numpy as np
@@ -200,59 +200,59 @@ for N in [10, 100, 1000, 10000]:
 
 **定義**:
 
-```math
+$$
 \mathcal{N}(\mathbf{x} \mid \boldsymbol{\mu}, \boldsymbol{\Sigma}) =
 \frac{1}{(2\pi)^{d/2} |\boldsymbol{\Sigma}|^{1/2}}
 \exp\!\left(-\frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})\right)
-```
+$$
 
 - shape: `x` は `(d,)`, `mu` は `(d,)`, `Sigma` は `(d,d)` 正定値対称行列
 - Mahalanobis距離 `$D_M^2 = (\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})`は「楕円体の距離」
-- `$\boldsymbol{\Sigma}^{-1}$` の直接計算は避ける: `np.linalg.solve(Sigma, x-mu)` を使う
+- $\boldsymbol{\Sigma}^{-1}$ の直接計算は避ける: `np.linalg.solve(Sigma, x-mu)` を使う
 
 **条件付き分布** (Schur complement 公式):
 
-変数を `$[\mathbf{x}_1, \mathbf{x}_2]$` に分割すると:
+変数を $[\mathbf{x}_1, \mathbf{x}_2]$ に分割すると:
 
-```math
+$$
 p(\mathbf{x}_1 \mid \mathbf{x}_2) = \mathcal{N}(\boldsymbol{\mu}_{1|2},\, \boldsymbol{\Sigma}_{1|2})
-```
+$$
 
-```math
+$$
 \boldsymbol{\mu}_{1|2} = \boldsymbol{\mu}_1 + \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}(\mathbf{x}_2 - \boldsymbol{\mu}_2)
-```
+$$
 
-```math
+$$
 \boldsymbol{\Sigma}_{1|2} = \boldsymbol{\Sigma}_{11} - \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21}
-```
+$$
 
-`$\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}$` は「Kalman gain」の形。`$\mathbf{x}_2$` を観測することで、`$\mathbf{x}_1$` の不確実性 `$\boldsymbol{\Sigma}_{1|2}$` は元の `$\boldsymbol{\Sigma}_{11}$` より必ず小さくなる（半正定値の意味で）。
+$\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}$ は「Kalman gain」の形。$\mathbf{x}_2$ を観測することで、$\mathbf{x}_1$ の不確実性 $\boldsymbol{\Sigma}_{1|2}$ は元の $\boldsymbol{\Sigma}_{11}$ より必ず小さくなる（半正定値の意味で）。
 
 **MLE**: 全微分してゼロ点を解くと:
 
-```math
+$$
 \hat{\boldsymbol{\mu}} = \frac{1}{N}\sum_{i=1}^N \mathbf{x}^{(i)}, \quad
 \hat{\boldsymbol{\Sigma}} = \frac{1}{N}\sum_{i=1}^N (\mathbf{x}^{(i)} - \hat{\boldsymbol{\mu}})(\mathbf{x}^{(i)} - \hat{\boldsymbol{\mu}})^\top
-```
+$$
 
 サンプル平均とサンプル共分散行列がそのままMLE解だ（1次元と同じ構造）。
 
 
 **Cholesky分解による安定実装**:
 
-`$\boldsymbol{\Sigma}$` が正定値 → `$\boldsymbol{\Sigma} = LL^\top$` の Cholesky 分解が存在する。
+$\boldsymbol{\Sigma}$ が正定値 → $\boldsymbol{\Sigma} = LL^\top$ の Cholesky 分解が存在する。
 
-```math
+$$
 \log \mathcal{N}(\mathbf{x} \mid \boldsymbol{\mu}, \boldsymbol{\Sigma}) =
 -\frac{d}{2}\log 2\pi - \frac{1}{2}\log|\boldsymbol{\Sigma}|
 - \frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu})
-```
+$$
 
 記号 ↔ 変数対応:
-- `$\boldsymbol{\mu}$` ↔ `mu: (d,)`
-- `$\boldsymbol{\Sigma}$` ↔ `Sigma: (d,d)` 正定値対称
-- Cholesky因子 `$L$`（`$\boldsymbol{\Sigma}=LL^\top$`）↔ `L = np.linalg.cholesky(Sigma)`
-- Mahalanobis二乗距離 `$\|L^{-1}(\mathbf{x}-\boldsymbol{\mu})\|^2$` ↔ `v @ v`
+- $\boldsymbol{\mu}$ ↔ `mu: (d,)`
+- $\boldsymbol{\Sigma}$ ↔ `Sigma: (d,d)` 正定値対称
+- Cholesky因子 $L$（$\boldsymbol{\Sigma}=LL^\top$）↔ `L = np.linalg.cholesky(Sigma)`
+- Mahalanobis二乗距離 $\|L^{-1}(\mathbf{x}-\boldsymbol{\mu})\|^2$ ↔ `v @ v`
 
 shape: `x` `(d,)`, `mu` `(d,)`, `Sigma` `(d,d)`, `v = L^{-1}(x-mu)` `(d,)`
 
@@ -292,19 +292,19 @@ assert abs(ours - ref) < 1e-10
 print(f"log p(x0) = {ours:.6f}  [scipy: {ref:.6f}]  checked")
 ```
 
-**落とし穴**: `$N < d$` では `$\hat{\boldsymbol{\Sigma}}$` が半正定値になりCholesky分解が失敗する。`$\hat{\boldsymbol{\Sigma}} + 10^{-6}I$` の正則化で回避。
+**落とし穴**: $N < d$ では $\hat{\boldsymbol{\Sigma}}$ が半正定値になりCholesky分解が失敗する。$\hat{\boldsymbol{\Sigma}} + 10^{-6}I$ の正則化で回避。
 
 **条件付き分布**:
 
-```math
+$$
 \boldsymbol{\mu}_{1|2} = \boldsymbol{\mu}_1 + \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}(\mathbf{x}_2 - \boldsymbol{\mu}_2)
-```
+$$
 
-```math
+$$
 \boldsymbol{\Sigma}_{1|2} = \boldsymbol{\Sigma}_{11} - \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21}
-```
+$$
 
-`$\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}$` は Kalman gain と同型。`$\mathbf{x}_2$` を観測すると分散は必ず縮む: `$\boldsymbol{\Sigma}_{1|2} \preceq \boldsymbol{\Sigma}_{11}$`（半正定値順序）。
+$\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}$ は Kalman gain と同型。$\mathbf{x}_2$ を観測すると分散は必ず縮む: $\boldsymbol{\Sigma}_{1|2} \preceq \boldsymbol{\Sigma}_{11}$（半正定値順序）。
 
 ```python
 def mvn_conditional(mu, Sigma, obs_idx, obs_val):
@@ -331,31 +331,31 @@ Gaussian, Bernoulli, Poisson, Gamma... 一見バラバラに見える分布が�
 
 **標準形**:
 
-```math
+$$
 p(x \mid \boldsymbol{\eta}) = h(x) \exp\!\left(\boldsymbol{\eta}^\top T(x) - A(\boldsymbol{\eta})\right)
-```
+$$
 
-- `$\boldsymbol{\eta}$`: 自然パラメータ（natural parameter）
-- `$T(x)$`: 十分統計量（sufficient statistic）— データの「要約」
-- `$A(\boldsymbol{\eta})$`: 対数分配関数（log partition function）— 正規化定数
+- $\boldsymbol{\eta}$: 自然パラメータ（natural parameter）
+- $T(x)$: 十分統計量（sufficient statistic）— データの「要約」
+- $A(\boldsymbol{\eta})$: 対数分配関数（log partition function）— 正規化定数
 
-**Gaussian の場合** (`$d=1$`):
+**Gaussian の場合** ($d=1$):
 
-```math
+$$
 \boldsymbol{\eta} = \begin{pmatrix}\mu/\sigma^2 \\ -1/(2\sigma^2)\end{pmatrix},\quad
 T(x) = \begin{pmatrix}x \\ x^2\end{pmatrix},\quad
 A(\boldsymbol{\eta}) = -\frac{\eta_1^2}{4\eta_2} + \frac{1}{2}\log\frac{\pi}{-\eta_2}
-```
+$$
 
 **MLEの美しさ**: 指数型分布族のMLEは「理論的期待値 = 経験的期待値」という条件:
 
-```math
+$$
 \mathbb{E}_{p(x|\hat{\boldsymbol{\eta}})}[T(x)] = \frac{1}{N}\sum_{i=1}^N T(x^{(i)})
-```
+$$
 
-Gaussianなら `$T(x) = (x, x^2)$` なので、平均と二乗平均が一致する条件 = サンプル平均・分散がMLE。
+Gaussianなら $T(x) = (x, x^2)$ なので、平均と二乗平均が一致する条件 = サンプル平均・分散がMLE。
 
-**共役事前分布**: 事前分布を `$p(\boldsymbol{\eta}) = h(\boldsymbol{\eta})\exp(\boldsymbol{\chi}^\top \boldsymbol{\eta} - \nu A(\boldsymbol{\eta}))$` と書くと、事後分布が同じ族に属する（共役性）。Gaussian-Gaussian 共役、Beta-Bernoulli 共役 はこの特殊ケース。
+**共役事前分布**: 事前分布を $p(\boldsymbol{\eta}) = h(\boldsymbol{\eta})\exp(\boldsymbol{\chi}^\top \boldsymbol{\eta} - \nu A(\boldsymbol{\eta}))$ と書くと、事後分布が同じ族に属する（共役性）。Gaussian-Gaussian 共役、Beta-Bernoulli 共役 はこの特殊ケース。
 
 
 **指数型分布族の統一実装**:
@@ -363,10 +363,10 @@ Gaussianなら `$T(x) = (x, x^2)$` なので、平均と二乗平均が一致す
 抽象的に見えるが、Gaussian/Bernoulli/Poissonが同じクラスで書けることを確認する。
 
 記号 ↔ 変数対応:
-- `$\boldsymbol{\eta}$`（自然パラメータ）↔ `eta: ndarray`
-- `$T(x)$`（十分統計量）↔ `suff_stat(x)`
-- `$A(\boldsymbol{\eta})$`（対数分配関数）↔ `log_partition(eta)`
-- MLE条件: `$\mathbb{E}[T(x)] = \bar{T}$` ↔ `eta_mle` を数値最適化
+- $\boldsymbol{\eta}$（自然パラメータ）↔ `eta: ndarray`
+- $T(x)$（十分統計量）↔ `suff_stat(x)`
+- $A(\boldsymbol{\eta})$（対数分配関数）↔ `log_partition(eta)`
+- MLE条件: $\mathbb{E}[T(x)] = \bar{T}$ ↔ `eta_mle` を数値最適化
 
 shape: `eta` `(k,)` where `k` は十分統計量の次元（Gaussian: k=2, Bernoulli: k=1）
 
@@ -428,41 +428,41 @@ assert np.allclose(T_bar, E_T_hat, atol=0.1), f"MLE condition violated: {T_bar} 
 print(f"E[T(x)] = {E_T_hat.round(3)}, empirical = {T_bar.round(3)}  checked")
 ```
 
-**なぜ対数分配関数 `$A(\boldsymbol{\eta})$` が重要か**: `$A$` の一次微分が期待値、二次微分が共分散を与える。
+**なぜ対数分配関数 $A(\boldsymbol{\eta})$ が重要か**: $A$ の一次微分が期待値、二次微分が共分散を与える。
 
-```math
+$$
 \nabla_{\boldsymbol{\eta}} A(\boldsymbol{\eta}) = \mathbb{E}_{p(x|\boldsymbol{\eta})}[T(x)]
-```
+$$
 
-```math
+$$
 \nabla^2_{\boldsymbol{\eta}} A(\boldsymbol{\eta}) = \text{Cov}_{p}[T(x), T(x)] \succeq 0
-```
+$$
 
-`$A$` が凸 → 負の対数尤度も凸 → MLEは大域的最適解。これが指数型分布族の「学習しやすさ」の本質だ。
+$A$ が凸 → 負の対数尤度も凸 → MLEは大域的最適解。これが指数型分布族の「学習しやすさ」の本質だ。
 
 **自然勾配法 (Natural Gradient) へのプレビュー**:
 
-指数型分布族のパラメータ空間は「Riemannian多様体」だ。Fisher情報行列 `$\mathbf{I}(\boldsymbol{\eta})$` がその空間の計量を与える。
+指数型分布族のパラメータ空間は「Riemannian多様体」だ。Fisher情報行列 $\mathbf{I}(\boldsymbol{\eta})$ がその空間の計量を与える。
 
-通常の勾配降下: `$\boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \nabla_{\boldsymbol{\eta}} \mathcal{L}$`
+通常の勾配降下: $\boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \nabla_{\boldsymbol{\eta}} \mathcal{L}$
 
-自然勾配降下: `$\boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \mathbf{I}^{-1}(\boldsymbol{\eta}_t) \nabla_{\boldsymbol{\eta}} \mathcal{L}$`
+自然勾配降下: $\boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \mathbf{I}^{-1}(\boldsymbol{\eta}_t) \nabla_{\boldsymbol{\eta}} \mathcal{L}$
 
 自然勾配は「パラメータ空間の距離」ではなく「分布空間のKL距離」でステップを制御する。同じ分布の変化量に対応するステップが、パラメータの値に依存しない — これがAdamなどの適応的最適化の理論的基盤だ（第12回で詳説）。
 
-指数型分布族では自然勾配に閉形式がある: `$\mathbf{I}^{-1}(\boldsymbol{\eta}) \nabla_{\boldsymbol{\eta}} \mathcal{L} = \nabla_{\boldsymbol{\mu}} \mathcal{L}$`（期待値パラメータ空間の通常勾配と等価）。
+指数型分布族では自然勾配に閉形式がある: $\mathbf{I}^{-1}(\boldsymbol{\eta}) \nabla_{\boldsymbol{\eta}} \mathcal{L} = \nabla_{\boldsymbol{\mu}} \mathcal{L}$（期待値パラメータ空間の通常勾配と等価）。
 
 ### 5.4 実装演習: ガウス混合モデル（GMM）のMLE
 
 第8回（EM算法）への橋渡しとして、2成分GMMのフィッティングを実装する。ここではEM算法の前段階として、単一ガウスのMLEを拡張する形で問題の困難さを体感する。
 
-```math
+$$
 p(x\\mid \\theta)=\\pi\\,\\mathcal{N}(x\\mid \\mu_1,\\sigma_1^2)+(1-\\pi)\\,\\mathcal{N}(x\\mid \\mu_2,\\sigma_2^2)
 
 \\ell(\\theta)=\\sum_{i=1}^{N}\\log p(x_i\\mid\\theta)
 
 \\mathcal{N}(x\\mid\\mu,\\sigma^2)=\\frac{1}{\\sqrt{2\\pi}\\,\\sigma}\\exp\\left(-\\frac{(x-\\mu)^2}{2\\sigma^2}\\right)
-```
+$$
 
 ```python
 import numpy as np
@@ -502,17 +502,17 @@ print(f"gap: {ll_true - ll_single:.2f}")
 print("note: GMM の MLE は閉形式にならない（第8回の EM につながる）")
 ```
 
-**なぜGMMのMLEは閉じた形で解けないのか**: 対数尤度の中に**和の対数** `$\log[\pi \mathcal{N}(x \mid \mu_1, \sigma_1^2) + (1-\pi)\mathcal{N}(x \mid \mu_2, \sigma_2^2)]$` が現れる。対数と和の順序を入れ替えられないため、微分しても各パラメータが互いに絡み合う。この困難が第8回のEM算法の動機だ。
+**なぜGMMのMLEは閉じた形で解けないのか**: 対数尤度の中に**和の対数** $\log[\pi \mathcal{N}(x \mid \mu_1, \sigma_1^2) + (1-\pi)\mathcal{N}(x \mid \mu_2, \sigma_2^2)]$ が現れる。対数と和の順序を入れ替えられないため、微分しても各パラメータが互いに絡み合う。この困難が第8回のEM算法の動機だ。
 
 ### 5.5a 実装演習: ベイズ推論のグリッド近似
 
-```math
+$$
 \\theta\\sim\\mathrm{Beta}(a,b),\\quad x_i\\sim\\mathrm{Bernoulli}(\\theta)
 
 p(\\theta\\mid\\mathbf{x})\\propto \\theta^{a+h-1}(1-\\theta)^{b+t-1}
 
 \\theta\\mid\\mathbf{x}\\sim\\mathrm{Beta}(a+h,b+t)
-```
+$$
 
 ```python
 import numpy as np
@@ -550,7 +550,7 @@ print("note: 高次元だとグリッドは破綻（次元の呪い）")
 
 > **Note:** **実装の教訓**: データが増えるほど、事前分布の影響は薄れ、ベイズ推定はMLEに近づく。これは事後分布が「尤度に支配される」ため。逆に、データが少ないときは事前分布が結果を大きく左右する。
 
-この現象を「事後一致性（posterior consistency）」と呼ぶ。`$N \to \infty$` で事後分布は真のパラメータに集中する — 大数の法則のベイズ版だ。
+この現象を「事後一致性（posterior consistency）」と呼ぶ。$N \to \infty$ で事後分布は真のパラメータに集中する — 大数の法則のベイズ版だ。
 
 ### 5.5b 実装演習: 共役事前分布の解析的更新
 
@@ -558,20 +558,20 @@ print("note: 高次元だとグリッドは破綻（次元の呪い）")
 
 **Gaussian-Gaussian 共役（既知分散、未知平均）**:
 
-事前: `$\theta \sim \mathcal{N}(\mu_0, \tau_0^2)$`、尤度: `$X_i \mid \theta \sim \mathcal{N}(\theta, \sigma^2)$`
+事前: $\theta \sim \mathcal{N}(\mu_0, \tau_0^2)$、尤度: $X_i \mid \theta \sim \mathcal{N}(\theta, \sigma^2)$
 
-```math
+$$
 \frac{1}{\tau_N^2} = \frac{1}{\tau_0^2} + \frac{N}{\sigma^2}, \quad
 \mu_N = \tau_N^2 \left(\frac{\mu_0}{\tau_0^2} + \frac{N \bar{x}}{\sigma^2}\right)
-```
+$$
 
-精度（分散の逆数）が加法的に更新される。`$N \to \infty$` で `$\mu_N \to \bar{x}$`（MLE）、`$\tau_N^2 \to 0$`。
+精度（分散の逆数）が加法的に更新される。$N \to \infty$ で $\mu_N \to \bar{x}$（MLE）、$\tau_N^2 \to 0$。
 
 記号 ↔ 変数対応:
-- `$\mu_0, \tau_0^2$` ↔ `mu0, tau0_sq`
-- `$\sigma^2$` ↔ `sigma_sq`（既知の尤度分散）
-- `$\bar{x}, N$` ↔ `x_bar, N`
-- `$\mu_N, \tau_N^2$` ↔ `mu_N, tau_N_sq`（事後パラメータ）
+- $\mu_0, \tau_0^2$ ↔ `mu0, tau0_sq`
+- $\sigma^2$ ↔ `sigma_sq`（既知の尤度分散）
+- $\bar{x}, N$ ↔ `x_bar, N`
+- $\mu_N, \tau_N^2$ ↔ `mu_N, tau_N_sq`（事後パラメータ）
 
 ```python
 import numpy as np
@@ -598,34 +598,34 @@ for N in [1, 5, 20, 100]:
 
 | 推定量 | 式 | 特徴 |
 |:-------|:---|:-----|
-| MLE | `$\bar{x}$` | バイアスなし、小データ不安定 |
-| MAP | `$\mu_N$` | 事前+尤度、正則化と等価 |
-| 事後平均 | `$\mu_N$`（Gaussian事後）| MAP=事後平均 |
+| MLE | $\bar{x}$ | バイアスなし、小データ不安定 |
+| MAP | $\mu_N$ | 事前+尤度、正則化と等価 |
+| 事後平均 | $\mu_N$（Gaussian事後）| MAP=事後平均 |
 
 ### 5.5a KLダイバージェンス — 分布間の「距離」実装
 
 KLダイバージェンスは確率論の全ての武器が集結する場所だ。VAEのELBO、diffusion modelの目的関数、情報理論の基礎 — 全てここに通じる。
 
-```math
+$$
 D_{\mathrm{KL}}(p \| q) = \int p(x) \log \frac{p(x)}{q(x)} dx = \mathbb{E}_{p}\left[\log \frac{p(X)}{q(X)}\right]
-```
+$$
 
 **基本性質**:
-- `$D_{\mathrm{KL}}(p \| q) \geq 0$`（Gibbs不等式、Jensen不等式から）
-- `$D_{\mathrm{KL}}(p \| q) = 0 \iff p = q$`（ほぼ至る所で）
-- 非対称: `$D_{\mathrm{KL}}(p \| q) \neq D_{\mathrm{KL}}(q \| p)$`（距離公理を満たさない）
+- $D_{\mathrm{KL}}(p \| q) \geq 0$（Gibbs不等式、Jensen不等式から）
+- $D_{\mathrm{KL}}(p \| q) = 0 \iff p = q$（ほぼ至る所で）
+- 非対称: $D_{\mathrm{KL}}(p \| q) \neq D_{\mathrm{KL}}(q \| p)$（距離公理を満たさない）
 
 **2つのGaussian間のKL（閉形式）**:
 
-```math
+$$
 D_{\mathrm{KL}}(\mathcal{N}(\mu_1, \sigma_1^2) \| \mathcal{N}(\mu_2, \sigma_2^2)) =
 \log\frac{\sigma_2}{\sigma_1} + \frac{\sigma_1^2 + (\mu_1-\mu_2)^2}{2\sigma_2^2} - \frac{1}{2}
-```
+$$
 
 記号 ↔ 変数対応:
-- `$\mu_1, \sigma_1^2$` ↔ `mu1, var1` (分布 `$p$`)
-- `$\mu_2, \sigma_2^2$` ↔ `mu2, var2` (分布 `$q$`)
-- `$D_{\mathrm{KL}}$` ↔ `kl: float` (非負スカラー)
+- $\mu_1, \sigma_1^2$ ↔ `mu1, var1` (分布 $p$)
+- $\mu_2, \sigma_2^2$ ↔ `mu2, var2` (分布 $q$)
+- $D_{\mathrm{KL}}$ ↔ `kl: float` (非負スカラー)
 
 shape: scalar inputs → scalar output
 
@@ -662,35 +662,35 @@ print(f"KL exact={kl_exact:.6f},  MC={kl_mc:.6f}  diff={abs(kl_exact-kl_mc):.6f}
 assert abs(kl_exact - kl_mc) < 0.01, "KL MC vs exact mismatch"
 ```
 
-**VAEとの接続**: VAEのELBOには `$D_{\mathrm{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$` が登場する。`$p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, \mathbf{I})$`、`$q_\phi = \mathcal{N}(\boldsymbol{\mu}, \text{diag}(\boldsymbol{\sigma}^2))$` なら、次元独立なGaussian KLの閉形式が使える:
+**VAEとの接続**: VAEのELBOには $D_{\mathrm{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$ が登場する。$p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, \mathbf{I})$、$q_\phi = \mathcal{N}(\boldsymbol{\mu}, \text{diag}(\boldsymbol{\sigma}^2))$ なら、次元独立なGaussian KLの閉形式が使える:
 
-```math
+$$
 D_{\mathrm{KL}}(q \| p) = \frac{1}{2} \sum_{j=1}^d (\sigma_j^2 + \mu_j^2 - 1 - \log \sigma_j^2)
-```
+$$
 
 第8回（VAE）でこの式が損失関数に直接現れる。
 
 ### 5.5c Fisher情報量 — Cramér-Rao下界の実装検証
 
-Fisher情報量 `$I(\theta) = \mathbb{E}\left[\left(\frac{\partial \log p(x;\theta)}{\partial \theta}\right)^2\right]$` は推定の難しさを定量化する。
+Fisher情報量 $I(\theta) = \mathbb{E}\left[\left(\frac{\partial \log p(x;\theta)}{\partial \theta}\right)^2\right]$ は推定の難しさを定量化する。
 
 等価な表現（対数尤度の曲率）:
 
-```math
+$$
 I(\theta) = -\mathbb{E}\left[\frac{\partial^2 \log p(x; \theta)}{\partial \theta^2}\right]
-```
+$$
 
-**Cramér-Rao下界**: 任意の不偏推定量の分散は `$1/(n I(\theta))$` より小さくできない:
+**Cramér-Rao下界**: 任意の不偏推定量の分散は $1/(n I(\theta))$ より小さくできない:
 
-```math
+$$
 \text{Var}(\hat{\theta}) \geq \frac{1}{n \cdot I(\theta)}
-```
+$$
 
 記号 ↔ 変数対応:
-- `$\theta$` ↔ `theta: float`
-- スコア関数 `$s(x;\theta) = \partial_\theta \log p$` ↔ `score: (N,)`
-- `$I(\theta) = \mathbb{E}[s^2]$` ↔ `fisher_info: float`
-- CR下界 `$1/(nI)$` ↔ `cr_bound: float`
+- $\theta$ ↔ `theta: float`
+- スコア関数 $s(x;\theta) = \partial_\theta \log p$ ↔ `score: (N,)`
+- $I(\theta) = \mathbb{E}[s^2]$ ↔ `fisher_info: float`
+- CR下界 $1/(nI)$ ↔ `cr_bound: float`
 
 ```python
 import numpy as np
@@ -722,35 +722,35 @@ for n in [10, 50, 100, 500]:
 
 **検証**: 標本平均はCramér-Rao下界を**ぴったり達成**する（Fisher効率的推定量）。比率が全て≈1.0になる。
 
-**スコアの期待値はゼロ**: `$\mathbb{E}[s(X;\theta)] = 0$`。`$\int p(x;\theta) dx = 1$` を `$\theta$` で微分すると導ける（正規化条件の微分）。Fisher情報量はスコアの分散だ。
+**スコアの期待値はゼロ**: $\mathbb{E}[s(X;\theta)] = 0$。$\int p(x;\theta) dx = 1$ を $\theta$ で微分すると導ける（正規化条件の微分）。Fisher情報量はスコアの分散だ。
 
-```math
+$$
 \mathbb{E}[s] = \int \frac{\partial \log p}{\partial \theta} p \, dx = \frac{\partial}{\partial \theta} \int p \, dx = \frac{\partial}{\partial \theta} 1 = 0
-```
+$$
 
-**多次元Fisher情報行列 (FIM)**: `$\mathbf{I}(\boldsymbol{\theta})_{ij} = \mathbb{E}[\partial_i \log p \cdot \partial_j \log p]$`。自然勾配法 `$\tilde{\nabla}_\theta \mathcal{L} = \mathbf{I}^{-1} \nabla_\theta \mathcal{L}$` はFIMでパラメータ空間の曲率を補正し、確率多様体上の最適解に最短経路で到達する。
+**多次元Fisher情報行列 (FIM)**: $\mathbf{I}(\boldsymbol{\theta})_{ij} = \mathbb{E}[\partial_i \log p \cdot \partial_j \log p]$。自然勾配法 $\tilde{\nabla}_\theta \mathcal{L} = \mathbf{I}^{-1} \nabla_\theta \mathcal{L}$ はFIMでパラメータ空間の曲率を補正し、確率多様体上の最適解に最短経路で到達する。
 
 ### 5.6 モーメント母関数と特性関数
 
-**モーメント母関数（MGF）**: `$M_X(t) = \mathbb{E}[e^{tX}]$`
+**モーメント母関数（MGF）**: $M_X(t) = \mathbb{E}[e^{tX}]$
 
-MGFの `$k$` 次微分は `$k$` 次モーメントを与える: `$M_X^{(k)}(0) = \mathbb{E}[X^k]$`
+MGFの $k$ 次微分は $k$ 次モーメントを与える: $M_X^{(k)}(0) = \mathbb{E}[X^k]$
 
 
-MGFが存在しない分布もある（Cauchy分布など）。その場合は**特性関数** `$\varphi_X(t) = \mathbb{E}[e^{itX}]$` を使う。特性関数は常に存在し、分布を一意に決定する。CLTの証明はしばしば特性関数を用いて行われる。
+MGFが存在しない分布もある（Cauchy分布など）。その場合は**特性関数** $\varphi_X(t) = \mathbb{E}[e^{itX}]$ を使う。特性関数は常に存在し、分布を一意に決定する。CLTの証明はしばしば特性関数を用いて行われる。
 
-Gaussianの場合: `$M_X(t) = \exp(\mu t + \frac{\sigma^2 t^2}{2})$`。
+Gaussianの場合: $M_X(t) = \exp(\mu t + \frac{\sigma^2 t^2}{2})$。
 
-**独立和の性質**: `$X, Y$` が独立なら `$M_{X+Y}(t) = M_X(t) M_Y(t)$`。これがCLT証明の核心だ — サンプル和の特性関数が元の特性関数の積になり、`$N \to \infty$` で正規分布の特性関数に収束する。
+**独立和の性質**: $X, Y$ が独立なら $M_{X+Y}(t) = M_X(t) M_Y(t)$。これがCLT証明の核心だ — サンプル和の特性関数が元の特性関数の積になり、$N \to \infty$ で正規分布の特性関数に収束する。
 
-```math
+$$
 M_X(t) = \mathbb{E}[e^{tX}] = \int e^{tx} p(x) \, dx
-```
+$$
 
 記号 ↔ 変数対応:
-- `$t$` ↔ `t: float`（MGFの引数、ラプラス変数）
-- `$M_X^{(k)}(0) = \mathbb{E}[X^k]$` ↔ `np.gradient` k回 または自動微分
-- `$\varphi_X(t) = M_X(it)$`（実MGFが存在する場合）
+- $t$ ↔ `t: float`（MGFの引数、ラプラス変数）
+- $M_X^{(k)}(0) = \mathbb{E}[X^k]$ ↔ `np.gradient` k回 または自動微分
+- $\varphi_X(t) = M_X(it)$（実MGFが存在する場合）
 
 ```python
 import numpy as np
@@ -796,17 +796,17 @@ print(f"M_X*M_Y = M_{{X+Y}} : {M_XY_product:.8f} == {M_XY_sum:.8f}  checked")
 
 自己回帰モデルの「全て」はこの一式に収まる:
 
-```math
+$$
 \log p(\mathbf{x}) = \sum_{t=1}^{T} \log p(x_t \mid x_1, \ldots, x_{t-1})
-```
+$$
 
 各ステップが Categorical 分布からのサンプリング + 対数確率の加算。
 
 **記号↔変数対応**:
-- `$\mathbf{x} = (x_1,\ldots,x_T)$`: シーケンス → `seq: np.ndarray`
-- `$p(x_t \mid x_{<t})$`: 条件付き確率（モデル出力） → `logits[t]` のsoftmax
-- `$\log p(\mathbf{x})$`: シーケンス対数尤度 → `log_prob: float`
-- Perplexity: `$\exp(-\frac{1}{T}\log p(\mathbf{x}))$` → モデル評価指標
+- $\mathbf{x} = (x_1,\ldots,x_T)$: シーケンス → `seq: np.ndarray`
+- $p(x_t \mid x_{<t})$: 条件付き確率（モデル出力） → `logits[t]` のsoftmax
+- $\log p(\mathbf{x})$: シーケンス対数尤度 → `log_prob: float`
+- Perplexity: $\exp(-\frac{1}{T}\log p(\mathbf{x}))$ → モデル評価指標
 
 **shape**: `logits`: `(T, V)`, `seq`: `(T,)`, `log_prob`: scalar
 
@@ -845,23 +845,23 @@ print(f"log_prob={lp:.3f}, perplexity={ppl:.2f}")  # e.g. log_prob=-23.1, perple
 
 **落とし穴**: `logits.max(axis=-1, keepdims=True)` を引かないと、`exp` がオーバーフローする。これが `log-sum-exp` トリックの要。`softmax(x) = softmax(x - c)` が `c` に依存しないことを確認:
 
-```math
+$$
 \frac{e^{x_k - c}}{\sum_j e^{x_j - c}} = \frac{e^{x_k}}{\sum_j e^{x_j}}
-```
+$$
 
 ### 5.8 理解度チェック — Z5 完了確認
 
 <details>
 <summary>Q1: SciPyで多変量正規分布の条件付き分布を計算する際の数値安定性の注意点は？</summary>
 
-**A**: 共分散行列 `$\Sigma$` が特異に近い場合、逆行列計算が不安定になる。対策：(1) `scipy.linalg.solve` を使い直接逆行列を避ける、(2) Cholesky分解で正定値性を確認、(3) 正則化項 `$\Sigma + \epsilon I$` を追加（`$\epsilon \sim 10^{-6}$`）、(4) 条件数 `$\kappa(\Sigma)$` を確認（`$> 10^{10}$` なら危険）。
+**A**: 共分散行列 $\Sigma$ が特異に近い場合、逆行列計算が不安定になる。対策：(1) `scipy.linalg.solve` を使い直接逆行列を避ける、(2) Cholesky分解で正定値性を確認、(3) 正則化項 $\Sigma + \epsilon I$ を追加（$\epsilon \sim 10^{-6}$）、(4) 条件数 $\kappa(\Sigma)$ を確認（$> 10^{10}$ なら危険）。
 
 </details>
 
 <details>
 <summary>Q2: ベイズ推論のグリッド近似が実用的でない理由と代替手法を説明せよ。</summary>
 
-**A**: グリッド近似は次元の呪い（`$d$` 次元で `$N^d$` 点必要）。10次元で各軸100点なら `$100^{10} = 10^{20}$` 点。代替手法：(1) MCMC（Metropolis-Hastings、HMC）で事後分布からサンプリング、(2) 変分推論（ELBO最大化）で近似分布 `$q(\theta)$` を最適化、(3) Laplace近似で事後のモード周りを正規近似。
+**A**: グリッド近似は次元の呪い（$d$ 次元で $N^d$ 点必要）。10次元で各軸100点なら $100^{10} = 10^{20}$ 点。代替手法：(1) MCMC（Metropolis-Hastings、HMC）で事後分布からサンプリング、(2) 変分推論（ELBO最大化）で近似分布 $q(\theta)$ を最適化、(3) Laplace近似で事後のモード周りを正規近似。
 
 </details>
 
@@ -894,11 +894,11 @@ flowchart TD
 
 | 変換 | 数式 | 用途 |
 |:-----|:-----|:-----|
-| `$X \sim \mathcal{N}(0,1)$` → `$X^2 \sim \chi^2(1)$` | 2乗変換 | 検定統計量 |
-| `$\sum_{k=1}^n Z_k^2 \sim \chi^2(n)$` | 加法性 | 分散推定 |
-| `$\text{Bernoulli}(p) = \text{Binomial}(1, p)$` | 特殊ケース | LLM出力 |
-| `$\text{Categorical}(\boldsymbol{\pi}) = \text{Multinomial}(1, \boldsymbol{\pi})$` | 特殊ケース | トークン予測 |
-| `$X \sim \text{Poisson}(\lambda)$` として `$\lambda \to \infty$`: `$\mathcal{N}(\lambda, \lambda)$` | CLT | 正規近似 |
+| $X \sim \mathcal{N}(0,1)$ → $X^2 \sim \chi^2(1)$ | 2乗変換 | 検定統計量 |
+| $\sum_{k=1}^n Z_k^2 \sim \chi^2(n)$ | 加法性 | 分散推定 |
+| $\text{Bernoulli}(p) = \text{Binomial}(1, p)$ | 特殊ケース | LLM出力 |
+| $\text{Categorical}(\boldsymbol{\pi}) = \text{Multinomial}(1, \boldsymbol{\pi})$ | 特殊ケース | トークン予測 |
+| $X \sim \text{Poisson}(\lambda)$ として $\lambda \to \infty$: $\mathcal{N}(\lambda, \lambda)$ | CLT | 正規近似 |
 
 **第4回のトピック全カバレッジ確認**:
 
@@ -925,40 +925,40 @@ flowchart TD
 
 Kingma & Welling (2013)[^2] は確率論の全武器を一点に集約した。
 
-観測 `$\mathbf{x}$`、潜在変数 `$\mathbf{z}$`、生成モデル `$p_\theta(\mathbf{x} \mid \mathbf{z})$`。問題: 事後分布 `$p_\theta(\mathbf{z} \mid \mathbf{x})$` が intractable。
+観測 $\mathbf{x}$、潜在変数 $\mathbf{z}$、生成モデル $p_\theta(\mathbf{x} \mid \mathbf{z})$。問題: 事後分布 $p_\theta(\mathbf{z} \mid \mathbf{x})$ が intractable。
 
-**解決**: 変分分布 `$q_\phi(\mathbf{z} \mid \mathbf{x}) \approx p_\theta(\mathbf{z} \mid \mathbf{x})$` で近似し、ELBO（Evidence Lower BOund）を最大化:
+**解決**: 変分分布 $q_\phi(\mathbf{z} \mid \mathbf{x}) \approx p_\theta(\mathbf{z} \mid \mathbf{x})$ で近似し、ELBO（Evidence Lower BOund）を最大化:
 
-```math
+$$
 \log p_\theta(\mathbf{x}) \geq \mathbb{E}_{q_\phi(\mathbf{z}|\mathbf{x})}[\log p_\theta(\mathbf{x} \mid \mathbf{z})] - D_{\mathrm{KL}}(q_\phi(\mathbf{z} \mid \mathbf{x}) \| p(\mathbf{z}))
-```
+$$
 
-左辺と右辺の差は `$D_{\mathrm{KL}}(q \| p_\theta(\mathbf{z}|\mathbf{x})) \geq 0$` だから、等号はKLがゼロのとき。
+左辺と右辺の差は $D_{\mathrm{KL}}(q \| p_\theta(\mathbf{z}|\mathbf{x})) \geq 0$ だから、等号はKLがゼロのとき。
 
 **第4回との接続**:
-- 第1項 `$\mathbb{E}_{q}[\log p_\theta(\mathbf{x}|\mathbf{z})]$` = Gaussian MLE の期待値版
-- 第2項 `$D_{\mathrm{KL}}(q \| p)$` = KL divergence（情報理論、第5回以降）
-- 事前 `$p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, I)$` = 共役Gaussian の応用
+- 第1項 $\mathbb{E}_{q}[\log p_\theta(\mathbf{x}|\mathbf{z})]$ = Gaussian MLE の期待値版
+- 第2項 $D_{\mathrm{KL}}(q \| p)$ = KL divergence（情報理論、第5回以降）
+- 事前 $p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, I)$ = 共役Gaussian の応用
 
 ### 6.2 Bayesian Deep Learning — 分布としてのネットワーク
 
-ニューラルネットの重み `$\mathbf{w}$` を点推定ではなく分布として扱う。
+ニューラルネットの重み $\mathbf{w}$ を点推定ではなく分布として扱う。
 
-```math
+$$
 p(\mathbf{w} \mid \mathcal{D}) \propto p(\mathcal{D} \mid \mathbf{w}) \cdot p(\mathbf{w})
-```
+$$
 
-これは第4回 §3 のベイズ更新の直接適用だ。問題: `$\mathbf{w}$` が何百万次元でもグリッド近似は不可能 → 変分推論（VI）かMCMCが必要。
+これは第4回 §3 のベイズ更新の直接適用だ。問題: $\mathbf{w}$ が何百万次元でもグリッド近似は不可能 → 変分推論（VI）かMCMCが必要。
 
-**Bayes by Backprop**: 重みを `$q(\mathbf{w}) = \mathcal{N}(\boldsymbol{\mu}, \text{diag}(\boldsymbol{\sigma}^2))$` でパラメータ化し、ELBOを勾配降下で最大化。「重みの不確実性」が予測の不確実性に変換される。
+**Bayes by Backprop**: 重みを $q(\mathbf{w}) = \mathcal{N}(\boldsymbol{\mu}, \text{diag}(\boldsymbol{\sigma}^2))$ でパラメータ化し、ELBOを勾配降下で最大化。「重みの不確実性」が予測の不確実性に変換される。
 
 **なぜ今、再注目されるのか**: LLMのCalibration問題。「モデルが高確信度で誤答する」現象をBayesian手法で緩和できる可能性。
 
 ### 6.3 自己回帰の普遍性 — Malach (2023)
 
-```math
+$$
 \log p(\mathbf{x}) = \sum_{t=1}^{T} \log p(x_t \mid x_{<t})
-```
+$$
 
 この連鎖規則は**任意の分布**に対して厳密に成立する（確率の乗法定理）。Malach (2023)[^5] は「十分な表現力を持つ自己回帰モデルはあらゆる確率分布を近似できる」ことを理論化した。
 
@@ -970,15 +970,15 @@ DDPM (Ho et al. 2020)[^6] は確率論の異なる側面を使う。
 
 **Forward process** (拡散: データ → ノイズ):
 
-```math
+$$
 q(\mathbf{x}_t \mid \mathbf{x}_{t-1}) = \mathcal{N}(\mathbf{x}_t;\, \sqrt{1-\beta_t}\,\mathbf{x}_{t-1},\, \beta_t I)
-```
+$$
 
-各ステップで少量のノイズを加える。`$T$` ステップ後: `$\mathbf{x}_T \approx \mathcal{N}(\mathbf{0}, I)$`。
+各ステップで少量のノイズを加える。$T$ ステップ後: $\mathbf{x}_T \approx \mathcal{N}(\mathbf{0}, I)$。
 
-**Reverse process** (生成: ノイズ → データ): ニューラルネット `$p_\theta(\mathbf{x}_{t-1} \mid \mathbf{x}_t)$` を学習。
+**Reverse process** (生成: ノイズ → データ): ニューラルネット $p_\theta(\mathbf{x}_{t-1} \mid \mathbf{x}_t)$ を学習。
 
-**第4回との接続**: Forward processはGaussianの連続積。ELBO の最適化はVAEと同じ構造。第4回で学んだ「Gaussian同士の周辺化の閉形式」が `$q(\mathbf{x}_t \mid \mathbf{x}_0)$` の分析的計算を可能にする。
+**第4回との接続**: Forward processはGaussianの連続積。ELBO の最適化はVAEと同じ構造。第4回で学んだ「Gaussian同士の周辺化の閉形式」が $q(\mathbf{x}_t \mid \mathbf{x}_0)$ の分析的計算を可能にする。
 
 ### 6.5 研究系譜図
 
@@ -1017,27 +1017,27 @@ flowchart TD
 
 | 数式 | 実装 | セクション |
 |:-----|:-----|:-----------|
-| `$f(x;\mu,\sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}}\exp(-\frac{(x-\mu)^2}{2\sigma^2})$` | `stats.norm.logpdf(x, mu, sigma)` | 5.1 |
-| `$\hat{\mu} = \bar{x}$, `$\hat{\sigma}^2 = \frac{1}{N}\sum(x_i-\bar{x})^2$` | `x.mean()`, `x.std(ddof=0)**2` | 5.1 |
-| `$\mathcal{N}(\mathbf{x}\mid\boldsymbol{\mu},\boldsymbol{\Sigma})$` | `mvn_log_prob(x, mu, Sigma)` | 5.2 |
-| `$\boldsymbol{\mu}_{1\mid 2}, \boldsymbol{\Sigma}_{1\mid 2}$`（条件付き分布）| `mvn_conditional(mu, Sigma, obs_idx, obs_val)` | 5.2 |
-| `$p(x\mid\boldsymbol{\eta}) = h(x)\exp(\boldsymbol{\eta}^\top T(x) - A(\boldsymbol{\eta}))$` | `ExpFamilyGaussian.mle(X)` | 5.3 |
-| `$p(\mathbf{x}\mid\theta) = \pi\mathcal{N}_1 + (1-\pi)\mathcal{N}_2$` | `gmm_log_likelihood(...)` | 5.4 |
-| `$p(\theta\mid\mathbf{x}) \propto \theta^{a+h-1}(1-\theta)^{b+t-1}$` | `log_beta(post_a, post_b)` | 5.5a |
-| `$\mu_N, \tau_N^2$`（Gaussian事後） | `gaussian_conjugate_update(...)` | 5.5b |
-| `$D_{\mathrm{KL}}(\mathcal{N}_1\|\mathcal{N}_2)$`（閉形式） | `kl_gaussian(mu1, var1, mu2, var2)` | 5.5a-KL |
-| `$I(\theta) = \mathbb{E}[s^2]$`, CR下界 `$1/(nI)$` | `fisher_info_gauss_mean`, `cramer_rao` | 5.5c |
-| `$M_X(t) = \exp(\mu t + \frac{\sigma^2 t^2}{2})$` | `mgf_gaussian(t, mu, sigma2)` | 5.6 |
-| `$\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$` | `log_prob_sequence(logits, seq)` | 5.7 |
-| Perplexity `$\exp(-\frac{1}{T}\log p)$` | `perplexity(logits, seq)` | 5.7 |
+| $f(x;\mu,\sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}}\exp(-\frac{(x-\mu)^2}{2\sigma^2})$ | `stats.norm.logpdf(x, mu, sigma)` | 5.1 |
+| `$\hat{\mu} = \bar{x}$, $\hat{\sigma}^2 = \frac{1}{N}\sum(x_i-\bar{x})^2$ | `x.mean()`, `x.std(ddof=0)**2` | 5.1 |
+| $\mathcal{N}(\mathbf{x}\mid\boldsymbol{\mu},\boldsymbol{\Sigma})$ | `mvn_log_prob(x, mu, Sigma)` | 5.2 |
+| $\boldsymbol{\mu}_{1\mid 2}, \boldsymbol{\Sigma}_{1\mid 2}$（条件付き分布）| `mvn_conditional(mu, Sigma, obs_idx, obs_val)` | 5.2 |
+| $p(x\mid\boldsymbol{\eta}) = h(x)\exp(\boldsymbol{\eta}^\top T(x) - A(\boldsymbol{\eta}))$ | `ExpFamilyGaussian.mle(X)` | 5.3 |
+| $p(\mathbf{x}\mid\theta) = \pi\mathcal{N}_1 + (1-\pi)\mathcal{N}_2$ | `gmm_log_likelihood(...)` | 5.4 |
+| $p(\theta\mid\mathbf{x}) \propto \theta^{a+h-1}(1-\theta)^{b+t-1}$ | `log_beta(post_a, post_b)` | 5.5a |
+| $\mu_N, \tau_N^2$（Gaussian事後） | `gaussian_conjugate_update(...)` | 5.5b |
+| $D_{\mathrm{KL}}(\mathcal{N}_1\|\mathcal{N}_2)$（閉形式） | `kl_gaussian(mu1, var1, mu2, var2)` | 5.5a-KL |
+| $I(\theta) = \mathbb{E}[s^2]$, CR下界 $1/(nI)$ | `fisher_info_gauss_mean`, `cramer_rao` | 5.5c |
+| $M_X(t) = \exp(\mu t + \frac{\sigma^2 t^2}{2})$ | `mgf_gaussian(t, mu, sigma2)` | 5.6 |
+| $\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$ | `log_prob_sequence(logits, seq)` | 5.7 |
+| Perplexity $\exp(-\frac{1}{T}\log p)$ | `perplexity(logits, seq)` | 5.7 |
 
 ### 7.1 本講義の核心 — 3つの持ち帰り
 
-1. **確率は「わからなさ」の言語である。** 確率空間 `$(\Omega, \mathcal{F}, P)$` という厳密な枠組みの上に、確率変数・期待値・条件付き確率が定義される。この言語なしに生成モデルは記述できない。
+1. **確率は「わからなさ」の言語である。** 確率空間 $(\Omega, \mathcal{F}, P)$ という厳密な枠組みの上に、確率変数・期待値・条件付き確率が定義される。この言語なしに生成モデルは記述できない。
 
 2. **ベイズの定理は「学習」の数式だ。** 事前分布（信念）+ 尤度（データ）→ 事後分布（更新された信念）。VAEのELBOも、LLMのファインチューニングも、この構造の変種だ。
 
-3. **MLEは条件付きCategorical分布の最適化に帰着する。** LLMの学習は、各時刻 `$t$` で `$p(x_t \mid x_{<t})$` をCategorical分布としてMLE推定すること。本講義で学んだ全ての道具がここに集約される。
+3. **MLEは条件付きCategorical分布の最適化に帰着する。** LLMの学習は、各時刻 $t$ で $p(x_t \mid x_{<t})$ をCategorical分布としてMLE推定すること。本講義で学んだ全ての道具がここに集約される。
 
 ### 7.2 FAQ
 
@@ -1059,7 +1059,7 @@ flowchart TD
 2. **最大エントロピー**: 平均と分散を固定したとき、エントロピー最大の分布が正規分布
 3. **計算の都合**: 正規分布の積・和・条件付きが全て閉じた形になる
 
-3つ目が実用上最も重要だ。GANの潜在空間 `$\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$` やVAEの事前分布も、計算の容易さが選択の主因だ。
+3つ目が実用上最も重要だ。GANの潜在空間 $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ やVAEの事前分布も、計算の容易さが選択の主因だ。
 </details>
 
 <details><summary>Q: 指数型分布族は実際にどこで使うのか？</summary>
@@ -1067,7 +1067,7 @@ flowchart TD
 至る所で。
 
 - **VAE**: エンコーダの出力はガウス分布（指数型分布族）のパラメータ
-- **EBM**: `$p(\mathbf{x}) = \frac{1}{Z}\exp(-E(\mathbf{x}))$` は指数型分布族の一般化
+- **EBM**: $p(\mathbf{x}) = \frac{1}{Z}\exp(-E(\mathbf{x}))$ は指数型分布族の一般化
 - **GLM**: 一般化線形モデルの応答分布は指数型分布族
 - **Softmax**: Categorical分布は指数型分布族。LLMの出力分布そのもの
 
@@ -1087,34 +1087,34 @@ flowchart TD
 
 いいえ、正しい。PDFは確率ではない。確率は密度の**積分**で得られる:
 
-```math
+$$
 P(a \leq X \leq b) = \int_a^b f(x) dx
-```
+$$
 
-`$f(x)$` 自体は非負であればいくらでも大きくてよい。例えば `$\mathcal{N}(0, 0.01)$` のピークは `$f(0) = \frac{1}{\sqrt{2\pi \cdot 0.01}} \approx 3.99$` で、1を大きく超える。積分すると必ず1になるが、密度値が1を超えること自体は何の問題もない。
+$f(x)$ 自体は非負であればいくらでも大きくてよい。例えば $\mathcal{N}(0, 0.01)$ のピークは $f(0) = \frac{1}{\sqrt{2\pi \cdot 0.01}} \approx 3.99$ で、1を大きく超える。積分すると必ず1になるが、密度値が1を超えること自体は何の問題もない。
 
 </details>
 
 <details><summary>Q: Multinomial分布とCategorical分布の違いは？</summary>
 
-Categorical分布は「サイコロを1回振る」: `$x \in \{1, \ldots, K\}$`, `$P(x=k) = \pi_k$`。
+Categorical分布は「サイコロを1回振る」: $x \in \{1, \ldots, K\}$, $P(x=k) = \pi_k$。
 
-Multinomial分布は「サイコロを `$n$` 回振って、各面の出た回数を記録する」: `$(c_1, \ldots, c_K) \sim \text{Multi}(n, \boldsymbol{\pi})$`, `$\sum_k c_k = n$`。
+Multinomial分布は「サイコロを $n$ 回振って、各面の出た回数を記録する」: $(c_1, \ldots, c_K) \sim \text{Multi}(n, \boldsymbol{\pi})$, $\sum_k c_k = n$。
 
 LLMの文脈では:
 - 1トークンの予測 = Categorical分布
 - バッチ内の全トークン予測の統計 = Multinomial分布
 
-Categorical = Multinomial(`$n=1$`, `$\boldsymbol{\pi}$`) だ。
+Categorical = Multinomial($n=1$, $\boldsymbol{\pi}$) だ。
 </details>
 
 <details><summary>Q: 「尤度」と「確率」は何が違うのか？</summary>
 
-**確率**: データ `$x$` が可変で、パラメータ `$\theta$` が固定 → `$P(X=x \mid \theta)$`
+**確率**: データ $x$ が可変で、パラメータ $\theta$ が固定 → $P(X=x \mid \theta)$
 
-**尤度**: データ `$x$` が固定で、パラメータ `$\theta$` が可変 → `$L(\theta; x) = P(X=x \mid \theta)$`
+**尤度**: データ $x$ が固定で、パラメータ $\theta$ が可変 → $L(\theta; x) = P(X=x \mid \theta)$
 
-数式は全く同じ。視点の違いだけだ。確率として見ると `$\sum_x P(x \mid \theta) = 1$`（データに関して正規化）。尤度として見ると `$\int L(\theta; x) d\theta$` は一般に1にならない。
+数式は全く同じ。視点の違いだけだ。確率として見ると $\sum_x P(x \mid \theta) = 1$（データに関して正規化）。尤度として見ると $\int L(\theta; x) d\theta$ は一般に1にならない。
 
 MLEは「このデータが最もよく生成されるようなパラメータ」を探す → 尤度関数の最大化。
 
@@ -1122,44 +1122,44 @@ MLEは「このデータが最もよく生成されるようなパラメータ�
 
 <details><summary>Q: 条件付き期待値 E[X|Y] はなぜ確率変数なのか？</summary>
 
-`$\mathbb{E}[X \mid Y=y]$` は `$y$` の関数として計算できる。例えば `$(X,Y) \sim \mathcal{N}$` なら `$\mathbb{E}[X \mid Y=y] = \mu_X + \rho \frac{\sigma_X}{\sigma_Y}(y - \mu_Y)$`（線形）。
+$\mathbb{E}[X \mid Y=y]$ は $y$ の関数として計算できる。例えば $(X,Y) \sim \mathcal{N}$ なら $\mathbb{E}[X \mid Y=y] = \mu_X + \rho \frac{\sigma_X}{\sigma_Y}(y - \mu_Y)$（線形）。
 
-`$Y$` が確率変数だから `$\mathbb{E}[X \mid Y]$` も確率変数になる。重要な性質: **繰り返し期待値の法則**
+$Y$ が確率変数だから $\mathbb{E}[X \mid Y]$ も確率変数になる。重要な性質: **繰り返し期待値の法則**
 
-```math
+$$
 \mathbb{E}[\mathbb{E}[X \mid Y]] = \mathbb{E}[X]
-```
+$$
 
-これはELBOの導出でも使われる: `$\log p(\mathbf{x}) = \mathbb{E}_{q(\mathbf{z})}[\log p(\mathbf{x}, \mathbf{z})/q(\mathbf{z})] + D_{\mathrm{KL}}(q \| p)$`。
+これはELBOの導出でも使われる: $\log p(\mathbf{x}) = \mathbb{E}_{q(\mathbf{z})}[\log p(\mathbf{x}, \mathbf{z})/q(\mathbf{z})] + D_{\mathrm{KL}}(q \| p)$。
 
 </details>
 
 <details><summary>Q: この確率論の知識は第5回（測度論）でどう拡張されるのか？</summary>
 
-本講義では「確率密度関数 `$f(x)$` が存在する」と暗黙に仮定した。だが:
+本講義では「確率密度関数 $f(x)$ が存在する」と暗黙に仮定した。だが:
 
 - 離散と連続が混じった分布は？
-- `$\mathbb{R}^d$` 上の全ての部分集合に確率を定義できるか？
+- $\mathbb{R}^d$ 上の全ての部分集合に確率を定義できるか？
 - 「ほとんど確実に」とは何か？
 
-第5回では測度論の言葉で `$f(x) = \frac{dP}{d\lambda}$` （Radon-Nikodym導関数）として密度関数を厳密に定義する。さらに確率過程（Markov連鎖、Brown運動）を導入し、拡散モデルのSDE定式化への橋渡しを行う。
+第5回では測度論の言葉で $f(x) = \frac{dP}{d\lambda}$ （Radon-Nikodym導関数）として密度関数を厳密に定義する。さらに確率過程（Markov連鎖、Brown運動）を導入し、拡散モデルのSDE定式化への橋渡しを行う。
 </details>
 
 ### 7.3 確率論でよくある「罠」
 
 <details><summary>罠6: 多次元Gaussianの「ほとんどの確率質量」は殻にある</summary>
 
-1次元では Gaussian の確率質量は平均付近に集中する（`$\pm 2\sigma$` に95%）。
+1次元では Gaussian の確率質量は平均付近に集中する（$\pm 2\sigma$ に95%）。
 
-`$d$` 次元では全く違う。`$\mathbf{x} \sim \mathcal{N}(\mathbf{0}, I_d)$` のノルム `$\|\mathbf{x}\|$` は:
+$d$ 次元では全く違う。$\mathbf{x} \sim \mathcal{N}(\mathbf{0}, I_d)$ のノルム $\|\mathbf{x}\|$ は:
 
-```math
+$$
 \mathbb{E}[\|\mathbf{x}\|^2] = d, \quad \text{Var}(\|\mathbf{x}\|) = O(1)
-```
+$$
 
-つまり `$\|\mathbf{x}\| \approx \sqrt{d}$` に集中する（次元の呪い の現れ）。`$d=1000$` では全サンプルが半径 `$\approx 31.6$` の薄い球殻上にある。
+つまり $\|\mathbf{x}\| \approx \sqrt{d}$ に集中する（次元の呪い の現れ）。$d=1000$ では全サンプルが半径 $\approx 31.6$ の薄い球殻上にある。
 
-VAEの潜在空間 `$\mathbf{z} \sim \mathcal{N}(\mathbf{0}, I_{100})$` でサンプリングすると、`$\|\mathbf{z}\| \approx 10$` の球殻からしかサンプルが来ない。これがVAEの「posterior collapse」問題の一因だ。
+VAEの潜在空間 $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, I_{100})$ でサンプリングすると、$\|\mathbf{z}\| \approx 10$ の球殻からしかサンプルが来ない。これがVAEの「posterior collapse」問題の一因だ。
 
 </details>
 
@@ -1167,25 +1167,25 @@ VAEの潜在空間 `$\mathbf{z} \sim \mathcal{N}(\mathbf{0}, I_{100})$` でサ�
 
 <details><summary>罠1: P(A|B) ≠ P(B|A) — 条件の逆転</summary>
 
-「雨のとき傘を持つ確率90%」と「傘を持っているとき雨の確率」は全く違う。ベイズの定理なしにこの2つを混同するのが「検察官の誤謬」だ。DNA鑑定で「一致した = 犯人」と結論するのは `$P(\text{一致} \mid \text{犯人})$` と `$P(\text{犯人} \mid \text{一致})$` の混同。
+「雨のとき傘を持つ確率90%」と「傘を持っているとき雨の確率」は全く違う。ベイズの定理なしにこの2つを混同するのが「検察官の誤謬」だ。DNA鑑定で「一致した = 犯人」と結論するのは $P(\text{一致} \mid \text{犯人})$ と $P(\text{犯人} \mid \text{一致})$ の混同。
 </details>
 
 <details><summary>罠2: 独立と無相関は違う</summary>
 
-無相関: `$\text{Cov}(X, Y) = 0$`（線形関係がない）
-独立: `$P(X, Y) = P(X)P(Y)$`（あらゆる関係がない）
+無相関: $\text{Cov}(X, Y) = 0$（線形関係がない）
+独立: $P(X, Y) = P(X)P(Y)$（あらゆる関係がない）
 
-独立 → 無相関だが、逆は成り立たない。`$X \sim \mathcal{N}(0,1)$`, `$Y = X^2$` は無相関だが独立ではない。
+独立 → 無相関だが、逆は成り立たない。$X \sim \mathcal{N}(0,1)$, $Y = X^2$ は無相関だが独立ではない。
 </details>
 
 <details><summary>罠3: 分散0でも分布は決まらない</summary>
 
-Cramér-Rao下界 `$\text{Var} \geq 1/(nI)$` は不偏推定量にしか適用されない。バイアスのある推定量はCR下界を下回ることがある（James-Steinの縮小推定量）。「バイアスを許容する代わりにMSEを下げる」のは、MLでは正則化として日常的に行われる。
+Cramér-Rao下界 $\text{Var} \geq 1/(nI)$ は不偏推定量にしか適用されない。バイアスのある推定量はCR下界を下回ることがある（James-Steinの縮小推定量）。「バイアスを許容する代わりにMSEを下げる」のは、MLでは正則化として日常的に行われる。
 </details>
 
 <details><summary>罠4: MLEは常に最良ではない</summary>
 
-小サンプルではMLEのバイアスが問題になる。分散推定量 `$\hat{\sigma}^2_{\text{MLE}} = \frac{1}{N}\sum(x_i - \bar{x})^2$` は `$\sigma^2$` を過小評価する。James-Steinの定理が示すのは、3次元以上ではMLEが「許容可能でない」（admissible でない）という衝撃的事実だ。
+小サンプルではMLEのバイアスが問題になる。分散推定量 $\hat{\sigma}^2_{\text{MLE}} = \frac{1}{N}\sum(x_i - \bar{x})^2$ は $\sigma^2$ を過小評価する。James-Steinの定理が示すのは、3次元以上ではMLEが「許容可能でない」（admissible でない）という衝撃的事実だ。
 </details>
 
 <details><summary>罠5: 事前分布が「主観的」は欠点か？</summary>
@@ -1202,7 +1202,7 @@ Cramér-Rao下界 `$\text{Var} \geq 1/(nI)$` は不偏推定量にしか適用�
 
 第4回で確率分布を「使える」ようになった。だが、以下の問いに答えられるだろうか:
 
-- 「確率密度関数」とは厳密に何か？ なぜ点 `$x$` での `$f(x)$` は確率ではないのか？
+- 「確率密度関数」とは厳密に何か？ なぜ点 $x$ での $f(x)$ は確率ではないのか？
 - 離散と連続が混じった分布をどう扱うか？
 - 「ほとんど確実に収束する」の「ほとんど」とは？
 - Brown運動はなぜ微分不可能なのか？
@@ -1227,7 +1227,7 @@ flowchart LR
   P15["第15回\nDiffusion\nSDE逆問題\nScore matching"]
 ```
 
-特に「Radon-Nikodym導関数」は Score matching の数学的基礎だ。スコア関数 `$\nabla_x \log p(x)$` はデータ分布の勾配を表し、拡散モデルのノイズ除去プロセスと直接対応する。
+特に「Radon-Nikodym導関数」は Score matching の数学的基礎だ。スコア関数 $\nabla_x \log p(x)$ はデータ分布の勾配を表し、拡散モデルのノイズ除去プロセスと直接対応する。
 
 ### 7.5 💀 パラダイム転換の問い
 
@@ -1243,7 +1243,7 @@ CLTが「多数の独立微小効果の和→正規分布」を保証するか�
 
 認知科学には「脳はベイズ推論を行っている」という仮説がある。感覚入力（尤度）と経験（事前分布）を組み合わせて世界の状態（事後分布）を推定する。
 
-錯視現象は、強い事前分布が弱い尤度を上書きする例として解釈される。VAEのデコーダが「ぼやけた」画像を生成するのは、事前分布 `$p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, \mathbf{I})$` が過度に滑らかな潜在空間を強制するため — ある意味、脳の錯視と同じ構造だ。
+錯視現象は、強い事前分布が弱い尤度を上書きする例として解釈される。VAEのデコーダが「ぼやけた」画像を生成するのは、事前分布 $p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, \mathbf{I})$ が過度に滑らかな潜在空間を強制するため — ある意味、脳の錯視と同じ構造だ。
 
 「正規分布を仮定する」のは、脳が「世界は滑らかだ」と仮定するのと同じかもしれない。
 </details>
@@ -1251,7 +1251,7 @@ CLTが「多数の独立微小効果の和→正規分布」を保証するか�
 さらに考えてみよう:
 
 - **LLMの出力分布はCategorical。** 正規分布ではない。だがCategorical分布の自然パラメータ（logit）は連続値で、その空間では正規分布的な仮定が使われる
-- **次元の呪い**: 100次元のガウス分布のサンプルは、ほぼ確実に原点から `$\sqrt{100} = 10$` の距離にある。「高次元のガウスは球殻に集中する」— これが正規分布の直感が崩壊する瞬間だ
+- **次元の呪い**: 100次元のガウス分布のサンプルは、ほぼ確実に原点から $\sqrt{100} = 10$ の距離にある。「高次元のガウスは球殻に集中する」— これが正規分布の直感が崩壊する瞬間だ
 - **正規分布は"最も無知な"分布**: 最大エントロピー原理により、平均と分散しか知らないとき、余計な仮定を最も少なくする分布がガウス。「知らないことを正直に認める分布」とも言える
 
 
@@ -1267,15 +1267,15 @@ Fisher情報量は統計的推測の基礎であり、最近の研究はその�
 
 Fisher情報量には2つの表現がある:
 
-```math
+$$
 I(\theta) = \mathbb{E}\left[\left(\frac{\partial \log p(X; \theta)}{\partial \theta}\right)^2\right] = -\mathbb{E}\left[\frac{\partial^2 \log p(X; \theta)}{\partial \theta^2}\right]
-```
+$$
 
 前者は「期待」、後者は「観測」と呼ばれる。2013年のarXiv論文[^13]は、**期待Fisher情報を使った信頼区間が観測Fisher情報を使った場合より平均二乗誤差の意味で精度が高い**ことを証明した。2021年の続編[^14]では、この結果を区間推定の相対性能評価に拡張している。
 
 **潜在変数モデルへの拡張**
 
-2024年の研究[^15]は、潜在変数モデルに対するFisher情報量の明示的定義を可能にする新しい最尤推定フレームワークを提案した。従来、潜在変数 `$\mathbf{z}$` を積分消去した周辺尤度 `$p(\mathbf{x}; \theta) = \int p(\mathbf{x}, \mathbf{z}; \theta) d\mathbf{z}$` ではFisher情報量の計算が困難だった。この研究は、変分近似と組み合わせることで効率的な推定を実現している。
+2024年の研究[^15]は、潜在変数モデルに対するFisher情報量の明示的定義を可能にする新しい最尤推定フレームワークを提案した。従来、潜在変数 $\mathbf{z}$ を積分消去した周辺尤度 $p(\mathbf{x}; \theta) = \int p(\mathbf{x}, \mathbf{z}; \theta) d\mathbf{z}$ ではFisher情報量の計算が困難だった。この研究は、変分近似と組み合わせることで効率的な推定を実現している。
 
 **テンソルモデルのFisher情報**
 
@@ -1306,19 +1306,19 @@ KLダイバージェンスとエントロピーは機械学習の中心概念だ
 
 2024年の論文[^20]は、KLダイバージェンスを一般化したα-ダイバージェンスに基づく新しいベイズ最適化手法「Alpha Entropy Search (AES)」を提案した。α-ダイバージェンスは:
 
-```math
+$$
 D_\alpha(p \| q) = \frac{1}{\alpha(\alpha-1)} \left( \int p(x)^\alpha q(x)^{1-\alpha} dx - 1 \right)
-```
+$$
 
-`$\alpha \to 1$` でKLダイバージェンスに収束する。AESは獲得関数として、次の評価点での目的関数値と大域的最大値の「依存度」を最大化する。この依存度をα-ダイバージェンスで測ることで、KLベースの手法より探索と活用のバランスを柔軟に制御できる。
+$\alpha \to 1$ でKLダイバージェンスに収束する。AESは獲得関数として、次の評価点での目的関数値と大域的最大値の「依存度」を最大化する。この依存度をα-ダイバージェンスで測ることで、KLベースの手法より探索と活用のバランスを柔軟に制御できる。
 
 **Jensen-ShannonとKLの関係**
 
 2025年の論文[^21]は、Jensen-Shannon (JS) ダイバージェンスとKLダイバージェンスの最適な下界を確立した:
 
-```math
+$$
 \text{JS}(p \| q) = \frac{1}{2} D_{\text{KL}}(p \| m) + \frac{1}{2} D_{\text{KL}}(q \| m), \quad m = \frac{p + q}{2}
-```
+$$
 
 JSダイバージェンスはGANの目的関数として知られているが、KLとの定量的関係は長年不明だった。この成果により、GANの収束性理論が改善された。
 
@@ -1335,24 +1335,24 @@ JSダイバージェンスはGANの目的関数として知られているが、
 
 **Maximum Ideal Likelihood**
 
-2024年の研究[^24]は、潜在変数モデルに対する新しい推定フレームワーク「Maximum Ideal Likelihood (MIL)」を提案した。従来のMLEは周辺化 `$p(\mathbf{x}) = \int p(\mathbf{x}, \mathbf{z}) d\mathbf{z}$` が困難だったが、MILは潜在変数を「理想的な観測」として扱うことで、計算可能な目的関数を導出する。漸近的にMLEと等価であり、信頼区間も構成できる。
+2024年の研究[^24]は、潜在変数モデルに対する新しい推定フレームワーク「Maximum Ideal Likelihood (MIL)」を提案した。従来のMLEは周辺化 $p(\mathbf{x}) = \int p(\mathbf{x}, \mathbf{z}) d\mathbf{z}$ が困難だったが、MILは潜在変数を「理想的な観測」として扱うことで、計算可能な目的関数を導出する。漸近的にMLEと等価であり、信頼区間も構成できる。
 
 
 #### 6.9.5 非正規化統計モデルとスコアマッチング
 
-確率密度関数を正規化定数込みで計算するのは困難な場合が多い。Energy-Based Model (EBM) では `$p(x) = \frac{1}{Z}\exp(-E(x))$` と表現するが、分配関数 `$Z = \int \exp(-E(x))dx$` の計算が指数的に困難だ。
+確率密度関数を正規化定数込みで計算するのは困難な場合が多い。Energy-Based Model (EBM) では $p(x) = \frac{1}{Z}\exp(-E(x))$ と表現するが、分配関数 $Z = \int \exp(-E(x))dx$ の計算が指数的に困難だ。
 
-**スコアマッチング** [^9] は、正規化定数を計算せずに確率モデルを推定する手法だ。スコア関数 `$s(x) = \nabla_x \log p(x)$` は正規化定数に依存しないことを利用する:
+**スコアマッチング** [^9] は、正規化定数を計算せずに確率モデルを推定する手法だ。スコア関数 $s(x) = \nabla_x \log p(x)$ は正規化定数に依存しないことを利用する:
 
-```math
+$$
 s(x) = \nabla_x \log p(x) = \nabla_x \log \frac{1}{Z}\exp(-E(x)) = \nabla_x [-E(x) - \log Z] = -\nabla_x E(x)
-```
+$$
 
 スコアマッチング目的関数:
 
-```math
+$$
 J(\theta) = \frac{1}{2}\mathbb{E}_{p_{\text{data}}(x)}\left[\| \nabla_x \log p_\theta(x) - \nabla_x \log p_{\text{data}}(x) \|^2\right]
-```
+$$
 
 これは正規化定数なしで計算可能な形に変形できる（部分積分を用いた恒等式）。拡散モデル [^10] の理論的基盤の一つでもある。
 
@@ -1363,45 +1363,45 @@ LLMの訓練は、次トークン予測という確率的タスクに帰着す�
 
 **自己回帰モデルと連鎖規則**:
 
-```math
+$$
 p(\mathbf{x}) = \prod_{t=1}^{T} p(x_t \mid x_{<t})
-```
+$$
 
-各時刻での条件付き分布 `$p(x_t \mid x_{<t})$` はCategorical分布であり、Softmaxで定義される:
+各時刻での条件付き分布 $p(x_t \mid x_{<t})$ はCategorical分布であり、Softmaxで定義される:
 
-```math
+$$
 p(x_t = k \mid x_{<t}) = \frac{\exp(z_k)}{\sum_{j=1}^{V} \exp(z_j)}, \quad z = f_\theta(x_{<t})
-```
+$$
 
 **Cross-Entropy損失とMLE**:
 
-```math
+$$
 \mathcal{L} = -\frac{1}{T}\sum_{t=1}^{T} \log p_\theta(x_t \mid x_{<t}) = -\frac{1}{T} \log p_\theta(\mathbf{x})
-```
+$$
 
 これは負の対数尤度であり、最小化はMLEと等価だ。
 
 **Perplexityと条件付きエントロピー**:
 
-```math
+$$
 \text{Perplexity} = \exp(\mathcal{L}) = \exp\left(-\frac{1}{T}\sum_{t=1}^{T} \log p(x_t \mid x_{<t})\right)
-```
+$$
 
-これは条件付きエントロピー `$H(X_t \mid X_{<t})$` の指数である。Perplexity=10は「各時刻で平均10個の候補から選択している」ことを意味する。
+これは条件付きエントロピー $H(X_t \mid X_{<t})$ の指数である。Perplexity=10は「各時刻で平均10個の候補から選択している」ことを意味する。
 
 **確率的ランキングとTop-k/Nucleus Sampling**:
 
-温度パラメータ `$\tau$` を導入した確率分布:
+温度パラメータ $\tau$ を導入した確率分布:
 
-```math
+$$
 p_\tau(x_t = k) = \frac{\exp(z_k/\tau)}{\sum_j \exp(z_j/\tau)}
-```
+$$
 
-- `$\tau \to 0$`: 決定論的（argmax）
-- `$\tau = 1$`: 元の分布
-- `$\tau > 1$`: より平坦（多様性増加）
+- $\tau \to 0$: 決定論的（argmax）
+- $\tau = 1$: 元の分布
+- $\tau > 1$: より平坦（多様性増加）
 
-Nucleus sampling（Top-p）は累積確率 `$\sum_{k \in \text{top-p}} p(k) \geq p$` を満たす最小集合からサンプリング。これは「確率質量の上位p%」という動的閾値だ。
+Nucleus sampling（Top-p）は累積確率 $\sum_{k \in \text{top-p}} p(k) \geq p$ を満たす最小集合からサンプリング。これは「確率質量の上位p%」という動的閾値だ。
 
 
 > **Note:** **LLMの確率論的解釈**: 次トークン予測モデルは、シーケンスの条件付き確率分布を学習している。サンプリング戦略（temperature, top-k, nucleus）は、この確率分布からの「制御されたランダム化」だ。決定論的生成（greedy）は最尤推定、確率的生成はベイズ推論の視点と対応する。
@@ -1414,9 +1414,9 @@ Nucleus sampling（Top-p）は累積確率 `$\sum_{k \in \text{top-p}} p(k) \geq
 
 | 第4回の概念 | VAEでの役割 |
 |:------------|:------------|
-| MLE | デコーダ `$p_\theta(\mathbf{x}\mid\mathbf{z})$` の最大化 |
-| KLダイバージェンス | ELBOの正則化項 `$D_{\mathrm{KL}}(q_\phi\|p)$` |
-| Gaussian MLE | エンコーダ `$\mu_\phi, \sigma_\phi$` の出力 |
+| MLE | デコーダ $p_\theta(\mathbf{x}\mid\mathbf{z})$ の最大化 |
+| KLダイバージェンス | ELBOの正則化項 $D_{\mathrm{KL}}(q_\phi\|p)$ |
+| Gaussian MLE | エンコーダ $\mu_\phi, \sigma_\phi$ の出力 |
 | 指数型分布族 | デコーダの出力分布設計 |
 | 変分推論（事後一致性）| ELBO最大化による近似事後分布の学習 |
 
@@ -1424,16 +1424,16 @@ Nucleus sampling（Top-p）は累積確率 `$\sum_{k \in \text{top-p}} p(k) \geq
 
 | 第4回の概念 | Diffusionでの役割 |
 |:------------|:------------------|
-| Gaussian積の閉形式 | `$q(\mathbf{x}_t\mid\mathbf{x}_0)$` の分析的計算 |
-| 条件付きGaussian | 逆プロセス `$p_\theta(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$` の形 |
-| KL最小化 | ELBO = `$\sum_t \mathbb{E}[D_{\mathrm{KL}}(q_t\|p_{t-1})]$` |
+| Gaussian積の閉形式 | $q(\mathbf{x}_t\mid\mathbf{x}_0)$ の分析的計算 |
+| 条件付きGaussian | 逆プロセス $p_\theta(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$ の形 |
+| KL最小化 | ELBO = $\sum_t \mathbb{E}[D_{\mathrm{KL}}(q_t\|p_{t-1})]$ |
 
 **LLM（第20回）への接続**:
 
 | 第4回の概念 | LLMでの役割 |
 |:------------|:------------|
 | Categorical分布 | softmax出力層 |
-| 連鎖規則 `$\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$` | 自己回帰目的関数 |
+| 連鎖規則 $\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$ | 自己回帰目的関数 |
 | MLE | 次トークン予測の最大化（交差エントロピー）|
 | 指数型分布族 | logit空間の幾何学 |
 

@@ -191,9 +191,9 @@ end
 
 理論式（Zone 3.1）のLossを実装する：
 
-```math
+$$
 \mathcal{L}_{\text{CFM}}(\theta) = \mathbb{E}_{t, \mathbf{x}_0, \mathbf{x}_1}\left[\left\|\mathbf{v}_\theta(t, \mathbf{x}_t) - \mathbf{u}_t(\mathbf{x}_t | \mathbf{x}_1, \mathbf{x}_0)\right\|^2\right]
-```
+$$
 
 ```julia:loss.jl
 """
@@ -279,9 +279,9 @@ end
 
 訓練後、ODEを解いてサンプル生成：
 
-```math
+$$
 \frac{\mathrm{d}\mathbf{x}_t}{\mathrm{d}t} = \mathbf{v}_\theta(\mathbf{x}_t, t), \quad \mathbf{x}_0 \sim \mathcal{N}(0, I)
-```
+$$
 
 ```julia:sampling.jl
 """
@@ -681,9 +681,9 @@ Flow Matchingは急速に進化している。ここでは、2024-2025年の最�
 
 「条件付き速度場」ではなく、**輸送写像**（transport map）$\mathbf{T}_t: \mathbb{R}^d \to \mathbb{R}^d$を直接学習する。
 
-```math
+$$
 \mathbf{x}_t = \mathbf{T}_t(\mathbf{x}_0), \quad \mathbf{v}_t(\mathbf{x}_t) = \frac{\partial \mathbf{T}_t}{\partial t}(\mathbf{T}_t^{-1}(\mathbf{x}_t))
-```
+$$
 
 **利点**：
 1. **Amortization**：一度$\mathbf{T}_t$を学習すれば、任意の$\mathbf{x}_0$に適用可能
@@ -708,9 +708,9 @@ Rectified Flowの再訓練（reflow）は、軌道を直線に近づけるが、
 
 最適輸送写像を**変分問題**として定式化：
 
-```math
+$$
 \min_{\mathbf{T}} \mathbb{E}\left[\|\mathbf{T}(\mathbf{x}_0) - \mathbf{x}_1\|^2\right] + \lambda\,\mathrm{KL}(q_{\mathbf{T}} \| p_{\text{data}})
-```
+$$
 
 ここで：
 - 第1項：輸送コスト（直線性）
@@ -735,9 +735,9 @@ Rectified Flowの再訓練（reflow）は、軌道を直線に近づけるが、
 **提案**：
 Stochastic Interpolants（Zone 3.4）を**マルチタスク学習**に拡張：
 
-```math
+$$
 \mathcal{L}_{\text{multi}} = \sum_{k=1}^K w_k\,\mathbb{E}_{t, \mathbf{x}_0, \mathbf{x}_1^{(k)}}\left[\left\|\mathbf{v}_\theta^{(k)}(t, \mathbf{x}_t) - \mathbf{u}_t^{(k)}\right\|^2\right]
-```
+$$
 
 ここで：
 - $k$：タスクインデックス（例：$k=1$はテキスト条件、$k=2$はスタイル条件）
@@ -772,7 +772,7 @@ Stochastic Interpolants（Zone 3.4）を**マルチタスク学習**に拡張：
    - 離散状態間の遷移確率をFlowとして定式化
    - Rate matrix $\mathbf{Q}_t$を学習
 
-   ```math
+   $$
    \frac{\partial p_t}{\partial t} = p_t \mathbf{Q}_t
    ```
 
@@ -939,29 +939,29 @@ Flow Matchingのコミュニティは活発で、毎月新しい論文が登場�
 ### 7.2 重要な数式の総まとめ
 
 **CFM Loss**：
-```math
+$$math
 \mathcal{L}_{\text{CFM}}(\theta) = \mathbb{E}_{t, \mathbf{x}_0, \mathbf{x}_1}\left[\left\|\mathbf{v}_\theta(t, \mathbf{x}_t) - \mathbf{u}_t(\mathbf{x}_t | \mathbf{x}_1, \mathbf{x}_0)\right\|^2\right]
 ```
 
 **Gaussian Probability Path**（OT）：
-```math
+$$
 \mu_t(\mathbf{x}_1, \mathbf{x}_0) = t\mathbf{x}_1 + (1-t)\mathbf{x}_0, \quad \sigma_t = \sigma_{\min}
-```
+$$
 
 **条件付き速度場**（OT Path）：
-```math
+$$
 \mathbf{u}_t(\mathbf{x} | \mathbf{x}_1, \mathbf{x}_0) = \mathbf{x}_1 - \mathbf{x}_0
-```
+$$
 
 **Score ↔ Flow等価性**：
-```math
+$$
 \mathbf{v}_t(\mathbf{x}) = \mathbf{f}(\mathbf{x}, t) - \frac{1}{2}g(t)^2\nabla_{\mathbf{x}}\log p_t(\mathbf{x})
-```
+$$
 
 **Wasserstein勾配流**：
-```math
+$$
 \mathbf{v}_t = -\nabla \frac{\delta \mathcal{F}}{\delta p}\bigg|_{p=p_t}
-```
+$$
 
 ---
 
@@ -999,9 +999,9 @@ Flow Matchingを実装する際の必須要素：
 **A**：
 最適輸送理論により、$p_0$から$p_1$への「最短経路」がOT Pathであることが保証される。数学的には：
 
-```math
+$$
 W_2(p_0, p_1)^2 = \inf_{\pi} \mathbb{E}_{(\mathbf{x}_0, \mathbf{x}_1) \sim \pi}\left[\|\mathbf{x}_1 - \mathbf{x}_0\|^2\right]
-```
+$$
 
 この最適解が直線経路$\mu_t = t\mathbf{x}_1 + (1-t)\mathbf{x}_0$を与える（Gaussianの場合）。
 
