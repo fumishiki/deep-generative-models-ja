@@ -602,7 +602,10 @@ $$
 
 1. スコア計算 ($\sqrt{d}=\sqrt{2}$ で割る):
    $$
-   S_{11} = \frac{Q_1 K_1^\top}{\sqrt{2}} = \frac{1}{\sqrt{2}} \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix} = \begin{bmatrix} 0.707 & 0 \\ 0 & 0.707 \end{bmatrix}
+   \begin{aligned}
+   S_{11} &= \frac{Q_1 K_1^\top}{\sqrt{2}} = \frac{1}{\sqrt{2}} \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix} \\[4pt]
+   &= \begin{bmatrix} 0.707 & 0 \\ 0 & 0.707 \end{bmatrix}
+   \end{aligned}
    $$
 
 2. 行ごとの最大値更新:
@@ -625,18 +628,21 @@ $$
    $$
 
    $$
-   O_1^{(1)} = \frac{\exp(S_{11} - m_1^{(1)}) V_1}{\ell_1^{(1)}} = \frac{1}{1.493} \begin{bmatrix} 1 & 0.493 \\ 0.493 & 1 \end{bmatrix} \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}
-   $$
-
-   $$
-   = \frac{1}{1.493} \begin{bmatrix} 1 & 0.493 \\ 0.493 & 1 \end{bmatrix} = \begin{bmatrix} 0.670 & 0.330 \\ 0.330 & 0.670 \end{bmatrix}
+   \begin{aligned}
+   O_1^{(1)} &= \frac{\exp(S_{11} - m_1^{(1)}) V_1}{\ell_1^{(1)}} \\[4pt]
+   &= \frac{1}{1.493} \begin{bmatrix} 1 & 0.493 \\ 0.493 & 1 \end{bmatrix} \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix} \\[4pt]
+   &= \frac{1}{1.493} \begin{bmatrix} 1 & 0.493 \\ 0.493 & 1 \end{bmatrix} = \begin{bmatrix} 0.670 & 0.330 \\ 0.330 & 0.670 \end{bmatrix}
+   \end{aligned}
    $$
 
 **列ブロック $j=2$** ($K_2, V_2$ を処理):
 
 1. スコア計算:
    $$
-   S_{12} = \frac{Q_1 K_2^\top}{\sqrt{2}} = \frac{1}{\sqrt{2}} \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix} = \begin{bmatrix} 0.707 & 0.707 \\ 0.707 & 0 \end{bmatrix}
+   \begin{aligned}
+   S_{12} &= \frac{Q_1 K_2^\top}{\sqrt{2}} = \frac{1}{\sqrt{2}} \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix} \\[4pt]
+   &= \begin{bmatrix} 0.707 & 0.707 \\ 0.707 & 0 \end{bmatrix}
+   \end{aligned}
    $$
 
 2. 最大値更新:
