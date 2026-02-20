@@ -1,12 +1,17 @@
-# 深層生成モデル完全講座
+# deep-generative-models-ja
 
-**大学AI教育の完全上位互換 — 全58記事・無料公開 (2025-2026)**
+**深層生成モデル完全講座 — 大学AI教育の完全上位互換 / 全58記事・無料公開 (2025–2026)**
 
-松尾研「深層生成モデル」の到達点はDDPM（2020年）だ。Flow Matching・DiT・Consistency Modelsはゼロ。のべ55,000人がこの講座を受け、受講料¥33,000を払った。MITとStanfordは無料で世界に公開している。
+```
+松尾研「深層生成モデル」の到達点: DDPM（2020年）
+本シリーズの到達点:              Flow Matching / DiT / Consistency Models / World Models（2025–2026 SOTA）
+```
 
-本シリーズはその完全な代替として構築した。数式を一行一行導出し、Julia + Rustで実装し、2025-2026 SOTAまで到達する。全て無料。MacBook M1 16GB で完結する。
+数式を一行一行導出し、Julia + Rust で実装する。全て無料。MacBook M1 16GB で完結する。
 
-→ [導入記事 / なぜこれを作ったか](https://zenn.dev/fumi_shigi/articles/ml-lecture-00)
+→ **[導入記事: なぜこれを作ったか](https://zenn.dev/fumi_shigi/articles/ml-lecture-00)**
+→ **[第1回から読み始める](https://zenn.dev/fumi_shigi/articles/ml-lecture-01-part1)**
+→ **[著者自己紹介](https://zenn.dev/fumi_shigi/articles/airesearcher)**
 
 ---
 
@@ -220,7 +225,7 @@ GPU不要・クラウド課金なしを徹底する。ELBOの導出は30万パ�
 ### 著者
 
 - [Zenn著者プロフィール](https://zenn.dev/fumi_shigi)
-- [自己紹介記事](https://zenn.dev/fumi_shigi/articles/00-ai-native-engineer-intro)
+- [自己紹介記事](https://zenn.dev/fumi_shigi/articles/airesearcher)
 - [GitHub](https://github.com/fumishiki) — 先行公開・実装コード
 
 ---
@@ -296,7 +301,7 @@ graph TD
 
 **リンク**:
 - [Zennプロフィール](https://zenn.dev/fumi_shigi)
-- [自己紹介記事](https://zenn.dev/fumi_shigi/articles/00-ai-native-engineer-intro)
+- [自己紹介記事](https://zenn.dev/fumi_shigi/articles/airesearcher)
 - [GitHub](https://github.com/fumishiki)
 - [X (Twitter)](https://x.com/fumishiki)
 
