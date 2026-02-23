@@ -8,7 +8,7 @@ published: true
 
 ## 自己紹介
 
-**CEO / Independent AI Researcher（2025年8月〜）**
+**CEO / Independent AI Researcher**
 
 MacBook Air M1（16GB）一台で、Rust と Rust を限界までチューニングしながらオンデバイスAIを独力開発しています。週20本超の arXiv 論文を実装する生活。限界スペックをハイオク燃料にして駆動中です。
 
