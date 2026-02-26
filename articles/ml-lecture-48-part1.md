@@ -1639,7 +1639,7 @@ $$
 
 ## 💻 4. 実装ゾーン（45分）— Production-Ready Scientific AI
 
-### 4.1 CrystalFlow完全実装（Candle）
+### 4.1 CrystalFlow完全実装（Python PyTorch + Rust推論）
 
 
 ### 4.2 RFdiffusion3 All-Atom Inference
@@ -1703,7 +1703,7 @@ $$
 - CrystalFlow/FlowMM/DMFlowの Flow Matching for Materials（周期境界条件、Riemannian多様体、無秩序材料）
 
 **実装スキル**:
-- CandleでのE(3)-equivariant GNN実装
+- PyTorchでのE(3)-equivariant GNN実装（推論はtch-rs）
 - Flow Matching velocity network
 - Property-guided generation（Classifier guidance + Property predictor）
 - Multi-modal protein-ligand docking

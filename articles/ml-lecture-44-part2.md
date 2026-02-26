@@ -19,172 +19,134 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 #### 4.1.1 環境構築
 
 ```bash
-# Rust (candle + burn, cargo 1.75+)
-julia --version
+# Python (PyTorch + torchaudio)
+rustup --version  # verify installation
 
 # Packages
-julia -e 'using Pkg; Pkg.add(["Flux", "CUDA", "Zygote", "FFTW", "WAV", "ProgressMeter"])'
+# Add dependencies to Cargo.toml: see [dependencies] section below
 ```
 
 #### 4.1.2 Tiny Flow Matching TTS（CPU 10分訓練）
 
 **目標**: 簡単な音声合成（2音素 "a", "i" → 異なる周波数のサイン波）
 
-```rust
-// tiny_flow_tts.rs
-use candle_core::{Device, Tensor};
-use candle_nn::{self as nn, Module, VarBuilder, VarMap};
-use ndarray::{Array1, Array2};
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::Normal;
-use rand::Rng;
-use rustfft::{FftPlanner, num_complex::Complex};
+```python
+# tiny_flow_tts.py — Flow Matching TTS (PyTorch training)
+from __future__ import annotations
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
 
-// --- Dataset: 2 phonemes → sine waves ---
-fn generate_phoneme_dataset(n_samples: usize, duration: f64, sample_rate: usize)
-    -> (Vec<usize>, Vec<Array1<f32>>)
-{
-    let mut rng = rand::thread_rng();
-    let n = (sample_rate as f64 * duration) as usize;
-    let phonemes: Vec<usize> = (0..n_samples).map(|_| rng.gen_range(0..2)).collect();
-    let audios: Vec<Array1<f32>> = phonemes.iter().map(|&p| {
-        let freq = if p == 0 { 220.0_f64 } else { 440.0_f64 };
-        Array1::from_iter((0..n).map(|i| {
-            (2.0 * std::f64::consts::PI * freq * i as f64 / sample_rate as f64).sin() as f32
-        }))
-    }).collect();
-    (phonemes, audios)
-}
+# --- Dataset: 2 phonemes → sine waves ---
+def generate_phoneme_dataset(
+    n_samples: int, duration: float, sample_rate: int
+) -> tuple[list[int], list[np.ndarray]]:
+    n = int(sample_rate * duration)
+    phonemes: list[int] = np.random.randint(0, 2, n_samples).tolist()
+    audios = [
+        np.array(
+            [(np.sin(2.0 * np.pi * (220.0 if p == 0 else 440.0) * i / sample_rate))
+             for i in range(n)],
+            dtype=np.float32,
+        )
+        for p in phonemes
+    ]
+    return phonemes, audios
 
-// --- Flow Matching Model ---
-struct FlowMatchingTTS {
-    text_emb: nn::Embedding,  // Embedding layer
-    fc1: nn::Linear,          // Velocity network (MLP) layer 1
-    fc2: nn::Linear,          // Velocity network (MLP) layer 2
-    fc3: nn::Linear,          // Velocity network (MLP) layer 3
-}
+# --- Flow Matching Model ---
+class FlowMatchingTTS(nn.Module):
+    def __init__(self, vocab_size: int, audio_dim: int, hidden_dim: int) -> None:
+        super().__init__()
+        self.text_emb = nn.Embedding(vocab_size, hidden_dim)
+        self.fc1 = nn.Linear(audio_dim + hidden_dim + 1, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, audio_dim)
 
-impl FlowMatchingTTS {
-    fn new(vocab_size: usize, audio_dim: usize, hidden_dim: usize, vb: VarBuilder) -> candle_core::Result<Self> {
-        let text_emb = candle_nn::Embedding::new(vocab_size, hidden_dim, vb.pp("text_emb"))?;
-        let fc1 = nn::linear(audio_dim + hidden_dim + 1, 256, vb.pp("fc1"))?; // x + text_emb + t
-        let fc2 = nn::linear(256, 256, vb.pp("fc2"))?;
-        let fc3 = nn::linear(256, audio_dim, vb.pp("fc3"))?;
-        Ok(Self { text_emb, fc1, fc2, fc3 })
-    }
+    def forward(self, x_t: torch.Tensor, t: float, phoneme_id: int) -> torch.Tensor:
+        emb = self.text_emb(torch.tensor([phoneme_id]))  # [1, hidden_dim]
+        t_t = torch.tensor([t])                           # [1]
+        inp = torch.cat([x_t, emb.squeeze(0), t_t])      # [audio_dim+hidden+1]
+        h = self.fc1(inp).relu()
+        h = self.fc2(h).relu()
+        return self.fc3(h)
 
-    fn forward(&self, x_t: &Tensor, t: f32, phoneme_id: usize) -> candle_core::Result<Tensor> {
-        let emb = self.text_emb.forward(&Tensor::new(&[phoneme_id as u32], x_t.device())?)?;
-        let t_tensor = Tensor::new(&[t], x_t.device())?;
-        let input = Tensor::cat(&[x_t, &emb, &t_tensor], 0)?;
-        let h = self.fc1.forward(&input)?.relu()?;
-        let h = self.fc2.forward(&h)?.relu()?;
-        self.fc3.forward(&h)
-    }
-}
+# --- Training ---
+def train_flow_tts(n_epochs: int, n_samples: int) -> FlowMatchingTTS:
+    phonemes, audios = generate_phoneme_dataset(n_samples, 1.0, 8000)
+    audio_dim = len(audios[0])
+    model = FlowMatchingTTS(2, audio_dim, 64)
+    optimizer = AdamW(model.parameters(), lr=1e-3)
 
-// --- Training ---
-fn train_flow_tts(n_epochs: usize, n_samples: usize) -> candle_core::Result<FlowMatchingTTS> {
-    let (x_text, x_audio) = generate_phoneme_dataset(n_samples, 1.0, 8000);
-    let audio_dim = x_audio[0].len();
-    let dev = Device::Cpu;
-    let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &dev);
-    let model = FlowMatchingTTS::new(2, audio_dim, 64, vb)?;
-    let mut optimizer = candle_nn::AdamW::new(varmap.all_vars(), candle_nn::ParamsAdamW::default())?;
+    for epoch in range(1, n_epochs + 1):
+        losses: list[float] = []
+        for i in range(n_samples):
+            t = float(np.random.rand())
+            x0 = torch.randn(audio_dim)
+            x1 = torch.from_numpy(audios[i])
+            # x_t = (1-t)·x₀ + t·x₁  (linear interpolation path, t∈[0,1])
+            x_t = (1.0 - t) * x0 + t * x1
+            # u_t = x₁ - x₀  (conditional vector field: constant velocity along straight path)
+            u_t = x1 - x0
+            v_pred = model(x_t, t, phonemes[i])
+            # L_FM = E[||v_θ(x_t,t,c) - u_t||²]  (Flow Matching loss)
+            loss = ((v_pred - u_t) ** 2).mean()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}: Loss = {np.mean(losses):.4f}")
 
-    for epoch in 1..=n_epochs {
-        let mut losses = Vec::with_capacity(n_samples);
-        for i in 0..n_samples {
-            let mut rng = rand::thread_rng();
-            let t: f32 = rng.gen::<f32>();
-            // x0 ~ N(0,I): noise source, x1: target audio
-            let x0 = Array1::<f32>::random(audio_dim, Normal::new(0.0_f32, 1.0).unwrap());
-            let x1 = &x_audio[i];
-            // x_t = (1-t)·x₀ + t·x₁  (linear interpolation path, t∈[0,1])
-            let x_t: Vec<f32> = x0.iter().zip(x1.iter())
-                .map(|(&a, &b)| (1.0 - t) * a + t * b).collect();
-            // u_t = x₁ - x₀  (conditional vector field: constant velocity along straight path)
-            let u_t: Vec<f32> = x1.iter().zip(x0.iter()).map(|(&a, &b)| a - b).collect();
-            let x_t_tensor = Tensor::from_vec(x_t, audio_dim, &dev)?;
-            let u_t_tensor = Tensor::from_vec(u_t, audio_dim, &dev)?;
-            let v_pred = model.forward(&x_t_tensor, t, x_text[i])?;
-            // L_FM = E[||v_θ(x_t,t,c) - u_t||²]  (Flow Matching loss)
-            let diff = (v_pred - u_t_tensor)?;
-            let loss = diff.sqr()?.mean_all()?;
-            optimizer.backward_step(&loss)?;
-            losses.push(loss.to_scalar::<f32>()?);
-        }
-        if epoch % 10 == 0 {
-            let mean_loss = losses.iter().sum::<f32>() / losses.len() as f32;
-            println!("Epoch {epoch}: Loss = {mean_loss}");
-        }
-    }
+    return model
 
-    Ok(model)
-}
+# --- Sampling ---
+@torch.no_grad()
+def sample_flow_tts(
+    model: FlowMatchingTTS, phoneme_id: int, steps: int, audio_dim: int
+) -> list[float]:
+    x = torch.randn(audio_dim)
+    dt = 1.0 / steps
+    for step in range(1, steps + 1):
+        t = step * dt
+        v = model(x, t, phoneme_id)
+        # Euler: x_{t+dt} = x_t + v_θ(x_t,t,c)·dt  (ODE integration)
+        x = x + v * dt
+    return x.tolist()
 
-// --- Sampling ---
-fn sample_flow_tts(model: &FlowMatchingTTS, phoneme_id: usize, steps: usize, audio_dim: usize)
-    -> candle_core::Result<Vec<f32>>
-{
-    let dev = Device::Cpu;
-    let mut x = Array1::<f32>::random(audio_dim, Normal::new(0.0_f32, 1.0).unwrap());
-    let dt = 1.0_f32 / steps as f32;
-    for step in 1..=steps {
-        let t = step as f32 * dt;
-        let x_tensor = Tensor::from_slice(x.as_slice().unwrap(), audio_dim, &dev)?;
-        let v = model.forward(&x_tensor, t, phoneme_id)?.to_vec1::<f32>()?;
-        // Euler: x_{t+dt} = x_t + v_θ(x_t,t,c)·dt  (ODE integration)
-        for (xi, vi) in x.iter_mut().zip(v.iter()) {
-            *xi += vi * dt;
-        }
-    }
-    Ok(x.to_vec())
-}
+if __name__ == "__main__":
+    import numpy.fft as nfft
 
-fn main() -> candle_core::Result<()> {
-    println!("【Tiny Flow Matching TTS 訓練】");
-    println!("Task: 2 phonemes ('a'=220Hz, 'i'=440Hz) → sine waves");
-    println!("Dataset: 100 samples, 1 sec @ 8kHz");
-    println!("Model: Flow Matching (MLP velocity network)");
-    println!();
+    print("【Tiny Flow Matching TTS 訓練】")
+    print("Task: 2 phonemes ('a'=220Hz, 'i'=440Hz) → sine waves")
+    print("Dataset: 100 samples, 1 sec @ 8kHz")
+    print("Model: Flow Matching (MLP velocity network)")
+    print()
 
-    let model_trained = train_flow_tts(50, 100)?;
+    model_trained = train_flow_tts(50, 100)
 
-    println!("\n【Sampling】");
-    let audio_a = sample_flow_tts(&model_trained, 0, 10, 8000)?;
-    let audio_i = sample_flow_tts(&model_trained, 1, 10, 8000)?;
+    print("\n【Sampling】")
+    audio_a = sample_flow_tts(model_trained, 0, 10, 8000)
+    audio_i = sample_flow_tts(model_trained, 1, 10, 8000)
 
-    println!("Phoneme 'a' (220Hz): generated audio length = {}", audio_a.len());
-    println!("Phoneme 'i' (440Hz): generated audio length = {}", audio_i.len());
+    print(f"Phoneme 'a' (220Hz): generated audio length = {len(audio_a)}")
+    print(f"Phoneme 'i' (440Hz): generated audio length = {len(audio_i)}")
 
-    // FFT で周波数確認
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(audio_a.len());
-    let mut buf_a: Vec<Complex<f32>> = audio_a.iter().map(|&x| Complex::new(x, 0.0)).collect();
-    let mut buf_i: Vec<Complex<f32>> = audio_i.iter().map(|&x| Complex::new(x, 0.0)).collect();
-    fft.process(&mut buf_a);
-    fft.process(&mut buf_i);
-    let fft_a: Vec<f32> = buf_a.iter().map(|c| c.norm()).collect();
-    let fft_i: Vec<f32> = buf_i.iter().map(|c| c.norm()).collect();
-    // Skip DC (index 0)
-    let freq_a = fft_a[1..4000].iter().enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i + 1).unwrap_or(0);
-    let freq_i = fft_i[1..4000].iter().enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i + 1).unwrap_or(0);
+    # FFT で周波数確認
+    fft_a = np.abs(nfft.rfft(audio_a))
+    fft_i = np.abs(nfft.rfft(audio_i))
+    freq_a = int(np.argmax(fft_a[1:]) + 1)
+    freq_i = int(np.argmax(fft_i[1:]) + 1)
 
-    println!("\nFFT peak (simplified):");
-    println!("  'a': bin {freq_a} (expected ~220Hz)");
-    println!("  'i': bin {freq_i} (expected ~440Hz)");
-    println!("\n→ Flow Matching TTS で音素→音声の変換成功");
-    Ok(())
-}
+    print(f"\nFFT peak (simplified):")
+    print(f"  'a': bin {freq_a} (expected ~220Hz)")
+    print(f"  'i': bin {freq_i} (expected ~440Hz)")
+    print("\n→ Flow Matching TTS で音素→音声の変換成功")
 ```
 
 **実行**:
 ```bash
-julia tiny_flow_tts.jl
+python tiny_flow_tts.py
 ```
 
 **期待される出力**:
@@ -204,7 +166,7 @@ FFT peak (simplified):
 → Flow Matching TTS で音素→音声の変換成功
 ```
 
-#### 4.1.3 Rust 実装のポイント
+#### 4.1.3 Python 実装のポイント
 
 **数式→コードの1:1対応**:
 
@@ -224,10 +186,10 @@ $$
 \mathcal{L} = \|\mathbf{v}_\theta - \mathbf{u}_t\|^2 \quad \Leftrightarrow \quad \text{loss = mean((v_pred .- u_t).^2)}
 $$
 
-**Rust の利点**:
-- **Broadcast演算** (`.+`, `.*`): ベクトル演算が自然
-- **Automatic Differentiation** (Zygote): 勾配計算が自動
-- **型安定性**: Float32 で統一 → 高速
+**PyTorch の利点**:
+- **Autograd**: `loss.backward()` で勾配計算が自動
+- **Broadcast演算**: `(1-t) * x0 + t * x1` がそのままベクトル演算
+- **型安定性**: `torch.float32` で統一 → GPU でも同一コード
 
 ### 4.2 Rust: リアルタイム音声推論
 
@@ -241,53 +203,51 @@ cd audio_inference_rust
 **Cargo.toml**:
 ```toml
 [dependencies]
-candle-core = "0.6"
-candle-nn = "0.6"
-hound = "3.5"  # WAV file I/O
-rand = "0.8"
+tch   = "0.16"  # PyTorch C++ bindings (libtorch)
+hound = "3.5"   # WAV file I/O
+rand  = "0.8"
 ```
 
 #### 4.2.2 Rust 推論エンジン
 
 **src/main.rs**:
 ```rust
-use candle_core::{Device, Result, Tensor};
-use candle_nn::{Module, VarBuilder, VarMap};
+use tch::{Device, Kind, Tensor, nn};
+use tch::nn::Module;
 use hound;
 use rand::Rng;
 
-// Flow Matching inference
+// Flow Matching inference (Euler ODE sampler)
 fn flow_matching_sample(
-    model: &dyn Module,
+    model: &dyn nn::Module,
     phoneme_emb: &Tensor,
     steps: usize,
     audio_dim: usize,
-    device: &Device,
-) -> Result<Tensor> {
+    device: Device,
+) -> Tensor {
     let mut rng = rand::thread_rng();
     let x0: Vec<f32> = (0..audio_dim).map(|_| rng.gen::<f32>() - 0.5).collect();
-    let dt = 1.0 / steps as f32;
+    let dt = 1.0_f32 / steps as f32;
 
     // dx/dt = v_θ(x_t,t,c)  →  Euler: x_{t+dt} = x_t + v·dt
-    (1..=steps).try_fold(Tensor::from_vec(x0, audio_dim, device)?, |x, step| {
-        let t = Tensor::from_vec(vec![step as f32 * dt], 1, device)?;
-        let v = model.forward(&Tensor::cat(&[&x, phoneme_emb, &t], 0)?)?;
-        &x + &v.affine(dt, 0.0)?  // x_{t+dt} = x_t + v·dt
-    })
+    let mut x = Tensor::from_slice(&x0).to_device(device);
+    for step in 1..=steps {
+        let t = Tensor::from_slice(&[step as f32 * dt]).to_device(device);
+        let v = model.forward(&Tensor::cat(&[&x, phoneme_emb, &t], 0));
+        x = &x + v * dt as f64;  // x_{t+dt} = x_t + v·dt
+    }
+    x
 }
 
-fn main() -> Result<()> {
+fn main() {
     println!("【Rust Audio Inference】");
 
     let device = Device::Cpu;
-
-    let varmap = VarMap::new();
-    let _vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
-
-    let phoneme_emb = Tensor::zeros(64, candle_core::DType::F32, &device)?;
+    let vs = nn::VarStore::new(device);
+    let phoneme_emb = Tensor::zeros(&[64], (Kind::Float, device));
 
     println!("Sampling audio with Flow Matching...");
-    // let audio_tensor = flow_matching_sample(&model, &phoneme_emb, 10, 8000, &device)?;
+    // let audio_tensor = flow_matching_sample(&model, &phoneme_emb, 10, 8000, device);
 
     let audio_vec: Vec<f32> = (0..8000).map(|i| (i as f32 / 8000.0).sin()).collect();
 
@@ -298,15 +258,14 @@ fn main() -> Result<()> {
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = hound::WavWriter::create("output.wav", spec)?;
+    let mut writer = hound::WavWriter::create("output.wav", spec)
+        .expect("failed to create WAV writer");
     audio_vec.iter()
-        .try_for_each(|&s| writer.write_sample((s * i16::MAX as f32) as i16))?;
-    writer.finalize()?;
+        .for_each(|&s| writer.write_sample((s * i16::MAX as f32) as i16).unwrap());
+    writer.finalize().expect("failed to finalize WAV");
 
     println!("Audio saved to output.wav");
     println!("→ Rust: ゼロコピー推論 + 低レイテンシ");
-
-    Ok(())
 }
 ```
 
@@ -316,11 +275,11 @@ cargo run --release
 ```
 
 **Rust 実装のポイント**:
-- **Candle**: Rust-native neural network framework（PyTorch-like API）
+- **tch-rs**: PyTorch C++ bindings for Rust（低レイテンシ推論）
 - **Zero-copy**: Tensor 操作が allocation を最小化
 - **Low latency**: リアルタイム推論に最適（<10ms）
 
-> **⚠️ Warning:** Candle の API は PyTorch より制約が多い。特に in-place 操作（`x += v`）は Tensor の ownership rules により使えないことが多い。代わりに `x = (x + v)?` のように新しい Tensor を返す関数型スタイルで書くこと。
+> **⚠️ Warning:** tch-rs では Tensor 演算が panic でエラーを報告する。本番推論コードでは `anyhow::Result` でラップし、`catch_unwind` でパニック境界を設けること。in-place 操作は `x += &v` の形で書けるが、autograd が不要な推論では必ず `tch::no_grad()` ブロック内で実行すること。
 
 ### 4.3 Elixir: 分散音声配信
 
@@ -408,7 +367,7 @@ curl -X POST http://localhost:4000/tts \
 ```mermaid
 graph LR
     A[User Request<br/>'hello'] --> B[Elixir Server<br/>Port 4000]
-    B --> C[Rust Inference<br/>Candle]
+    B --> C[Rust Inference<br/>tch-rs]
     C --> D[Trained Model<br/>from Rust]
     D --> E[Audio WAV]
     E --> B
@@ -426,11 +385,11 @@ graph LR
 
 ```rust
 println!("\n【3言語統合パイプライン】");
-println!("Rust: Flow Matching TTS 訓練 (Candle)");
+println!("Python: Flow Matching TTS 訓練 (PyTorch)");
 println!("  → Model weights → ファイル保存");
 println!();
 println!("Rust: リアルタイム推論");
-println!("  → Candle で weights 読み込み");
+println!("  → tch-rs で weights 読み込み");
 println!("  → Flow Matching sampling (10 steps)");
 println!("  → WAV 出力 (<10ms latency)");
 println!();
@@ -926,7 +885,7 @@ println!("   → Distribution-free（仮定の少なさ = 汎用性）");
 <details><summary>Q3: Rust で音声処理は現実的か？</summary>
 
 **Answer**:
-**Yes**。FFTW.jl（高速FFT）、WAV.jl（WAV I/O）、Candle（NN訓練）が揃い、数式→コードの1:1対応が研究に最適。ただし本番推論は Rust（Candle）が低レイテンシで優位。Rust = 研究・プロトタイプ、Rust = 本番推論、が現実的な分業。
+**Yes**。PyTorch（NN訓練）、torchaudio（音声処理）、numpy（数値計算）が揃い、数式→コードの1:1対応が研究に最適。本番推論は Rust（tch-rs）が低レイテンシで優位。Python = 研究・訓練、Rust = 本番推論、が現実的な分業。
 
 </details>
 
@@ -954,7 +913,7 @@ println!("   → Distribution-free（仮定の少なさ = 汎用性）");
 | **Day 2** | Zone 3.1-3.3 数式導出 + RVQ 実装 | 4h | RVQ 4-layer quantizer (Rust) |
 | **Day 3** | Zone 3.4-3.6 Flow Matching 導出 + 実装 | 4h | F5-TTS (tiny version, Rust) |
 | **Day 4** | Zone 3.7-3.8 Codec LM + FACodec | 3h | VALL-E 2 Repetition Aware Sampling |
-| **Day 5** | Zone 4 実装 + Rust 推論エンジン | 4h | Rust inference server (Candle) |
+| **Day 5** | Zone 4 実装 + Rust 推論エンジン | 4h | Rust inference server (tch-rs) |
 | **Day 6** | Zone 5 実験 + KAD 実装 | 3h | KAD metric (Rust) |
 | **Day 7** | Zone 6-7 + 総合プロジェクト | 4h | 3言語統合 TTS pipeline |
 
@@ -971,8 +930,8 @@ fn audio_generation_progress() {
         ("Codec LM (VALL-E 2)", false),
         ("Music Generation (MusicGen/Stable Audio)", false),
         ("Audio 評価指標 (FAD/KAD)", false),
-        ("Rust 音声処理 (hound/rustfft/candle)", false),
-        ("Rust 音声推論 (Candle)", false),
+        ("Rust 音声処理 (hound/rustfft/tch-rs)", false),
+        ("Rust 音声推論 (tch-rs)", false),
         ("Elixir 音声配信 (OTP/Port)", false),
         ("3言語統合パイプライン", false),
         ("Deepfake 音声の倫理理解", false),
@@ -1381,8 +1340,8 @@ $\mathbf{w}_0 \sim \mathcal{N}(0, I)$, $\mathbf{w}_1$ は真の waveform。
 ### 7.5 実装例: Minimal Flow Matching TTS (Rust)
 
 ```rust
-use candle_core::{Device, Tensor, DType};
-use candle_nn::{self as nn, Module, VarBuilder, VarMap};
+use tch::{Device, Tensor, Kind};
+use tch::nn::{self, Module, VarStore};
 use ndarray::{Array1, Array2};
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Normal;
@@ -1402,8 +1361,8 @@ fn extract_mel(waveform: &[f32], sr: usize, n_fft: usize, hop: usize, n_mels: us
 }
 
 // --- Velocity Network (1D U-Net) ---
-fn velocity_unet(n_mels: usize, hidden: usize, vb: VarBuilder) -> candle_core::Result<impl Module> {
-    // Encoder → Bottleneck → Decoder (sequential candle_nn layers)
+fn velocity_unet(n_mels: usize, hidden: usize, vs: &nn::Path) -> impl Module {
+    // Encoder → Bottleneck → Decoder (sequential tch-rs layers)
     let enc1 = nn::conv1d(n_mels + 1, hidden, 3, nn::Conv1dConfig { padding: 1, ..Default::default() }, vb.pp("enc1"))?;
     let enc2 = nn::conv1d(hidden, hidden * 2, 3, nn::Conv1dConfig { stride: 2, padding: 1, ..Default::default() }, vb.pp("enc2"))?;
     let bottleneck = nn::linear(hidden * 2, hidden * 2, vb.pp("bottleneck"))?;
@@ -1422,7 +1381,7 @@ fn train_flow_tts(
     mels: &[Array2<f32>],   // List of mel-spectrograms
     texts: &[Vec<usize>],   // Tokenized text
     n_epochs: usize,
-) -> candle_core::Result<(VarMap, Box<dyn Module>)> {
+) -> anyhow::Result<(VarStore, Box<dyn Module>)> {
     let dev = Device::Cpu;
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
@@ -1471,7 +1430,7 @@ fn sample_mel(
     _text: &[usize],
     t_frames: usize,
     steps: usize,
-) -> candle_core::Result<Array2<f32>> {
+) -> anyhow::Result<Array2<f32>> {
     let dev = Device::Cpu;
     let mut m = Array2::<f32>::random((t_frames, 80), Normal::new(0.0_f32, 1.0).unwrap());
     let dt = 1.0_f32 / steps as f32;

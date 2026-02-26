@@ -20,11 +20,11 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ```rust
 // Normalizing Flows in Rust
-// candle-core: テンソル演算 (GPU-ready, 型安定)
-// candle-nn:   ニューラルネット層 (Dense, Sequential …)
+// tch: テンソル演算 + ニューラルネット層 (GPU-ready, 型安定)
+// ort: ONNX Runtime推論 (cross-platform)
 // ODE:         手実装 Euler / Runge-Kutta (CNF用)
-use candle_core::{Tensor, DType, Device};
-use candle_nn::{Module, VarBuilder, VarMap, AdamW, ParamsAdamW};
+use tch::{Tensor, Kind, Device};
+use tch::nn::{self, Module};
 use ndarray::{Array1, Array2, ArrayView2, Axis, s};
 use rand::Rng;
 use rand_distr::StandardNormal;
@@ -32,7 +32,7 @@ use rand_distr::StandardNormal;
 
 **Lux選択理由**: Immutable (functional) → 型安定性 → Burn GPU AOT → Production-ready。
 
-> **⚠️ Warning:** Lux の `ps`（parameters）と `st`（states）を混同しないこと。`ps` は訓練で更新される重み、`st` は BatchNorm 統計などの状態（訓練中と推論時で動作が異なる）。Candle から Candle へ移行する際の最大の落とし穴。
+> **⚠️ Warning:** Lux の `ps`（parameters）と `st`（states）を混同しないこと。`ps` は訓練で更新される重み、`st` は BatchNorm 統計などの状態（訓練中と推論時で動作が異なる）。tch-rs から tch-rs へ移行する際の最大の落とし穴。
 
 ### 4.2 Coupling Layer実装
 
@@ -90,8 +90,8 @@ fn affine_coupling_inverse(
 ### 4.3 RealNVP Stack
 
 ```rust
-use candle_core::{Tensor, DType, Device};
-use candle_nn::{Module, Sequential, VarBuilder, Activation, linear};
+use tch::{Tensor, Kind, Device};
+use tch::nn::{self, Module, Sequential};
 
 // RealNVP coupling layer: s-net + t-net + split index d
 struct CouplingLayer {
@@ -107,14 +107,14 @@ struct RealNVP {
 
 impl RealNVP {
     fn new(in_dim: usize, hidden_dim: usize, n_layers: usize, vb: &VarBuilder)
-        -> candle_core::Result<Self>
+        -> anyhow::Result<Self>
     {
         let layers = (0..n_layers).map(|i| {
             // Alternate split so every dimension gets transformed
             let d = if i % 2 == 0 { in_dim / 2 } else { in_dim - in_dim / 2 };
             let out_dim = in_dim - d;
-            let mk_net = |prefix: &str| -> candle_core::Result<Sequential> {
-                Ok(candle_nn::seq()
+            let mk_net = |prefix: &str| -> anyhow::Result<Sequential> {
+                Ok(nn::seq()
                     .add(linear(d, hidden_dim, vb.pp(format!("{prefix}.0")))?)
                     .add(Activation::Tanh)
                     .add(linear(hidden_dim, hidden_dim, vb.pp(format!("{prefix}.1")))?)
@@ -126,12 +126,12 @@ impl RealNVP {
                 t_net: mk_net(&format!("layer{i}_t"))?,
                 d,
             })
-        }).collect::<candle_core::Result<Vec<_>>>()?;
+        }).collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self { layers })
     }
 
     // Forward: z → x,  log p(x) = log p(z) + Σᵢ log|det Jᵢ|
-    fn forward(&self, z: &Tensor) -> candle_core::Result<(Tensor, Tensor)> {
+    fn forward(&self, z: &Tensor) -> anyhow::Result<(Tensor, Tensor)> {
         let mut x = z.clone();
         let mut log_det = Tensor::zeros(z.dims()[1], DType::F32, z.device())?;
         for layer in &self.layers {
@@ -143,7 +143,7 @@ impl RealNVP {
     }
 
     // Inverse: x → z  (f⁻¹: layers in reverse, log|det J⁻¹| = -Σ log|det Jᵢ|)
-    fn inverse(&self, x: &Tensor) -> candle_core::Result<(Tensor, Tensor)> {
+    fn inverse(&self, x: &Tensor) -> anyhow::Result<(Tensor, Tensor)> {
         let mut z = x.clone();
         let mut log_det = Tensor::zeros(x.dims()[1], DType::F32, x.device())?;
         for layer in self.layers.iter().rev() {
@@ -158,62 +158,56 @@ impl RealNVP {
 
 ### 4.4 訓練ループ
 
-```rust
-use candle_core::{Tensor, DType};
-use candle_nn::Optimizer;
+```python
+import torch
+import torch.nn as nn
 
-// Negative log-likelihood: NLL = -E[log p(x)]
-// log p(x) = log p_z(f⁻¹(x)) + log|det J_{f⁻¹}|,   z = f⁻¹(x) ~ N(0, I)
-fn nll_loss(model: &RealNVP, x_batch: &Tensor) -> candle_core::Result<Tensor> {
-    // z = f⁻¹(x),  log|det J⁻¹| accumulated over layers
-    let (z, log_det_sum) = model.inverse(x_batch)?;
+# Negative log-likelihood: NLL = -E[log p(x)]
+# log p(x) = log p_z(f⁻¹(x)) + log|det J_{f⁻¹}|,   z = f⁻¹(x) ~ N(0, I)
+def nll_loss(model: "RealNVP", x_batch: torch.Tensor) -> torch.Tensor:
+    # z = f⁻¹(x),  log|det J⁻¹| accumulated over layers
+    z, log_det_sum = model.inverse(x_batch)
 
-    // log p(z) = -½ Σᵢ zᵢ²  (drop constant -D/2·log 2π; cancelled in comparison)
-    // = Σᵢ log 𝒩(zᵢ; 0,1)  (factored standard Gaussian)
-    let log_pz = (z.sqr()?.sum(0)? * -0.5)?;
+    # log p(z) = -½ Σᵢ zᵢ²  (drop constant -D/2·log 2π; cancelled in comparison)
+    log_pz = -0.5 * z.pow(2).sum(dim=0)
 
-    // log p(x) = log p_z(z) + log|det J⁻¹|   (change-of-variables)
-    let log_px = (&log_pz + &log_det_sum)?;
+    # log p(x) = log p_z(z) + log|det J⁻¹|   (change-of-variables)
+    log_px = log_pz + log_det_sum
 
-    // NLL = -mean(log p(x))   (minimise → maximise likelihood)
-    log_px.mean_all()?.neg()
-}
+    # NLL = -mean(log p(x))   (minimise → maximise likelihood)
+    return -log_px.mean()
 
-// Training loop
-fn train_realnvp(
-    model: &RealNVP,
-    opt: &mut impl Optimizer,
-    data: &Tensor,        // [D, N]
-    n_epochs: usize,
-    batch_size: usize,
-) -> candle_core::Result<()> {
-    let n_samples = data.dims()[1];
-    for epoch in 0..n_epochs {
-        let mut epoch_loss = 0f64;
-        let mut n_batches = 0usize;
 
-        for start in (0..n_samples).step_by(batch_size) {
-            let end = (start + batch_size).min(n_samples);
-            let x_batch = data.narrow(1, start, end - start)?;
-            let loss = nll_loss(model, &x_batch)?;
-            opt.backward_step(&loss)?;
+# Training loop
+def train_realnvp(
+    model: "RealNVP",
+    optimizer: torch.optim.Optimizer,
+    data: torch.Tensor,   # [D, N]
+    n_epochs: int,
+    batch_size: int,
+) -> None:
+    n_samples = data.shape[1]
+    for epoch in range(n_epochs):
+        epoch_loss = 0.0
+        n_batches = 0
 
-            epoch_loss += loss.to_scalar::<f32>()? as f64;
-            n_batches += 1;
-        }
+        for start in range(0, n_samples, batch_size):
+            x_batch = data[:, start:start + batch_size]
+            loss = nll_loss(model, x_batch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+            n_batches += 1
 
-        if (epoch + 1) % 10 == 0 {
-            println!("Epoch {}: NLL = {:.4}", epoch + 1, epoch_loss / n_batches as f64);
-        }
-    }
-    Ok(())
-}
+        if (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch + 1}: NLL = {epoch_loss / n_batches:.4f}")
 ```
 
 ### 4.5 CNF/FFJORD実装
 
 ```rust
-use candle_core::{Tensor, DType};
+use tch::{Tensor, Kind};
 use rand_distr::StandardNormal;
 
 // CNF: instantaneous change of variables via Hutchinson trace estimator
@@ -230,7 +224,7 @@ fn cnf_step(
     f_net: &impl Module,   // velocity field
     dt: f64,
     rng: &mut impl Rng,
-) -> candle_core::Result<(Tensor, Tensor)> {
+) -> anyhow::Result<(Tensor, Tensor)> {
     let d = z.elem_count();
 
     // Velocity: dz/dt = f(z, t)
@@ -255,7 +249,7 @@ fn solve_cnf(
     t0: f64, t1: f64,
     n_steps: usize,
     rng: &mut impl Rng,
-) -> candle_core::Result<(Tensor, Tensor)> {
+) -> anyhow::Result<(Tensor, Tensor)> {
     let dt = (t1 - t0) / n_steps as f64;
     let mut z = z0.clone();
     let mut log_det = Tensor::zeros((), DType::F32, z0.device())?;  // log_det_jac = 0 initially
@@ -429,35 +423,25 @@ println!("Two Moons: shape = {:?}", data.shape());
 
 #### 5.1.2 RealNVP訓練
 
-```rust
-use candle_core::{Device, DType, Tensor};
-use candle_nn::{VarMap, VarBuilder, AdamW, ParamsAdamW};
+```python
+import torch
 
-let device = Device::Cpu;
-let in_dim    = 2usize;
-let hidden_dim = 64usize;
-let n_layers   = 8usize;
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+in_dim     = 2
+hidden_dim = 64
+n_layers   = 8
 
-// Build RealNVP — VarMap owns all parameters
-let var_map = VarMap::new();
-let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-let model = RealNVP::new(in_dim, hidden_dim, n_layers, &vb)?;
+# Build RealNVP (nn.Module) — parameters owned by model
+model = RealNVP(in_dim, hidden_dim, n_layers).to(device)
 
-// AdamW optimizer (lr=1e-3)
-let mut opt = AdamW::new(
-    var_map.all_vars(),
-    ParamsAdamW { lr: 1e-3, ..Default::default() },
-)?;
+# AdamW optimizer (lr=1e-3)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
-// Convert ndarray data to Candle tensor [2, N]
-let data_tensor = Tensor::from_slice(
-    data.as_slice().unwrap(),
-    (in_dim, data.ncols()),
-    &device,
-)?;
+# Convert ndarray data to torch tensor [2, N]
+data_tensor = torch.from_numpy(data).float().to(device)  # [2, N]
 
-// Train 500 epochs, batch_size=256
-train_realnvp(&model, &mut opt, &data_tensor, 500, 256)?;
+# Train 500 epochs, batch_size=256
+train_realnvp(model, optimizer, data_tensor, 500, 256)
 ```
 
 Output:
@@ -473,7 +457,7 @@ Epoch 500: NLL = 1.2341
 #### 5.1.3 生成サンプル可視化
 
 ```rust
-use candle_core::Tensor;
+use tch::Tensor;
 use rand_distr::StandardNormal;
 
 // Sample from trained model: z ~ N(0,I) → x = f(z)
@@ -492,7 +476,7 @@ println!("Generated {} samples from RealNVP", n_samples);
 
 ```rust
 use ndarray::Array2;
-use candle_core::Tensor;
+use tch::Tensor;
 
 // Evaluate log p(x) on a 2D grid via RealNVP inverse
 let nx = 100usize;
@@ -548,36 +532,28 @@ fn logit_transform(x: &Array2<f32>, alpha: f32, rng: &mut impl Rng) -> Array2<f3
 
 #### 5.2.2 Tiny RealNVP訓練
 
-```rust
-use candle_core::{Tensor, DType, Device};
-use candle_nn::{VarMap, VarBuilder, AdamW, ParamsAdamW};
+```python
+import torch
 
-// MNIST RealNVP: 784-dim input, 256 hidden, 12 coupling layers
-let var_map_mnist = VarMap::new();
-let vb_mnist = VarBuilder::from_varmap(&var_map_mnist, DType::F32, &device);
-let model_mnist = RealNVP::new(784, 256, 12, &vb_mnist)?;
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-// AdamW optimizer (lr=1e-4)
-let mut opt_mnist = AdamW::new(
-    var_map_mnist.all_vars(),
-    ParamsAdamW { lr: 1e-4, ..Default::default() },
-)?;
+# MNIST RealNVP: 784-dim input, 256 hidden, 12 coupling layers
+model_mnist = RealNVP(784, 256, 12).to(device)
 
-// Convert ndarray data to Candle tensor [784, N]
-let train_tensor = Tensor::from_slice(
-    train_x_trans.as_slice().unwrap(),
-    (784, train_x_trans.ncols()),
-    &device,
-)?;
+# AdamW optimizer (lr=1e-4)
+optimizer_mnist = torch.optim.AdamW(model_mnist.parameters(), lr=1e-4)
 
-// Train 20 epochs, batch_size=128
-train_realnvp(&model_mnist, &mut opt_mnist, &train_tensor, 20, 128)?;
+# Convert ndarray data to torch tensor [784, N]
+train_tensor = torch.from_numpy(train_x_trans).float().to(device)  # [784, N]
+
+# Train 20 epochs, batch_size=128
+train_realnvp(model_mnist, optimizer_mnist, train_tensor, 20, 128)
 ```
 
 #### 5.2.3 生成画像
 
 ```rust
-use candle_core::Tensor;
+use tch::Tensor;
 use rand_distr::StandardNormal;
 
 // Sample from trained MNIST model: z ~ N(0,I) → x = f(z)
@@ -589,7 +565,7 @@ let z_img = Tensor::from_slice(&z_vals, (784, n_samples_img), &device)?;
 let (x_img, _) = model_mnist.forward(&z_img)?;  // [784, 16]
 
 // Inverse logit: sigmoid maps ℝ → (0,1) to recover pixel values
-let x_img_sigmoid = candle_nn::ops::sigmoid(&x_img)?;
+let x_img_sigmoid = x_img.sigmoid();  // tch: Tensor::sigmoid()
 // Reshape to [16, 1, 28, 28] for image display (use an image crate like `image`)
 let x_img_grid = x_img_sigmoid.t()?.reshape((n_samples_img, 1, 28, 28))?;
 println!("Generated {} MNIST images: {:?}", n_samples_img, x_img_grid.dims());
@@ -716,99 +692,87 @@ $$
 
 #### 6.1.5 Flow Matching実装 (Rust/Lux)
 
-```rust
-use candle_core::{Tensor, DType, Device};
-use candle_nn::{Module, VarMap, VarBuilder, AdamW, ParamsAdamW, linear, Activation};
-use rand::Rng;
-use rand_distr::StandardNormal;
+```python
+import torch
+import torch.nn as nn
 
-// Conditional Flow Matching training in Rust / candle
+# Conditional Flow Matching training in Python / PyTorch
 
-// Vector field network: [x_t (2D)] → velocity (2D)
-fn build_vnet(vb: &VarBuilder) -> candle_core::Result<candle_nn::Sequential> {
-    Ok(candle_nn::seq()
-        .add(linear(2, 64,  vb.pp("l0"))?)
-        .add(Activation::Relu)
-        .add(linear(64, 128, vb.pp("l1"))?)
-        .add(Activation::Relu)
-        .add(linear(128, 64, vb.pp("l2"))?)
-        .add(Activation::Relu)
-        .add(linear(64, 2,   vb.pp("l3"))?))
-}
+# Vector field network: [x_t (2D)] → velocity (2D)
+def build_vnet() -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(2, 64),
+        nn.ReLU(),
+        nn.Linear(64, 128),
+        nn.ReLU(),
+        nn.Linear(128, 64),
+        nn.ReLU(),
+        nn.Linear(64, 2),
+    )
 
-// CFM loss: ℒ_CFM = E_{t,x₁,ε}[‖v_θ(x_t,t) - u_t(x_t|x₁)‖²]
-// OT path:  x_t = (1-t)x₁ + σ_t ε,  u_t = (x₁ - x_t) / (σ_t² + δ)
-fn cfm_loss(
-    vnet: &impl Module,
-    x1_batch: &Tensor,   // [2, B] — data samples
-    rng: &mut impl Rng,
-) -> candle_core::Result<Tensor> {
-    let (_, b) = x1_batch.dims2()?;
-    let device = x1_batch.device();
 
-    // t ~ Uniform[0,1] per sample
-    let t_vals: Vec<f32> = (0..b).map(|_| rng.gen::<f32>()).collect();
-    let t = Tensor::from_slice(&t_vals, (1, b), device)?;   // [1, B]
+# CFM loss: ℒ_CFM = E_{t,x₁,ε}[‖v_θ(x_t,t) - u_t(x_t|x₁)‖²]
+# OT path:  x_t = (1-t)x₁ + σ_t ε,  u_t = (x₁ - x_t) / (σ_t² + δ)
+def cfm_loss(
+    vnet: nn.Module,
+    x1_batch: torch.Tensor,  # [2, B] — data samples
+) -> torch.Tensor:
+    b = x1_batch.shape[1]
+    device = x1_batch.device
 
-    // σ_t = 0.1·(1-t)  — noise schedule shrinks toward t=1
-    let sigma_t = ((&Tensor::ones_like(&t)? - &t)? * 0.1f64)?;
+    # t ~ Uniform[0,1] per sample
+    t = torch.rand(1, b, device=device)  # [1, B]
 
-    // x_t = (1-t)·x₁ + σ_t·ε,  ε ~ N(0,I)   (conditional probability path)
-    let eps_vals: Vec<f32> = (0..2 * b).map(|_| rng.sample::<f32, _>(StandardNormal)).collect();
-    let eps = Tensor::from_slice(&eps_vals, (2, b), device)?;
-    let x_t = (x1_batch.broadcast_mul(
-        &(Tensor::ones_like(&t)? - &t)?
-    )? + eps.broadcast_mul(&sigma_t)?)?;
+    # σ_t = 0.1·(1-t)  — noise schedule shrinks toward t=1
+    sigma_t = 0.1 * (1.0 - t)
 
-    // Target conditional velocity: u_t = (x₁ - x_t) / (σ_t² + δ)
-    let sigma_sq = (sigma_t.sqr()? + 1e-6f64)?;
-    let u_t = (x1_batch - &x_t)?.broadcast_div(&sigma_sq)?;  // u_t(x_t|x₁)
+    # x_t = (1-t)·x₁ + σ_t·ε,  ε ~ N(0,I)   (conditional probability path)
+    eps = torch.randn_like(x1_batch)
+    x_t = x1_batch * (1.0 - t) + eps * sigma_t
 
-    // ℒ_CFM = E[‖v_θ(x_t) - u_t‖²]
-    let v_t = vnet.forward(&x_t)?;                            // predicted velocity
-    (&v_t - &u_t)?.sqr()?.mean_all()
-}
+    # Target conditional velocity: u_t = (x₁ - x_t) / (σ_t² + δ)
+    sigma_sq = sigma_t.pow(2) + 1e-6
+    u_t = (x1_batch - x_t) / sigma_sq  # u_t(x_t|x₁)
 
-// Training loop
-let device = Device::Cpu;
-let var_map = VarMap::new();
-let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-let vnet = build_vnet(&vb)?;
-let mut opt = AdamW::new(var_map.all_vars(), ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-let mut rng = rand::thread_rng();
+    # ℒ_CFM = E[‖v_θ(x_t) - u_t‖²]
+    v_t = vnet(x_t)                     # predicted velocity
+    return (v_t - u_t).pow(2).mean()
 
-for epoch in 0..1000 {
-    let x1_batch = sample_data(256, &mut rng, &device)?;  // your data sampler
-    let loss = cfm_loss(&vnet, &x1_batch, &mut rng)?;
-    opt.backward_step(&loss)?;
 
-    if (epoch + 1) % 100 == 0 {
-        println!("Epoch {}: Loss = {:.6}", epoch + 1, loss.to_scalar::<f32>()?);
-    }
-}
+# Training loop
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+vnet = build_vnet().to(device)
+optimizer = torch.optim.AdamW(vnet.parameters(), lr=1e-3)
 
-// Sampling via Euler ODE integration: dx/dt = v_θ(x, t)
-fn sample_flow_matching(
-    vnet: &impl Module,
-    n_samples: usize,
-    n_steps: usize,
-    rng: &mut impl Rng,
-    device: &Device,
-) -> candle_core::Result<Tensor> {
-    let dt = 1.0f64 / n_steps as f64;
-    let init: Vec<f32> = (0..2 * n_samples)
-        .map(|_| rng.sample::<f32, _>(StandardNormal))
-        .collect();
-    let mut x = Tensor::from_slice(&init, (2, n_samples), device)?;  // Start from N(0,I)
+for epoch in range(1000):
+    x1_batch = sample_data(256, device)  # your data sampler
+    loss = cfm_loss(vnet, x1_batch)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-    for _ in 0..n_steps {
-        let v = vnet.forward(&x)?;          // v_θ(x_t, t)
-        x = (&x + &(v * dt)?)?;             // Euler: x_{t+dt} = x_t + dt·v_θ(x_t, t)
-    }
-    Ok(x)
-}
+    if (epoch + 1) % 100 == 0:
+        print(f"Epoch {epoch + 1}: Loss = {loss.item():.6f}")
 
-let samples = sample_flow_matching(&vnet, 1000, 100, &mut rng, &device)?;
+
+# Sampling via Euler ODE integration: dx/dt = v_θ(x, t)
+@torch.no_grad()
+def sample_flow_matching(
+    vnet: nn.Module,
+    n_samples: int,
+    n_steps: int,
+    device: torch.device,
+) -> torch.Tensor:
+    dt = 1.0 / n_steps
+    x = torch.randn(2, n_samples, device=device)  # Start from N(0,I)
+
+    for _ in range(n_steps):
+        v = vnet(x)          # v_θ(x_t, t)
+        x = x + dt * v       # Euler: x_{t+dt} = x_t + dt·v_θ(x_t, t)
+    return x
+
+
+samples = sample_flow_matching(vnet, 1000, 100, device)
 ```
 
 **ポイント**:
@@ -1011,7 +975,7 @@ $$
 
 **実装力 (Zone 4-5)**:
 
-✅ **Rust + Candle でのRealNVP完全実装**
+✅ **Rust (tch-rs) + Python (PyTorch) でのRealNVP完全実装**
 - Affine Coupling Layer
 - 多層Flow modelの構築
 - 訓練ループ (negative log likelihood最小化)
@@ -1041,12 +1005,12 @@ $$
 - Probability Flow ODE (PF-ODE)
 - Rectified Flow: 直線輸送
 - Optimal Transport視点での統一
-- 最新研究: TarFlow, Stable Diffusion 3, Candle.1
+- 最新研究: TarFlow, Stable Diffusion 3, FLUX.1
 
 **到達レベル**:
 
 - **初級 → 中級突破**: Change of Variablesの数学を完全理解
-- **実装力**: Candleで動くFlowを自力で書ける
+- **実装力**: tch-rs + PyTorch で動くFlowを自力で書ける
 - **理論的洞察**: Flowの限界とFlow Matchingへの進化を理解
 - **次への準備**: 第37-38回 (SDE/ODE, Flow Matching) への土台完成
 
@@ -1060,7 +1024,7 @@ $$
 
 | 用途 | 主流手法 | Flowの役割 | 実例 |
 |:-----|:--------|:----------|:-----|
-| **画像生成 (品質重視)** | Diffusion | Flow Matchingとして復活 | Stable Diffusion 3, Candle.1 |
+| **画像生成 (品質重視)** | Diffusion | Flow Matchingとして復活 | Stable Diffusion 3, FLUX.1 |
 | **画像生成 (速度重視)** | GAN / Consistency | Rectified Flowが競合 | 10-50 steps生成 |
 | **密度推定** | **Normalizing Flow** | 他手法では不可能 | 金融リスク、物理シミュレーション |
 | **異常検知 (OOD)** | **Normalizing Flow** | 厳密な $\log p(x)$ が必須 | 製造業、医療画像 |
@@ -1269,16 +1233,18 @@ $$
 **A**: **3ステップ**。
 
 **Step 1: 正常データで訓練**
-```rust
-// Normal data only
-let x_normal = load_normal_data(&device)?;
+```python
+import torch
 
-// Train RealNVP
-let var_map = VarMap::new();
-let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-let model = RealNVP::new(d, 6, 64, &vb)?;
-let mut opt = AdamW::new(var_map.all_vars(), ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-train_realnvp(&model, &mut opt, &x_normal, 100, 256)?;
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Normal data only
+x_normal = load_normal_data(device)   # torch.Tensor [D, N]
+
+# Train RealNVP (nn.Module)
+model = RealNVP(d, 64, 6).to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+train_realnvp(model, optimizer, x_normal, 100, 256)
 ```
 
 **Step 2: 閾値設定 (Validation Set)**
@@ -1294,7 +1260,7 @@ let threshold = sorted[(sorted.len() as f32 * 0.05) as usize];
 
 **Step 3: 推論時の異常判定**
 ```rust
-fn is_anomaly(model: &RealNVP, x_test: &Tensor, threshold: f32) -> candle_core::Result<Vec<bool>> {
+fn is_anomaly(model: &RealNVP, x_test: &Tensor, threshold: f32) -> anyhow::Result<Vec<bool>> {
     let log_p = eval_log_p(model, x_test)?;  // Vec<f32>
     Ok(log_p.iter().map(|&lp| lp < threshold).collect())
 }
@@ -1658,7 +1624,7 @@ $$
 
 Course IV の旅はまだ始まったばかり。第33回で得た「Change of Variables」の数学が、第37-38回で**Diffusion Models**と融合し、生成モデル理論の**統一**へと向かう。次の講義で会おう。
 
-> **⚠️ Warning:** 第33回で実装した RealNVP は「学習用」実装であり、本番利用には不十分な点がある。具体的には: (1) 数値安定性のための `clamp` が未実装、(2) Half-precision (fp16) 未対応、(3) バッチ正規化の running statistics が推論時に固定されていない、などの問題がある。Production での Flow 実装は Candle の公式サンプルか Normalizing Flows.jl を参照のこと。
+> **⚠️ Warning:** 第33回で実装した RealNVP は「学習用」実装であり、本番利用には不十分な点がある。具体的には: (1) 数値安定性のための `clamp` が未実装、(2) Half-precision (fp16) 未対応、(3) バッチ正規化の running statistics が推論時に固定されていない、などの問題がある。Production での Flow 実装は tch-rs のサンプル (https://github.com/LaurentMazare/tch-rs) を参照のこと。
 
 ---
 

@@ -29,15 +29,15 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 4. **ODE Sampling**（Euler法 / RK4法）
 5. **2次元玩具データセット**での可視化
 
-実装言語：**Rust 1.11**（Candle + burn::optim + ode_solvers）
+実装言語：**Rust 1.75+**（tch-rs + ode_solvers）/ **Python 3.11+**（PyTorch、訓練ループ）
 
 ---
 
 ### 4.2 依存パッケージ
 
 ```rust:setup.rs
-use candle_core::{Tensor, Device, DType, Result};
-use candle_nn::{Module, VarBuilder, Linear, linear};
+use tch::{Tensor, Device, Kind};
+use tch::nn::{self, Module, Linear};
 use ndarray::{Array1, Array2, ArrayView2, s};
 use rand::{Rng, SeedableRng};
 
@@ -157,11 +157,11 @@ impl GaussianPath {
 時刻$t$と位置$\mathbf{x}_t$から速度$\mathbf{v}_\theta(\mathbf{x}_t, t)$を予測するネットワーク。
 
 ```rust:network.rs
-use candle_core::{Tensor, Device, Result};
-use candle_nn::{Module, VarBuilder, Linear, linear, Activation};
+use tch::Tensor;
+use tch::nn::{self, Module, Linear};
 
 // Vector field network: v_θ(xₜ, t) ≈ uₜ  (CFM target)
-// Implements: trait FlowModel { fn forward(&self, x: &Tensor, t: &Tensor) -> Result<Tensor> }
+// Implements: trait FlowModel { fn forward(&self, x: &Tensor, t: &Tensor) -> Tensor }
 /// Time-conditional MLP for vector field prediction
 ///     v_θ(x_t, t): (d+1) → 128 → 128 → d
 struct VectorFieldNet {
@@ -171,21 +171,21 @@ struct VectorFieldNet {
 }
 
 impl VectorFieldNet {
-    fn new(d: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            fc1: linear(d + 1, 128, vb.pp("fc1"))?,
-            fc2: linear(128, 128, vb.pp("fc2"))?,
-            fc3: linear(128, d, vb.pp("fc3"))?,
-        })
+    fn new(d: i64, vs: &nn::Path) -> Self {
+        Self {
+            fc1: nn::linear(vs / "fc1", d + 1, 128, Default::default()),
+            fc2: nn::linear(vs / "fc2", 128, 128, Default::default()),
+            fc3: nn::linear(vs / "fc3", 128, d, Default::default()),
+        }
     }
 
     /// Forward pass with time conditioning
     ///     v_θ(xₜ, t): R^{d+1} → R^d  (network forward)
-    fn forward(&self, x_t: &Tensor, t: &Tensor) -> Result<Tensor> {
-        let t_col = t.unsqueeze(1)?;
-        let input = Tensor::cat(&[x_t, &t_col], 1)?; // [xₜ || t]: R^{d+1}  (time conditioning)
-        let h = self.fc1.forward(&input)?.gelu()?;
-        let h = self.fc2.forward(&h)?.gelu()?;
+    fn forward(&self, x_t: &Tensor, t: &Tensor) -> Tensor {
+        let t_col = t.unsqueeze(1);
+        let input = Tensor::cat(&[x_t, &t_col], 1); // [xₜ || t]: R^{d+1}  (time conditioning)
+        let h = self.fc1.forward(&input).gelu("none");
+        let h = self.fc2.forward(&h).gelu("none");
         self.fc3.forward(&h) // v_θ(xₜ, t): R^{d+1} → R^d
     }
 }
@@ -229,7 +229,7 @@ fn cfm_loss(
 ### 4.7 訓練ループ
 
 ```rust:train.rs
-use candle_nn::optim::{Adam, AdamConfig, Optimizer};
+use tch::nn::{self, OptimizerConfig};
 use std::time::Instant;
 
 /// Train Flow Matching model
@@ -239,20 +239,19 @@ fn train_flow_matching(
     lr: f64,
     path_type: PathType,
     rng: &mut impl Rng,
-) -> Result<(VectorFieldNet, Vec<f32>)> {
-    let d = 2;
-    let dev = Device::Cpu;
-    let vb = VarBuilder::zeros(DType::F32, &dev);
-    let model = VectorFieldNet::new(d, vb.clone())?;
-    let mut opt = Adam::new(vb.all_vars(), AdamConfig { lr, ..Default::default() })?;
+) -> anyhow::Result<(VectorFieldNet, Vec<f32>)> {
+    let d: i64 = 2;
+    let vs = nn::VarStore::new(tch::Device::Cpu);
+    let model = VectorFieldNet::new(d, &vs.root());
+    let mut opt = nn::Adam::default().build(&vs, lr)?;
 
     let path = GaussianPath { path_type, sigma_min: 1e-5 };
     let mut losses = Vec::with_capacity(n_epochs);
 
     for epoch in 0..n_epochs {
         let loss = cfm_loss(&model, &path, batch_size, rng); // L_CFM = E_{t,x₀,x₁}[||v_θ - uₜ||²]
-        // Autograd backward + optimizer step handled via candle_core
-        opt.backward_step(&Tensor::new(loss, &dev)?)?; // θ ← θ - α∇L_CFM  (Adam step)
+        // Autograd backward + optimizer step via tch-rs
+        opt.backward_step(&tch::Tensor::from(loss)); // θ ← θ - α∇L_CFM  (Adam step)
 
         losses.push(loss);
 
@@ -1115,7 +1114,7 @@ Stable Diffusionと同じアプローチ。Meta AIのFlow Matching Guide（arXiv
 
 **公式実装**：
 - `atong01/conditional-flow-matching`（PyTorch、reference実装）
-- `Candle/Burn`（Rust、本講義のベース）
+- `tch-rs`（Rust、本講義のベース）
 
 **論文**：
 - Flow Matching原論文（Lipman+ ICLR 2023, arXiv:2210.02747）
@@ -1399,8 +1398,8 @@ $$
 以下は、前述の理論を統合した実装例。
 
 ```rust
-use candle_core::{Tensor, Device, DType, Result};
-use candle_nn::optim::{Adam, AdamConfig, Optimizer};
+use tch::{Tensor, Device, Kind};
+use tch::nn::OptimizerConfig;
 use ndarray::{Array1, Array2};
 use rand::Rng;
 

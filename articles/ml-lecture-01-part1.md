@@ -55,14 +55,15 @@ keywords: ["数式記法", "LaTeX", "Softmax", "Attention", "Cross-Entropy"]
 以下のコードを実行してほしい。たった3行で、機械学習の中核にある数式を「動かせる」。
 
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
 
 # Softmax: p_i = exp(x_i) / Σ_j exp(x_j)
-logits = np.array([2.0, 1.0, 0.1])
-probs = np.exp(logits) / np.sum(np.exp(logits))
-print(f"logits: {logits}")
-print(f"probs:  {np.round(probs, 4)}")
-print(f"sum:    {np.sum(probs):.6f}")  # must be 1.0
+logits = torch.tensor([2.0, 1.0, 0.1])
+probs = F.softmax(logits, dim=-1)
+print(f"logits: {logits.tolist()}")
+print(f"probs:  {probs.round(decimals=4).tolist()}")
+print(f"sum:    {probs.sum():.6f}")  # must be 1.0
 ```
 
 出力:

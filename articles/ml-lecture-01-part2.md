@@ -782,128 +782,79 @@ $$
 3. **演算を3種類に分ける**: 集約（`Σ/Π/E`）| 変換（`AB/⊙/T`）| 非線形（`softmax/log/exp`）
 4. **数値の罠を潰す**: `log(0)`、指数のオーバーフロー、割り算のゼロ割りを先に想像する
 
-#### Pattern 1: $\sum$ → `np.sum()` / `sum()`
+以下の5パターンは深層生成モデルを実装するときに最頻出。PyTorch で確認しておこう。
 
 $$
-\bar{x} = \frac{1}{N} \sum_{i=1}^{N} x_i
-$$
-
-```python
-x_bar = np.mean(x)  # = np.sum(x) / len(x)
-```
-
-#### Pattern 2: $\prod$ → `np.prod()` / 対数和
-
-$$
-p(\mathcal{D}) = \prod_{i=1}^{N} p(x^{(i)})
+\bar{x} = \frac{1}{N}\sum_{i=1}^{N} x_i, \quad
+p(\mathcal{D}) = \prod_{i=1}^{N} p(x^{(i)}), \quad
+\mathbb{E}_{p(x)}[f(x)] \approx \frac{1}{N}\sum_{i=1}^{N} f(x^{(i)})
 $$
 
 ```python
-import numpy as np
+import torch
 
-# 尤度のサンプル（各データ点の確率）
-log_probs = np.array([-0.5, -1.2, -0.8, -0.3])  # log p(x^(i))
-# 積はlog空間で和に変換（数値的安定性のため必須）
-log_likelihood = np.sum(log_probs)           # log p(D) = Σ log p(x^(i))
-likelihood     = np.exp(log_likelihood)      # p(D) = ∏ p(x^(i))
-print(f"log p(D) = {log_likelihood:.4f}")
-print(f"p(D)     = {likelihood:.6f}")
-# 直接 np.prod を使うと N が大きいとアンダーフローする
+torch.manual_seed(0)
+x = torch.randn(100_000)                   # x^(i) ~ N(0,1), shape: (N,)
+
+# Pattern 1: Σ → .sum() / .mean()
+x_bar = x.mean()                           # x̄ = (1/N) Σ x_i
+assert abs(x_bar.item()) < 0.02            # ≈ 0 by LLN
+
+# Pattern 2: ∏ in log-space (avoid underflow)
+log_probs = torch.tensor([-0.5, -1.2, -0.8, -0.3])  # log p(x^(i)), shape: (N,)
+log_lik   = log_probs.sum()                # log p(D) = Σ log p(x^(i))
+print(f"log p(D) = {log_lik:.4f}")        # −2.8
+
+# Pattern 3: argmax
+probs = torch.tensor([0.1, 0.7, 0.15, 0.05])  # shape: (C,)
+y_hat = probs.argmax()                         # ŷ = argmax_c p(y=c|x)
+print(f"class = {y_hat.item()}")               # 1
+
+# Pattern 4: E[f(x)] ≈ (1/N) Σ f(x^(i)) — Monte Carlo
+E_x2 = (x ** 2).mean()
+print(f"E[x²] ≈ {E_x2:.4f}  (theory: 1.0)")
 ```
 
-#### Pattern 3: $\arg\max$ → `np.argmax()`
+#### Pattern 6: 要素積 $\odot$ と Reparameterization Trick
 
 $$
-\hat{y} = \arg\max_c p(y = c \mid \mathbf{x})
+\mathbf{z} = \boldsymbol{\mu} + \boldsymbol{\sigma} \odot \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, I)
 $$
+
+- $\boldsymbol{\mu}, \boldsymbol{\sigma} \in \mathbb{R}^d$: エンコーダ出力（各 shape: `(d,)`）
+- $\boldsymbol{\epsilon}$: 標準正規サンプル（`(d,)`）— 勾配をブロックしない
+- $\odot$: 要素積 → Python では `*`（`torch.mul` と同義）
 
 ```python
-# クラス確率ベクトル（Softmax出力）
-probs = np.array([0.1, 0.7, 0.15, 0.05])  # shape: (C,)
-y_hat = np.argmax(probs)                   # ŷ = argmax_c p(y=c|x)
-print(f"予測クラス: {y_hat}")              # → 1
-# クラス名と対応する場合
-class_names = ["cat", "dog", "bird", "fish"]
-print(f"予測ラベル: {class_names[y_hat]}")  # → dog
+import torch
+
+torch.manual_seed(42)
+d   = 8
+mu  = torch.zeros(d)           # μ: (d,)  — エンコーダ出力
+sig = torch.ones(d) * 0.5      # σ: (d,)  — 標準偏差（正値）
+eps = torch.randn(d)           # ε ~ N(0, I): (d,)
+z   = mu + sig * eps           # z = μ + σ ⊙ ε: (d,)
+print(f"z = {z.round(decimals=3)}")
+# 検算: z ≠ mu（確率1で）かつ z の分散 ≈ sig^2
+assert z.shape == (d,)
 ```
-
-#### Pattern 4: $\mathbb{E}[\cdot]$ → `np.mean()` (モンテカルロ)
-
-$$
-\mathbb{E}_{p(x)}[f(x)] \approx \frac{1}{N} \sum_{i=1}^{N} f(x^{(i)}), \quad x^{(i)} \sim p
-$$
-
-```python
-# E[x^2] for x ~ N(0,1): 理論値 = 1.0
-N = 100_000
-samples = np.random.randn(N)               # x^(i) ~ N(0,1)
-f_samples = samples ** 2                   # f(x) = x^2
-E_f = np.mean(f_samples)                  # (1/N) Σ f(x^(i))
-print(f"E[x²] ≈ {E_f:.4f}  (理論値: 1.0)")
-```
-
-#### Pattern 5: 行列積 $AB$ → `A @ B`
-
-$$
-\mathbf{h} = W\mathbf{x} + \mathbf{b}
-$$
-
-```python
-d_in, d_out = 4, 3
-W = np.random.randn(d_out, d_in)   # W ∈ R^{d_out × d_in}
-x = np.random.randn(d_in)          # x ∈ R^{d_in}
-b = np.zeros(d_out)                 # b ∈ R^{d_out}
-h = W @ x + b                      # h = Wx + b ∈ R^{d_out}
-print(f"W.shape={W.shape}, x.shape={x.shape} → h.shape={h.shape}")
-```
-
-#### Pattern 6: 要素ごとの演算 $\odot$ → `*`
-
-$$
-\mathbf{z} = \boldsymbol{\mu} + \boldsymbol{\sigma} \odot \boldsymbol{\epsilon}
-$$
-
-```python
-# VAE の reparameterization trick: z = μ + σ ⊙ ε, ε ~ N(0,I)
-d = 8
-mu    = np.zeros(d)                      # μ ∈ R^d（エンコーダ出力）
-sigma = np.ones(d) * 0.5                 # σ ∈ R^d（標準偏差）
-eps   = np.random.randn(d)               # ε ~ N(0, I)
-z     = mu + sigma * eps                 # ⊙ は要素積 → Python では *
-print(f"z = {np.round(z, 3)}")
-```
-
-#### Pattern 7: $\nabla_\theta \mathcal{L}$ → 自動微分
-
-$$
-\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)
-$$
-
-```python
-# 手動SGDステップ（勾配は計算済みとして）
-# 実際の勾配計算は第3回（PyTorch autograd）で実装する
-theta = np.array([1.0, -2.0, 0.5])       # パラメータ θ
-grad  = np.array([0.3, -0.1, 0.8])       # ∇_θ L（例）
-alpha = 0.01                              # 学習率 α
-theta = theta - alpha * grad              # θ ← θ - α∇L
-print(f"更新後 θ = {np.round(theta, 4)}")
-```
-
 
 <details><summary>翻訳パターン対応表（まとめ）</summary>
-| 数式 | Python (NumPy) | 備考 |
+
+| 数式 | PyTorch | 備考 |
 |:---|:---|:---|
-| $\sum_i x_i$ | `np.sum(x)` | axis 指定で次元制御 |
-| $\prod_i x_i$ | `np.prod(x)` | 対数空間推奨 |
-| $\arg\max$ | `np.argmax(x)` | |
-| $\mathbb{E}[f(x)]$ | `np.mean(f(samples))` | モンテカルロ |
+| $\sum_i x_i$ | `x.sum()` | `dim=` 指定で次元制御 |
+| $\prod_i x_i$ | 対数空間: `log_p.sum().exp()` | アンダーフロー回避 |
+| $\arg\max$ | `x.argmax()` | |
+| $\mathbb{E}[f(x)]$ | `f(samples).mean()` | モンテカルロ |
 | $AB$ | `A @ B` | 行列積 |
 | $A \odot B$ | `A * B` | 要素積 |
 | $A^\top$ | `A.T` | 転置 |
-| $\|x\|_2$ | `np.linalg.norm(x)` | |
-| $\nabla f$ | 手動 or autograd | 第3回以降 |
-| $\mathcal{N}(\mu, \sigma^2)$ | `np.random.normal(mu, sigma)` | |
-| $\mathbb{1}[c]$ | `(condition).astype(int)` | 指示関数 |
+| $\|x\|_2$ | `torch.linalg.norm(x)` | |
+| $\nabla_\theta \mathcal{L}$ | `loss.backward()` | autograd |
+| $\mathcal{N}(\mu, \sigma^2)$ | `torch.distributions.Normal(mu, sigma)` | |
+| $\mathbb{1}[c]$ | `cond.float()` | 指示関数 |
+
 </details>
 
 > **Checkpoint:** 開発環境、プラットフォーム活用、論文読解・知識管理、LaTeX、コード翻訳パターンまで押さえた。残りは全体地図の統合と次回への接続。

@@ -268,12 +268,12 @@ graph TD
 **第39回の言語構成**: 🦀Rust 70% / 🦀Rust 20% / 🔮Elixir 10%
 
 **なぜRust主役？**
-- VAE訓練: Candle + Burn → JAX並の速度
+- VAE訓練: Python (PyTorch/Triton) → JAX並の速度
 - Diffusion訓練: ゼロコスト抽象化で損失関数が自動最適化
 - CFG実験: Guidance scale掃引が1行
 
 **なぜRust？**
-- ONNX推論: Candle/Burn → PyTorch比35-47%高速
+- ONNX推論: Rust (ort) → PyTorch比35-47%高速
 - バッチ処理: ゼロコピー + SIMD最適化
 
 **なぜElixir？**

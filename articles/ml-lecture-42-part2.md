@@ -521,161 +521,161 @@ fn sigma_schedule(t: f32) -> f32 { (20.0_f32 * t).exp() }
 
 ### 4.6 AR ファミリーの統一実装
 
-```rust
-// AR Family: autoregressive models — p(x) = Π p(x_i | x_{<i})
-trait ARFamily: LikelihoodBased {}
+```python
+# AR Family: autoregressive models — p(x) = Π p(x_i | x_{<i})
+from __future__ import annotations
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-struct PixelCNN {
-    masked_conv_layers: Vec<Box<dyn Module>>,  // Causal masked convolutions
-    output_dim: usize,                          // Pixel value vocabulary size
-}
 
-impl PixelCNN {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Apply masked convolutions (each pixel sees only past pixels)
-        let h = self.masked_conv_layers.iter()
-            .try_fold(x.clone(), |h, layer| layer.forward(&h))?;
-        Ok(h)  // logits [B, H, W, vocab_size]
-    }
+class PixelCNN(nn.Module):
+    """Autoregressive image model using masked convolutions."""
+    def __init__(self, masked_conv_layers: list[nn.Module], output_dim: int) -> None:
+        super().__init__()
+        self.layers     = nn.ModuleList(masked_conv_layers)
+        self.output_dim = output_dim  # Pixel value vocabulary size
 
-    fn logprob(&self, x: &Tensor) -> Result<Tensor> {
-        let logits = self.forward(x)?;
-        // Cross-entropy: Σ log p(x_i | x_{<i})
-        candle_nn::loss::cross_entropy(&logits.reshape(((), self.output_dim))?,
-                                       &x.flatten_all()?)
-    }
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x
+        for layer in self.layers:
+            h = layer(h)
+        return h  # logits [B, H, W, vocab_size]
 
-    fn sample(&self, h: usize, w: usize, num_samples: usize, device: &Device) -> Result<Tensor> {
-        let mut x = Tensor::zeros((num_samples, 1, h, w), DType::F32, device)?;
-        for i in 0..h {
-            for j in 0..w {
-                let logits = self.forward(&x)?;
-                // Sample pixel (i,j) from p(x_{i,j} | x_{<(i,j)})
-                let probs = candle_nn::ops::softmax(&logits.narrow(2, i, 1)?.narrow(3, j, 1)?, 1)?;
-                // x[:, :, i, j] = multinomial(probs)
-            }
-        }
-        Ok(x)
-    }
-}
+    def logprob(self, x: torch.Tensor) -> torch.Tensor:
+        logits = self.forward(x)
+        # Cross-entropy: Σ log p(x_i | x_{<i})
+        return F.cross_entropy(logits.reshape(-1, self.output_dim), x.flatten().long())
 
-// Transformer-based AR (GPT-style)
-struct TransformerAR {
-    embeddings:        Box<dyn Module>,
-    transformer_blocks: Vec<Box<dyn Module>>,
-    output_head:       Box<dyn Module>,
-    vocab_size: usize,
-}
+    def sample(self, h: int, w: int, num_samples: int,
+               device: torch.device) -> torch.Tensor:
+        x = torch.zeros(num_samples, 1, h, w, device=device)
+        for i in range(h):
+            for j in range(w):
+                logits = self.forward(x)
+                # Sample pixel (i,j) from p(x_{i,j} | x_{<(i,j)})
+                probs = F.softmax(logits[:, :, i, j], dim=1)
+                x[:, :, i, j] = torch.multinomial(probs, 1).float()
+        return x
 
-impl TransformerAR {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Embed tokens → apply causal attention → predict next token logits
-        let h = self.embeddings.forward(x)?;
-        let h = self.transformer_blocks.iter()
-            .try_fold(h, |h, block| block.forward(&h))?;
-        self.output_head.forward(&h)  // [B, T, vocab_size]
-    }
 
-    fn logprob(&self, x: &Tensor) -> Result<Tensor> {
-        let logits = self.forward(x)?;
-        let t = logits.dim(1)?;
-        // Teacher forcing: log p(x_i | x_{<i})
-        candle_nn::loss::cross_entropy(
-            &logits.narrow(1, 0, t-1)?.contiguous()?.reshape(((), self.vocab_size))?,
-            &x.narrow(1, 1, t-1)?.flatten_all()?
+# Transformer-based AR (GPT-style)
+class TransformerAR(nn.Module):
+    def __init__(self, embeddings: nn.Module, transformer_blocks: list[nn.Module],
+                 output_head: nn.Module, vocab_size: int) -> None:
+        super().__init__()
+        self.embeddings        = embeddings
+        self.transformer_blocks = nn.ModuleList(transformer_blocks)
+        self.output_head       = output_head
+        self.vocab_size        = vocab_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Embed tokens → apply causal attention → predict next token logits
+        h = self.embeddings(x)
+        for block in self.transformer_blocks:
+            h = block(h)
+        return self.output_head(h)  # [B, T, vocab_size]
+
+    def logprob(self, x: torch.Tensor) -> torch.Tensor:
+        logits = self.forward(x)
+        t = logits.shape[1]
+        # Teacher forcing: log p(x_i | x_{<i})
+        return F.cross_entropy(
+            logits[:, :t-1].contiguous().reshape(-1, self.vocab_size),
+            x[:, 1:t].reshape(-1).long(),
         )
-    }
 
-    fn sample(&self, num_samples: usize, steps: usize, temperature: f32, device: &Device) -> Result<Tensor> {
-        let bos = Tensor::zeros((num_samples, 1), DType::U32, device)?;  // BOS token
-        let mut tokens = bos;
-        for _ in 0..steps {
-            let logits = self.forward(&tokens)?;
-            let last_logits = logits.narrow(1, tokens.dim(1)? - 1, 1)?
-                               .affine(1.0 / temperature as f64, 0.)?;
-            let probs = candle_nn::ops::softmax(&last_logits.squeeze(1)?, 1)?;
-            // next_token = multinomial(probs)
-            // tokens = cat([tokens, next_token], 1)
-        }
-        Ok(tokens)
-    }
-}
+    def sample(self, num_samples: int, steps: int, temperature: float,
+               device: torch.device) -> torch.Tensor:
+        bos    = torch.zeros(num_samples, 1, dtype=torch.long, device=device)  # BOS token
+        tokens = bos
+        for _ in range(steps):
+            logits      = self.forward(tokens)
+            last_logits = logits[:, -1, :] / temperature
+            probs       = F.softmax(last_logits, dim=-1)
+            next_token  = torch.multinomial(probs, 1)
+            tokens      = torch.cat([tokens, next_token], dim=1)
+        return tokens
 ```
 
 ### 4.7 World Models ファミリーの実装
 
-```rust
-// JEPA: Joint-Embedding Predictive Architecture
-struct JEPA {
-    encoder:        Box<dyn Module>,  // Context encoder s_θ
-    predictor:      Box<dyn Module>,  // Latent predictor f_θ
-    target_encoder: Box<dyn Module>,  // EMA target encoder s̄_θ
-}
+```python
+# JEPA: Joint-Embedding Predictive Architecture
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-impl JEPA {
-    fn forward(&self, x_context: &Tensor, x_target: &Tensor) -> Result<(Tensor, Tensor)> {
-        // Encode context → predict target representation
-        let s_ctx  = self.encoder.forward(x_context)?;
-        let s_pred = self.predictor.forward(&s_ctx)?;
 
-        // Encode target via EMA encoder (no gradient)
-        let s_tgt = self.target_encoder.forward(x_target)?.detach();
+class JEPA(nn.Module):
+    def __init__(self, encoder: nn.Module, predictor: nn.Module,
+                 target_encoder: nn.Module) -> None:
+        super().__init__()
+        self.encoder        = encoder         # Context encoder s_θ
+        self.predictor      = predictor       # Latent predictor f_θ
+        self.target_encoder = target_encoder  # EMA target encoder s̄_θ
 
-        Ok((s_pred, s_tgt))
-    }
+    def forward(self, x_context: torch.Tensor,
+                x_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Encode context → predict target representation
+        s_ctx  = self.encoder(x_context)
+        s_pred = self.predictor(s_ctx)
 
-    fn loss(&self, x: &Tensor) -> Result<Tensor> {
-        // Split into context and target (e.g., different patches)
-        let half = x.dim(2)? / 2;
-        let (x_ctx, x_tgt) = (x.narrow(2, 0, half)?, x.narrow(2, half, half)?);
-        let (s_pred, s_tgt) = self.forward(&x_ctx, &x_tgt)?;
-        // Prediction loss in embedding space: ‖s_pred − s_target‖²
-        s_pred.sub(&s_tgt)?.sqr()?.mean_all()
-    }
-}
+        # Encode target via EMA encoder (no gradient)
+        with torch.no_grad():
+            s_tgt = self.target_encoder(x_target)
 
-// Transfusion: AR (text) + Diffusion (image) unified model
-struct Transfusion {
-    text_encoder:    Box<dyn Module>,  // Autoregressive text encoder
-    image_diffusion: Box<dyn Module>,  // Diffusion denoiser
-    cross_attention: Box<dyn Module>,  // Text → Image conditioning
-}
+        return s_pred, s_tgt
 
-impl Transfusion {
-    fn forward(&self, text: &Tensor, image: &Tensor) -> Result<(Tensor, Tensor, Tensor, f32)> {
-        // AR path for text
-        let text_emb = self.text_encoder.forward(text)?;
+    def loss(self, x: torch.Tensor) -> torch.Tensor:
+        half   = x.shape[2] // 2
+        x_ctx, x_tgt = x[:, :, :half, :], x[:, :, half:, :]
+        s_pred, s_tgt = self.forward(x_ctx, x_tgt)
+        # Prediction loss in embedding space: ‖s_pred − s_target‖²
+        return (s_pred - s_tgt).pow(2).mean()
 
-        // Diffusion path for image (conditioned on text)
-        let t: f32 = rand::random();
-        let noise = Tensor::randn_like(image)?;
-        let image_t = image.affine((1.0 - t * t) as f64, 0.)?
-                           .add(&noise.affine(t as f64, 0.)?)?;
 
-        // Cross-attention: condition image denoiser on text
-        let cond = self.cross_attention.forward(&Tensor::cat(&[&image_t, &text_emb], 1)?)?;
+# Transfusion: AR (text) + Diffusion (image) unified model
+class Transfusion(nn.Module):
+    def __init__(self, text_encoder: nn.Module, image_diffusion: nn.Module,
+                 cross_attention: nn.Module, vocab_size: int) -> None:
+        super().__init__()
+        self.text_encoder    = text_encoder
+        self.image_diffusion = image_diffusion
+        self.cross_attention = cross_attention
+        self.vocab_size      = vocab_size
 
-        Ok((text_emb, cond, noise, t))
-    }
+    def forward(self, text: torch.Tensor,
+                image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+        # AR path for text
+        text_emb = self.text_encoder(text)
 
-    fn loss(&self, text: &Tensor, image: &Tensor) -> Result<Tensor> {
-        let (text_emb, cond, noise, _) = self.forward(text, image)?;
+        # Diffusion path for image (conditioned on text)
+        t     = torch.rand(1).item()
+        noise = torch.randn_like(image)
+        image_t = (1.0 - t) * image + t * noise
 
-        // Text AR loss: cross-entropy for next-token prediction
-        let text_logits = self.text_encoder.forward(&text_emb)?;
-        let t = text_logits.dim(1)?;
-        let loss_text = candle_nn::loss::cross_entropy(
-            &text_logits.narrow(1, 0, t-1)?.flatten_to(1)?,
-            &text.narrow(1, 1, t-1)?.flatten_all()?
-        )?;
+        # Cross-attention: condition image denoiser on text
+        cond = self.cross_attention(torch.cat([image_t, text_emb], dim=1))
 
-        // Image diffusion loss: ‖ε_pred − ε‖²
-        let noise_pred = self.image_diffusion.forward(&cond)?;
-        let loss_image = noise_pred.sub(&noise)?.sqr()?.mean_all()?;
+        return text_emb, cond, noise, t
 
-        loss_text.add(&loss_image)
-    }
-}
+    def loss(self, text: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+        text_emb, cond, noise, _ = self.forward(text, image)
+
+        # Text AR loss: cross-entropy for next-token prediction
+        text_logits = self.text_encoder(text_emb)
+        t           = text_logits.shape[1]
+        loss_text   = F.cross_entropy(
+            text_logits[:, :t-1].reshape(-1, self.vocab_size),
+            text[:, 1:t].reshape(-1).long(),
+        )
+
+        # Image diffusion loss: ‖ε_pred − ε‖²
+        noise_pred  = self.image_diffusion(cond)
+        loss_image  = (noise_pred - noise).pow(2).mean()
+
+        return loss_text + loss_image
 ```
 
 ### 4.8 Rust 推論エンジンのインターフェース
@@ -766,45 +766,56 @@ fn demo_unified_kernels() {
 
 ### 4.9 統一的トレーニングループ
 
-```rust
-// すべての生成モデルに対応する汎用トレーナー
-fn train<M: GenerativeModel>(
-    model: &mut M,
-    data_loader: &[Tensor],
-    epochs: usize,
-    callbacks: &[Box<dyn Fn(&M, usize, f32)>],
-) -> candle_core::Result<()> {
-    for epoch in 0..epochs {
-        let mut epoch_loss = 0f32;
+```python
+# すべての生成モデルに対応する汎用トレーナー
+from typing import Callable, Protocol
+import torch
+import torch.nn as nn
 
-        for batch in data_loader {
-            // Forward + Loss
-            let l = model.loss(batch)?;
 
-            // Backward
-            l.backward()?;
+class GenerativeModel(Protocol):
+    def loss(self, batch: torch.Tensor) -> torch.Tensor: ...
 
-            // Update (caller manages optimizer)
-            epoch_loss += l.to_scalar::<f32>()?;
-        }
 
-        let avg_loss = epoch_loss / data_loader.len() as f32;
+def train(
+    model: GenerativeModel,
+    data_loader: list[torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    callbacks: list[Callable[[GenerativeModel, int, float], None]] | None = None,
+) -> None:
+    callbacks = callbacks or []
+    for epoch in range(epochs):
+        epoch_loss = 0.0
 
-        // Callbacks (logging, checkpointing, etc.)
-        callbacks.iter().for_each(|cb| cb(model, epoch, avg_loss));
-    }
-    Ok(())
-}
+        for batch in data_loader:
+            # Forward + Loss
+            loss = model.loss(batch)
 
-// 使用例
-// let mut vae = VAE { encoder, decoder, z_dim: 64 };
-// train(&mut vae, &mnist_loader, 50, &[Box::new(|_, epoch, loss| println!("Epoch {epoch}: {loss}"))]);
+            # Backward
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
 
-// let mut gan = VanillaGAN { generator, discriminator, z_dim: 100 };
-// train(&mut gan, &celeba_loader, 100, &[]);
+            epoch_loss += loss.item()
 
-// let mut ddpm = DDPM { noise_pred_net, noise_schedule };
-// train(&mut ddpm, &imagenet_loader, 1000, &[]);
+        avg_loss = epoch_loss / len(data_loader)
+
+        # Callbacks (logging, checkpointing, etc.)
+        for cb in callbacks:
+            cb(model, epoch, avg_loss)
+
+
+# 使用例
+# vae = VAE(encoder, decoder, z_dim=64).to(device)
+# opt = torch.optim.Adam(vae.parameters(), lr=1e-3)
+# train(vae, mnist_loader, opt, epochs=50, callbacks=[lambda m, e, l: print(f"Epoch {e}: {l}")])
+
+# gan = VanillaGAN(generator, discriminator, z_dim=100).to(device)
+# train(gan, celeba_loader, opt, epochs=100, callbacks=[])
+
+# ddpm = DDPM(noise_pred_net, noise_schedule).to(device)
+# train(ddpm, imagenet_loader, opt, epochs=1000, callbacks=[])
 ```
 
 ---
@@ -842,11 +853,11 @@ fn train<M: GenerativeModel>(
 
 ```rust
 // 実装コード: 各モデルの学習・評価ループ
-use candle_core::{Tensor, Device, DType};
+use tch::{Tensor, Device, Kind};
 use std::collections::HashMap;
 use std::time::Instant;
 
-// データローダー (candle-datasets or hf-hub)
+// データローダー (hf-hub + tch)
 // let (train_loader, test_loader) = mnist_loaders(128)?;
 
 // 各モデルの学習
@@ -877,7 +888,7 @@ for (name, mut model) in models {
 }
 
 // Helper functions
-fn compute_nll(model: &dyn LikelihoodBased, data_loader: &[Tensor]) -> candle_core::Result<f32> {
+fn compute_nll(model: &dyn LikelihoodBased, data_loader: &[Tensor]) -> anyhow::Result<f32> {
     let mut total_nll = 0f32;
     let mut n = 0usize;
     for batch in data_loader {
@@ -888,7 +899,7 @@ fn compute_nll(model: &dyn LikelihoodBased, data_loader: &[Tensor]) -> candle_co
     Ok(-total_nll / n as f32 / (28.0 * 28.0 * 2f32.ln()))  // bits/dim
 }
 
-fn compute_fid(model: &dyn GenerativeModel, data_loader: &[Tensor]) -> candle_core::Result<f32> {
+fn compute_fid(model: &dyn GenerativeModel, data_loader: &[Tensor]) -> anyhow::Result<f32> {
     let samples = model.sample(10_000, 50)?;
     let real_feats = extract_inception_features(data_loader)?;
     let fake_feats = extract_inception_features(&[samples])?;
@@ -896,7 +907,7 @@ fn compute_fid(model: &dyn GenerativeModel, data_loader: &[Tensor]) -> candle_co
     Ok(frechet_distance(&real_feats, &fake_feats)?)
 }
 
-fn benchmark_sampling(model: &dyn GenerativeModel, n: usize) -> candle_core::Result<f32> {
+fn benchmark_sampling(model: &dyn GenerativeModel, n: usize) -> anyhow::Result<f32> {
     model.sample(10, 50)?;  // Warmup
     let t0 = Instant::now();
     model.sample(n, 50)?;

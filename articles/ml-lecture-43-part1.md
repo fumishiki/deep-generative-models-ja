@@ -67,8 +67,8 @@ DiT の核心は **AdaLN-Zero** — 拡散ステップ $t$ と条件 $c$ を正�
 ```rust
 // AdaLN-Zero: Adaptive Layer Normalization with Zero Initialization
 // Used in DiT to inject diffusion timestep t and condition c into normalization layers
-use candle_core::{Tensor, Result, Device};
-use candle_nn::Module;
+use tch::{Kind, Tensor, Device, nn};
+use nn::Module;
 
 fn adaln_zero(
     x: &Tensor,        // [B, N, D] — input features (B=batch, N=tokens, D=dims)
@@ -76,45 +76,41 @@ fn adaln_zero(
     c: &Tensor,        // [B, D_c] — condition embedding (class, text, etc.)
     gamma_mlp: &impl Module,  // MLP: cond → scale γ ∈ ℝ^D (zero-init → starts at 1)
     beta_mlp:  &impl Module,  // MLP: cond → shift β ∈ ℝ^D (zero-init → starts at 0)
-) -> Result<Tensor> {
+) -> Tensor {
     // 1. Concatenate timestep and condition: [t; c] ∈ ℝ^{D_t + D_c}
-    let cond = Tensor::cat(&[t, c], 1)?;           // [B, D_t + D_c]
+    let cond = Tensor::cat(&[t, c], 1);            // [B, D_t + D_c]
 
     // 2. Generate scale γ and shift β (zero-initialized → identity at start)
-    let gamma = gamma_mlp.forward(&cond)?;          // [B, D]
-    let beta  = beta_mlp.forward(&cond)?;           // [B, D]
+    let gamma = gamma_mlp.forward(&cond);           // [B, D]
+    let beta  = beta_mlp.forward(&cond);            // [B, D]
 
     // 3. Layer Normalization along D dimension
-    let mu    = x.mean_keepdim(2)?;                 // [B, N, 1]
-    let var   = x.var_keepdim(2)?;                  // [B, N, 1]
-    let eps   = Tensor::new(1e-6_f32, x.device())?;
-    let x_hat = x.sub(&mu)?.div(&var.add(&eps)?.sqrt()?)?;  // [B, N, D]
+    let (std, mu) = x.std_mean_dim(&[-1i64][..], true, true);  // [B, N, 1]
+    let x_hat = (x - mu) / (std + 1e-6);           // [B, N, D]
 
     // 4. Adaptive modulation: γ·x̂ + β (broadcast over token dim N)
-    let gamma_b = gamma.unsqueeze(1)?;              // [B, 1, D]
-    let beta_b  = beta.unsqueeze(1)?;               // [B, 1, D]
-    x_hat.mul(&gamma_b)?.add(&beta_b)
+    let gamma_b = gamma.unsqueeze(1);               // [B, 1, D]
+    let beta_b  = beta.unsqueeze(1);                // [B, 1, D]
+    x_hat * gamma_b + beta_b
 }
 
-fn main() -> Result<()> {
-    let dev = &Device::Cpu;
+fn main() {
+    let dev = Device::Cpu;
     // Test: 2D image patches as tokens
-    let (b, n, d) = (2usize, 4usize, 8usize);  // 2 images, 4 patches, 8 dims
-    let x = Tensor::randn(0f32, 1f32, (b, n, d), dev)?;
-    let t = Tensor::randn(0f32, 1f32, (b, 4), dev)?;   // timestep embedding (D_t=4)
-    let c = Tensor::randn(0f32, 1f32, (b, 4), dev)?;   // condition embedding (D_c=4)
+    let (b, n, d) = (2i64, 4i64, 8i64);  // 2 images, 4 patches, 8 dims
+    let x = Tensor::randn(&[b, n, d], (Kind::Float, dev));
+    let t = Tensor::randn(&[b, 4],    (Kind::Float, dev));  // timestep embedding (D_t=4)
+    let c = Tensor::randn(&[b, 4],    (Kind::Float, dev));  // condition embedding (D_c=4)
 
     // Dummy MLPs: scale starts at 1, shift starts at 0 (zero-init)
-    let gamma_mlp = candle_nn::linear(8, d, candle_nn::VarBuilder::zeros(DType::F32, dev))?;
-    let beta_mlp  = candle_nn::linear(8, d, candle_nn::VarBuilder::zeros(DType::F32, dev))?;
+    let vs = nn::VarStore::new(dev);
+    let gamma_mlp = nn::linear(&vs.root() / "gamma", 8, d, Default::default());
+    let beta_mlp  = nn::linear(&vs.root() / "beta",  8, d, Default::default());
 
-    let x_out = adaln_zero(&x, &t, &c, &gamma_mlp, &beta_mlp)?;
-    println!("Input shape:  {:?}", x.shape());
-    println!("Output shape: {:?}", x_out.shape());
+    let x_out = adaln_zero(&x, &t, &c, &gamma_mlp, &beta_mlp);
+    println!("Input shape:  {:?}", x.size());
+    println!("Output shape: {:?}", x_out.size());
     println!("Condition-adaptive normalization applied!");
-    println!("Mean (should be ≈0 for each token): {:?}", x_out.mean_keepdim(2)?.to_vec3::<f32>()?);
-    println!("Variance (should be ≈1 for each token): {:?}", x_out.var_keepdim(2)?.to_vec3::<f32>()?);
-    Ok(())
 }
 ```
 
@@ -376,13 +372,13 @@ FID が低いほど生成画像の統計量が実画像に近い。FID < 5 は�
 - **第43-50回 (Course V)**: 🦀Rust + 🦀Rust + 🔮Elixir (継続)
 
 **Course V での3言語役割**:
-- **🦀Rust**: 訓練パイプライン (Candle + Burn / GPU最適化)
-- **🦀Rust**: 推論サーバー (Candle / 低レイテンシ / バッチ処理)
+- **🐍Python**: 訓練パイプライン (PyTorch + Triton / GPU最適化)
+- **🦀Rust**: 推論サーバー (tch-rs / 低レイテンシ / バッチ処理)
 - **🔮Elixir**: 分散サービング (Phoenix / 耐障害性 / A/Bテスト)
 
 **本講義での登場**:
 - Zone 4: 🦀Rust — Mini-DiT 訓練パイプライン
-- Zone 4: 🦀Rust — DiT 推論サーバー (Candle)
+- Zone 4: 🦀Rust — DiT 推論サーバー (tch-rs)
 - Zone 4: 🔮Elixir — 分散サービング (OTP supervision)
 
 > **Note:** **ここまでで全体の20%完了！** DiT が U-Net を超える理由を3軸 (Scaling/帰納バイアス/実世界) で理解した。次は DiT の数式を完全導出する — 60分の数式修行ゾーンへ。
@@ -1481,7 +1477,7 @@ t \sim \text{Logit-Normal}(\mu, \sigma^2), \quad t = \text{sigmoid}(u),\; u \sim
 $$
 $\mu = 0, \sigma = 1$（デフォルト）では $t$ が $[0.3, 0.7]$ 付近に集中する。直感: 全拡散ステップ中で最も「難しい」中間時刻での学習を強調することで、訓練効率が向上する。$t \approx 0$（ほぼ清浄）と $t \approx 1$（ほぼノイズ）は比較的容易なため均等サンプリングは非効率だ。
 
-### 4.1 完全なDiTブロック実装（Candle）
+### 4.1 完全なDiTブロック実装（tch-rs）
 
 
 ### 4.2 MM-DiT実装（SD3/FLUXスタイル）
@@ -1550,7 +1546,7 @@ $\mu = 0, \sigma = 1$（デフォルト）では $t$ が $[0.3, 0.7]$ 付近に�
 - DPM-Solver++: CFG安定化 + 15-20ステップ高速サンプリング
 
 **実装スキル**:
-- CandleでのDiT完全実装（Patchify/Unpatchify/DiTBlock/AdaLN）
+- tch-rsでのDiT完全実装（Patchify/Unpatchify/DiTBlock/AdaLN）
 - MM-DiT dual-stream architecture
 - DPM-Solver++ 2nd-order sampler
 - Scaling Laws実験フレームワーク

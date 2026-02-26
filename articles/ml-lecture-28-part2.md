@@ -13,14 +13,6 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > **第28回【前編】**: [第28回【前編】](https://zenn.dev/fumishiki/ml-lecture-28-part1)
 
----
-title: "第28回: プロンプトエンジニアリング: 30秒の驚き→数式修行→実装マスター【後編】実装編"
-slug: "ml-lecture-28-part2"
-emoji: "💬"
-type: "tech"
-topics: ["machinelearning", "prompt", "rust", "julia", "llm"]
-published: true
----
 
 ## 💻 Z5. 試練（実装）（45分）— Template Engine + Rust実験
 
@@ -562,14 +554,6 @@ fn compare_formats() -> (usize, usize, f64) {
 
 > **Note:** **進捗: 70% 完了** 実装基盤が完成した。次は実験ゾーンで、SmolVLM2-256Mを使ったプロンプト最適化を実演する。
 
----
----
-title: "第28回: プロンプトエンジニアリング: 30秒の驚き→数式修行→実装マスター【後編】実装編"
-slug: "ml-lecture-28-part2"
-emoji: "💬"
-type: "tech"
-topics: ["machinelearning", "prompt", "rust", "julia", "llm"]
-published: true
 ---
 
 
@@ -1108,14 +1092,6 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 > **第28回【前編】**: [第28回【前編】](https://zenn.dev/fumishiki/ml-lecture-28-part1)
 
----
-title: "第28回: プロンプトエンジニアリング: 30秒の驚き→数式修行→実装マスター【後編】実装編"
-slug: "ml-lecture-28-part2"
-emoji: "💬"
-type: "tech"
-topics: ["machinelearning", "prompt", "rust", "julia", "llm"]
-published: true
----
 
 ## 💻 Z5. 試練（実装）（45分）— Template Engine + Rust実験
 
@@ -1657,14 +1633,6 @@ fn compare_formats() -> (usize, usize, f64) {
 
 > **Note:** **進捗: 70% 完了** 実装基盤が完成した。次は実験ゾーンで、SmolVLM2-256Mを使ったプロンプト最適化を実演する。
 
----
----
-title: "第28回: プロンプトエンジニアリング: 30秒の驚き→数式修行→実装マスター【後編】実装編"
-slug: "ml-lecture-28-part2"
-emoji: "💬"
-type: "tech"
-topics: ["machinelearning", "prompt", "rust", "julia", "llm"]
-published: true
 ---
 
 

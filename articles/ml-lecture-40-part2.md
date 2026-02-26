@@ -18,8 +18,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 ### 4.1 Consistency Function実装
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::Module;
+use anyhow::Result;
+use tch::{Tensor, nn};
 
 // Preconditioning coefficients (EDM-style)
 fn get_coefficients(t: &Tensor, sigma_data: f32) -> Result<(Tensor, Tensor, Tensor)> {
@@ -61,139 +61,124 @@ impl<M: Module> ConsistencyModel<M> {
 
 ### 4.2 Consistency Training (CT) 実装
 
-```rust
-use candle_core::{Device, Result, Tensor};
+```python
+from __future__ import annotations
+import random
+import torch
+import torch.nn as nn
 
-// Discretization schedule (EDM-style)
-fn get_schedule(n: usize, eps: f32, t_max: f32, rho: f32) -> Vec<f32> {
-    (0..=n)
-        .map(|i| {
-            let s = i as f32 / n as f32;
-            // t_i = (ε^(1/ρ) + s * (T^(1/ρ) - ε^(1/ρ)))^ρ
-            (eps.powf(1.0 / rho) + s * (t_max.powf(1.0 / rho) - eps.powf(1.0 / rho))).powf(rho)
-        })
-        .collect()
-}
 
-// Pseudo-Huber distance
-fn pseudo_huber_loss(a: &Tensor, b: &Tensor, c: f32) -> Result<Tensor> {
-    let diff = a.sub(b)?;
-    // sqrt(c² + sum(diff²)) - c
-    let sum_sq = diff.sqr()?.sum_keepdim((0, 1, 2))?;
-    (sum_sq + (c * c) as f64)?.sqrt()?.affine(1.0, -(c as f64))
-}
+# Discretization schedule (EDM-style)
+def get_schedule(n: int, eps: float, t_max: float, rho: float) -> list[float]:
+    return [
+        (eps ** (1 / rho) + i / n * (t_max ** (1 / rho) - eps ** (1 / rho))) ** rho
+        for i in range(n + 1)
+    ]
 
-// Consistency Training loss
-fn ct_loss(
-    model: &ConsistencyModel<impl candle_nn::Module>,
-    x_0: &Tensor,
-    schedule: &[f32],
-    device: &Device,
-) -> Result<Tensor> {
-    let batch_size = x_0.dim(0)?;
 
-    // Sample a random timestep index n ∈ [0, len-2]
-    let n_idx = (rand::random::<f32>() * (schedule.len() - 1) as f32) as usize;
-    let t_n1 = schedule[n_idx + 1];
-    let t_n  = schedule[n_idx];
+# Pseudo-Huber distance
+def pseudo_huber_loss(a: torch.Tensor, b: torch.Tensor, c: float) -> torch.Tensor:
+    diff = a - b
+    # sqrt(c² + ||diff||²) - c  per sample, then mean
+    return ((diff.pow(2).sum(dim=(1, 2, 3)) + c ** 2).sqrt() - c).mean()
 
-    // Add noise: x_{n+1} = x_0 + t_{n+1} * z
-    let z    = Tensor::randn(0f32, 1.0, x_0.shape(), device)?;
-    let x_n1 = x_0.add(&z.affine(t_n1 as f64, 0.0)?)?;
 
-    // Euler step (approximate ODE): x_n ≈ x_{n+1} + (t_n - t_{n+1}) * score
-    let score_est = x_n1.sub(x_0)?.affine(-(1.0 / (t_n1 * t_n1)) as f64, 0.0)?;
-    let x_n = x_n1.add(&score_est.affine((t_n - t_n1) as f64, 0.0)?)?;
+# Consistency Training loss
+def ct_loss(
+    model: nn.Module,
+    x_0: torch.Tensor,
+    schedule: list[float],
+    device: torch.device,
+) -> torch.Tensor:
+    n_idx = random.randint(0, len(schedule) - 2)
+    t_n1, t_n = schedule[n_idx + 1], schedule[n_idx]
 
-    // Forward pass (target uses stop-gradient in full impl)
-    let t_n1_t = Tensor::full(t_n1, (batch_size,), device)?;
-    let t_n_t  = Tensor::full(t_n,  (batch_size,), device)?;
-    let f_n1 = model.forward(&x_n1, &t_n1_t)?;
-    let f_n  = model.forward(&x_n,  &t_n_t)?;
+    z    = torch.randn_like(x_0)
+    x_n1 = x_0 + t_n1 * z
 
-    // Pseudo-Huber loss
-    pseudo_huber_loss(&f_n1, &f_n, 0.00054)?.mean_all()
-}
+    # Euler step (approximate ODE): x_n ≈ x_{n+1} + (t_n - t_{n+1}) * score
+    score_est = -(x_n1 - x_0) / (t_n1 ** 2)
+    x_n = x_n1 + (t_n - t_n1) * score_est
 
-// Training loop
-fn train_ct(
-    model: &mut ConsistencyModel<impl candle_nn::Module>,
-    dataloader: &[Tensor],
-    schedule: &[f32],
-    optimizer: &mut impl candle_nn::optim::Optimizer,
-    device: &Device,
-    epochs: usize,
-) -> Result<()> {
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for x_0 in dataloader {
-            let loss = ct_loss(model, x_0, schedule, device)?;
-            optimizer.backward_step(&loss)?;
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        println!("Epoch {}: Loss = {:.6}", epoch, total_loss / dataloader.len() as f32);
-    }
-    Ok(())
-}
+    b = x_0.shape[0]
+    t_n1_t = torch.full((b,), t_n1, device=device)
+    t_n_t  = torch.full((b,), t_n,  device=device)
+    f_n1 = model(x_n1, t_n1_t)
+    f_n  = model(x_n,  t_n_t)
+
+    # Pseudo-Huber loss
+    return pseudo_huber_loss(f_n1, f_n, 0.00054)
+
+
+# Training loop
+def train_ct(
+    model: nn.Module,
+    dataloader: list[torch.Tensor],
+    schedule: list[float],
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epochs: int,
+) -> None:
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for x_0 in dataloader:
+            optimizer.zero_grad(set_to_none=True)
+            loss = ct_loss(model, x_0, schedule, device)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch}: Loss = {total_loss / len(dataloader):.6f}")
 ```
 
 ### 4.3 Easy Consistency Tuning (ECT) 実装
 
-```rust
-// ECT: Analytical ODE solution
-fn ect_loss(
-    model: &ConsistencyModel<impl candle_nn::Module>,
-    x_0: &Tensor,
-    eps: f32,
-    t_max: f32,
-    device: &Device,
-) -> Result<Tensor> {
-    let batch_size = x_0.dim(0)?;
+```python
+# ECT: Analytical ODE solution
+def ect_loss(
+    model: nn.Module,
+    x_0: torch.Tensor,
+    eps: float,
+    t_max: float,
+    device: torch.device,
+) -> torch.Tensor:
+    b = x_0.shape[0]
+    # Sample t, t' from log-normal distribution
+    t       = (torch.randn(b, device=device) * 1.2 - 1.2).exp().clamp(eps, t_max)
+    t_prime = (torch.randn(b, device=device) * 1.2 - 1.2).exp().clamp(eps, t_max)
 
-    // Sample t, t' from log-normal distribution
-    let log_t       = Tensor::randn(0f32, 1.0, (batch_size,), device)?.affine(1.2, -1.2)?;
-    let log_t_prime = Tensor::randn(0f32, 1.0, (batch_size,), device)?.affine(1.2, -1.2)?;
-    let t       = log_t.exp()?.clamp(eps, t_max)?;
-    let t_prime = log_t_prime.exp()?.clamp(eps, t_max)?;
+    z   = torch.randn_like(x_0)
+    x_t = x_0 + t.view(b, 1, 1, 1) * z
 
-    // Add noise: x_t = x_0 + t * z
-    let z   = Tensor::randn(0f32, 1.0, x_0.shape(), device)?;
-    let x_t = x_0.add(&z.broadcast_mul(&t.reshape((batch_size, 1, 1, 1))?)?)?;
+    # Analytical ODE: x_{t'} = (t'/t) * x_t + (t' - t) * x_0
+    alpha   = (t_prime / t).view(b, 1, 1, 1)
+    beta    = (t_prime - t).view(b, 1, 1, 1)
+    x_t_prime = alpha * x_t + beta * x_0
 
-    // Analytical ODE: x_{t'} = (t'/t) * x_t + (t' - t) * x_0
-    let alpha   = t_prime.div(&t)?.reshape((batch_size, 1, 1, 1))?;
-    let beta    = t_prime.sub(&t)?.reshape((batch_size, 1, 1, 1))?;
-    let x_t_prime = alpha.broadcast_mul(&x_t)?.add(&beta.broadcast_mul(x_0)?)?;
+    f_t       = model(x_t,       t)
+    f_t_prime = model(x_t_prime, t_prime)
 
-    // Forward pass (no target network!)
-    let f_t       = model.forward(&x_t,       &t)?;
-    let f_t_prime = model.forward(&x_t_prime, &t_prime)?;
+    return pseudo_huber_loss(f_t, f_t_prime, 0.00054)
 
-    // Self-consistency loss
-    pseudo_huber_loss(&f_t, &f_t_prime, 0.00054)?.mean_all()
-}
 
-// ECT training (much faster convergence)
-fn train_ect(
-    model: &mut ConsistencyModel<impl candle_nn::Module>,
-    dataloader: &[Tensor],
-    eps: f32,
-    t_max: f32,
-    optimizer: &mut impl candle_nn::optim::Optimizer,
-    device: &Device,
-    epochs: usize,
-) -> Result<()> {
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for x_0 in dataloader {
-            let loss = ect_loss(model, x_0, eps, t_max, device)?;
-            optimizer.backward_step(&loss)?;
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        println!("ECT Epoch {}: Loss = {:.6}", epoch, total_loss / dataloader.len() as f32);
-    }
-    Ok(())
-}
+# ECT training (much faster convergence)
+def train_ect(
+    model: nn.Module,
+    dataloader: list[torch.Tensor],
+    eps: float,
+    t_max: float,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epochs: int,
+) -> None:
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for x_0 in dataloader:
+            optimizer.zero_grad(set_to_none=True)
+            loss = ect_loss(model, x_0, eps, t_max, device)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"ECT Epoch {epoch}: Loss = {total_loss / len(dataloader):.6f}")
 ```
 
 ### 4.4 DPM-Solver++ 実装
@@ -201,7 +186,7 @@ fn train_ect(
 ```rust
 // DPM-Solver++ (2nd-order)
 fn dpm_solver_2nd(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: Tensor,
     schedule: &[f32],
     device: &Device,
@@ -250,7 +235,7 @@ fn dpm_solver_2nd(
 
 // Sampling wrapper
 fn sample_dpm(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     batch_size: usize,
     img_size: (usize, usize, usize),
     schedule: &[f32],
@@ -270,7 +255,7 @@ fn sample_dpm(
 ```rust
 // 1-step sampling
 fn sample_1step(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: &Tensor,
     t_max: f32,
     device: &Device,
@@ -282,7 +267,7 @@ fn sample_1step(
 
 // Multi-step sampling (Consistency Model)
 fn sample_multistep(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: &Tensor,
     steps: usize,
     eps: f32,
@@ -320,7 +305,7 @@ fn sample_multistep(
 
 // Benchmark comparison
 fn benchmark_sampling(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     device: &Device,
 ) -> Result<()> {
     let img_size  = (1usize, 28usize, 28usize);
@@ -356,11 +341,11 @@ fn benchmark_sampling(
 
 ### 4.6 🦀 Rust高速推論実装
 
-#### 4.6.1 Candle推論エンジン
+#### 4.6.1 tch-rs推論エンジン
 
 ```rust
-use candle_core::{Device, Tensor, Result};
-use candle_nn::{VarBuilder, Module};
+use anyhow::Result;
+use tch::{Tensor, Device, nn};
 
 // Consistency Model inference in Rust
 pub struct ConsistencyModel {
@@ -511,7 +496,8 @@ mod tests {
 
 ```rust
 use std::collections::HashMap;
-use candle_core::{Device, Result, Tensor};
+use anyhow::Result;
+use tch::{Tensor, Device};
 
 // Benchmark setup
 let img_size   = (1usize, 28usize, 28usize);
@@ -569,7 +555,7 @@ for (name, time) in &times {
 ```rust
 // Self-consistency validation
 fn measure_self_consistency(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: &Tensor,
     num_timepoints: usize,
     device: &Device,
@@ -662,7 +648,7 @@ let samples = lcm_guided_sample(&lcm_model, "A cat sitting on a table", &ws)?;
 ```rust
 // Consistency error measurement across different time points
 fn verify_self_consistency(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: &Tensor,
     ts: &[f32],
     device: &Device,
@@ -700,39 +686,37 @@ let ddpm_error = verify_self_consistency(&ddpm_model, &x_t, &ts, &device)?;
 
 #### 演習 2: CT vs ECT収束速度比較
 
-```rust
-// Track FID during training
-fn track_training_convergence(
-    train_fn: &mut impl FnMut(usize) -> Result<()>,
-    model: &ConsistencyModel<impl candle_nn::Module>,
-    test_data: &Tensor,
-    epochs: usize,
-    eval_every: usize,
-    device: &Device,
-) -> Result<Vec<f32>> {
-    let mut fid_history = Vec::new();
-    for epoch in 0..epochs {
-        train_fn(epoch)?;
+```python
+# Track FID during training
+from typing import Callable
 
-        if (epoch + 1) % eval_every == 0 {
-            let fid = evaluate_fid(model, test_data, device)?;
-            fid_history.push(fid);
-            println!("Epoch {}: FID = {:.2}", epoch + 1, fid);
-        }
-    }
-    Ok(fid_history)
-}
+def track_training_convergence(
+    train_fn: Callable[[int], None],
+    model: nn.Module,
+    test_data: torch.Tensor,
+    epochs: int,
+    eval_every: int,
+    device: torch.device,
+) -> list[float]:
+    fid_history: list[float] = []
+    for epoch in range(epochs):
+        train_fn(epoch)
+        if (epoch + 1) % eval_every == 0:
+            fid = evaluate_fid(model, test_data, device)
+            fid_history.append(fid)
+            print(f"Epoch {epoch + 1}: FID = {fid:.2f}")
+    return fid_history
 
-// CT (100 epochs)
-let ct_fid  = track_training_convergence(&mut train_ct_fn,  &ct_model,  &test_data, 100, 10, &device)?;
 
-// ECT (10 epochs)
-let ect_fid = track_training_convergence(&mut train_ect_fn, &ect_model, &test_data, 10,  1,  &device)?;
+# CT (100 epochs)
+ct_fid  = track_training_convergence(train_ct_fn,  ct_model,  test_data, 100, 10, device)
 
-// Convergence comparison
-for (i, (ct, ect)) in ct_fid.iter().zip(ect_fid.iter()).enumerate() {
-    println!("Eval {}: CT FID = {:.2}, ECT FID = {:.2}", i + 1, ct, ect);
-}
+# ECT (10 epochs)
+ect_fid = track_training_convergence(train_ect_fn, ect_model, test_data, 10,  1,  device)
+
+# Convergence comparison
+for i, (ct, ect) in enumerate(zip(ct_fid, ect_fid)):
+    print(f"Eval {i + 1}: CT FID = {ct:.2f}, ECT FID = {ect:.2f}")
 ```
 
 **課題**: ECTの収束が**10x速い**理由を、Analytical ODE vs Euler法の観点から説明せよ
@@ -742,7 +726,7 @@ for (i, (ct, ect)) in ct_fid.iter().zip(ect_fid.iter()).enumerate() {
 ```rust
 // Find optimal number of steps
 fn find_optimal_steps(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     x_t: &Tensor,
     max_steps: usize,
     device: &Device,
@@ -787,7 +771,7 @@ println!("Rust (100 samples): {:?}", start.elapsed());
 ```rust
 // Vary distortion (sampling steps) and measure rate (FID)
 fn build_rate_distortion_curve(
-    model: &ConsistencyModel<impl candle_nn::Module>,
+    model: &ConsistencyModel<impl tch::nn::Module>,
     steps_range: &[usize],
     x_t: &Tensor,
     device: &Device,
@@ -1077,7 +1061,7 @@ InstaFlowが示した道:
 
 **現状 (2025)**:
 - SDXL (768x768): LCM 4-step, **0.4 sec** (A100)
-- Candle (1024x1024): CM 1-step, **0.3 sec** (H100)
+- tch-rs (1024x1024): CM 1-step, **0.3 sec** (H100)
 
 **目標 (2026-2027)**:
 - 4K resolution (3840x2160): **< 1 sec** (H100)
@@ -1244,28 +1228,29 @@ DMD2 = Distillation + GAN (第12回)
 **A**: 時間方向の一貫性を損失関数化
 
 **CT損失**:
-```rust
-fn consistency_loss(
-    model: &ConsistencyModel<impl candle_nn::Module>,
-    x_0: &Tensor,
-    t1: f32,
-    t2: f32,
-    device: &Device,
-) -> Result<Tensor> {
-    // Forward noise: x_ti = x_0 + ti * z (independent noise)
-    let z1   = Tensor::randn(0f32, 1.0, x_0.shape(), device)?;
-    let z2   = Tensor::randn(0f32, 1.0, x_0.shape(), device)?;
-    let x_t1 = x_0.add(&z1.affine(t1 as f64, 0.0)?)?;
-    let x_t2 = x_0.add(&z2.affine(t2 as f64, 0.0)?)?;
+```python
+def consistency_loss(
+    model: nn.Module,
+    x_0: torch.Tensor,
+    t1: float,
+    t2: float,
+    device: torch.device,
+) -> torch.Tensor:
+    # Forward noise: x_ti = x_0 + ti * z (independent noise)
+    z1   = torch.randn_like(x_0)
+    z2   = torch.randn_like(x_0)
+    x_t1 = x_0 + t1 * z1
+    x_t2 = x_0 + t2 * z2
 
-    // One-step consistency function
-    let batch = x_0.dim(0)?;
-    let f_t1 = model.forward(&x_t1, &Tensor::full(t1, (batch,), device)?)?;
-    let f_t2 = model.forward(&x_t2, &Tensor::full(t2, (batch,), device)?)?;
+    # One-step consistency function
+    b = x_0.shape[0]
+    t1_t = torch.full((b,), t1, device=device)
+    t2_t = torch.full((b,), t2, device=device)
+    f_t1 = model(x_t1, t1_t)
+    f_t2 = model(x_t2, t2_t)
 
-    // Pseudo-Huber distance (c = 0.00054 for pixel range [-1,1])
-    pseudo_huber_loss(&f_t1, &f_t2, 0.00054)
-}
+    # Pseudo-Huber distance (c = 0.00054 for pixel range [-1,1])
+    return pseudo_huber_loss(f_t1, f_t2, 0.00054)
 ```
 
 **キーアイデア**: 同じ $\mathbf{x}_0$ から生成した $\mathbf{x}_{t_1}$ と $\mathbf{x}_{t_2}$ は、どちらも $F_\theta$ を通すと同じ $\mathbf{x}_\epsilon$ に到達すべき
@@ -1544,7 +1529,7 @@ $$
 
 | 日 | Zone | 内容 | 時間 | 具体的タスク | 到達目標 |
 |:---|:-----|:-----|:-----|:-------------|:---------|
-| Day 1 | Z0-Z1 | QuickStart + 体験 | 1.5h | Candle CMで画像生成実行 | 「1-stepで生成できる」を体感 |
+| Day 1 | Z0-Z1 | QuickStart + 体験 | 1.5h | tch-rsで画像生成実行 | 「1-stepで生成できる」を体感 |
 | Day 2 | Z2 | 直感理解 | 2h | 軌道図を手書き、Self-consistency式を音読 | PF-ODEとConsistencyの関係理解 |
 | Day 3 | Z3.1-3.3 | CT基礎 | 3h | Consistency損失の導出を紙に書く | $\mathcal{L}_{\text{CT}}$ を完全理解 |
 | Day 4 | Z3.4-3.6 | CD/iCT | 3h | Pseudo-Huber損失のグラフをプロット | 教師あり/なし蒸留の違い明確化 |
@@ -1557,7 +1542,7 @@ $$
 | 日 | Zone | 内容 | 時間 | 具体的タスク | 到達目標 |
 |:---|:-----|:-----|:-----|:-------------|:---------|
 | Day 8 | Z4.1-4.2 | Rust基礎実装 | 3h | MNIST CMを訓練 (CT) | 訓練ループ完全理解 |
-| Day 9 | Z4.3 | Rust実装 | 2h | Candle CMでサンプリング高速化 | FFI境界理解 |
+| Day 9 | Z4.3 | Rust実装 | 2h | tch-rsでサンプリング高速化 | FFI境界理解 |
 | Day 10 | Z5 | ベンチマーク | 2h | 自前CMとDDPMを比較 | NFE vs FIDトレードオフ体感 |
 | Day 11 | Z6.1-6.3 | 蒸留系研究 | 3h | LCM/InstaFlow/DMD2論文読解 | Progressive系統樹理解 |
 | Day 12 | Z6.4-6.6 | 理論的発展 | 2h | CTMとInfo理論下界の証明スケッチ | 理論限界把握 |
@@ -1573,7 +1558,7 @@ $$
 | Day 1 | Z0-2 + Z3.1-3.6 | 4h | QuickStart→CT/CD/iCT完全理解 |
 | Day 2 | Z3.7-3.14 | 5h | ECT+DPM++/UniPC+Progressive |
 | Day 3 | Z4 Rust実装 | 4h | CIFAR-10 CMフル実装 |
-| Day 4 | Z4 Rust実装 | 3h | Candle最適化 + ベンチマーク |
+| Day 4 | Z4 Rust実装 | 3h | tch-rs最適化 + ベンチマーク |
 | Day 5 | Z5 + Z6.1-6.3 | 4h | 比較実験 + LCM/InstaFlow/DMD2 |
 | Day 6 | Z6.4-6.6 | 3h | CTM理論 + 情報理論下界 |
 | Day 7 | Z7 + 論文精読 | 3h | FAQ復習 + CM原論文再読 |
@@ -1683,7 +1668,7 @@ fn ddim_sample(ddpm: &Ddpm, x_t: &Tensor, eta: f32) -> Result<Tensor> {
 **Stage 3: Score SDE統合** (第37回)
 ```rust
 // SDE視点でのサンプリング
-fn sde_sample(model: &impl candle_nn::Module, x_t: &Tensor, sde_type: &str) -> Result<Tensor> {
+fn sde_sample(model: &impl tch::nn::Module, x_t: &Tensor, sde_type: &str) -> Result<Tensor> {
     // VP-SDE または VE-SDE
     todo!()
 }
@@ -1722,7 +1707,7 @@ struct ConsistencyModel {
 - [ ] EDM Preconditioningで品質向上できる
 - [ ] Latent Diffusionで大規模画像生成できる
 - [ ] Consistency ModelをCTまたはCDで訓練できる
-- [ ] RustでCandle推論パイプラインを構築できる
+- [ ] Rusttch-rsで推論パイプラインを構築できる
 
 **応用**:
 - [ ] Text-to-Image (Stable Diffusion相当) を再現できる
@@ -1829,7 +1814,7 @@ struct ConsistencyModel {
 > - CT/CD/iCT/ECTの訓練手法を数式レベルで把握
 > - DPM-Solver++/UniPCとの比較で高次ソルバーを理解
 > - Progressive/LCM/InstaFlow/DMD2の蒸留系譜を整理
-> - RustでCT実装、RustでCandle推論を完成
+> - RustでCT実装、Rusttch-rsで推論を完成
 > - 1-step生成の理論限界と実用トレードオフを習得
 >
 > **次の挑戦**:

@@ -1517,7 +1517,7 @@ $$
 
 ## 💻 4. 実装ゾーン（45分）— Production-Ready Unified Systems
 
-### 4.1 BAGEL-style Unified Multimodal Model (Candle)
+### 4.1 BAGEL-style Unified Multimodal Model (PyTorch訓練 + Rust推論)
 
 
 ### 4.2 Test-Time Training Implementation

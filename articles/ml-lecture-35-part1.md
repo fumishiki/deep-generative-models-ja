@@ -394,7 +394,7 @@ $$
 3. **コア画像の抽出**: 「スコア = 密度勾配」「ノイズ除去 = スコア推定」「Langevin = スコア駆動SDE」
 
 **Zone 4-5での実装戦略**:
-- Zone 4: Rust で2D Gaussian mixtureのスコア推定 (Candle NN訓練) + 勾配場可視化
+- Zone 4: Rust で2D Gaussian mixtureのスコア推論 (tch-rs推論) + 勾配場可視化
 - Zone 5: Rust でLangevin Dynamics高速サンプリング + NCSN推論デモ
 
 **進捗チェックポイント**:

@@ -26,17 +26,16 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 ```rust
 // World Modelの本質: 1フレーム → 未来の予測
 // [JEPA-style: encode observation → predict next latent]
-use candle_core::{Tensor, Device};
-use candle_nn::Module;
+use tch::{Tensor, Device, nn};
 
 // 観測 x_t から潜在表現 z_t を抽出 (encoder)
-fn encode(encoder: &impl Module, x: &Tensor) -> candle_core::Result<Tensor> {
+fn encode(encoder: &impl nn::Module, x: &Tensor) -> Tensor {
     encoder.forward(x)  // x: [1, 3, 64, 64] → z: [1, 64]
 }
 
 // 潜在空間で次状態を予測 (action条件付き predictor)
 // 4次元 action space
-fn predict_next(predictor: &impl Module, z: &Tensor, a: &Tensor) -> candle_core::Result<Tensor> {
+fn predict_next(predictor: &impl nn::Module, z: &Tensor, a: &Tensor) -> Tensor {
     let za = Tensor::cat(&[z, a], 1)?;  // [z; a] ∈ ℝ^{64+4}
     predictor.forward(&za)              // → z_next ∈ ℝ^64
 }

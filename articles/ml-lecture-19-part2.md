@@ -24,29 +24,29 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 **インストール（macOS/Linux）**:
 
 ```bash
-curl -fsSL https://install.julialang.org | sh
+curl --proto '='https'' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 **インストール（Windows）**:
 
 ```powershell
-winget install julia -s msstore
+winget install Rustlang.Rust
 ```
 
 **使い方**:
 
 ```bash
 # 最新安定版をインストール
-juliaup add release
+rustup install stable
 
 # 特定バージョンをインストール
-juliaup add 1.12
+rustup install 1.85
 
 # デフォルトバージョンを設定
-juliaup default 1.12
+rustup default stable
 
 # 確認
-julia --version
+rustc --version && cargo --version
 ```
 
 #### 4.1.2 Rust REPLと基本操作
@@ -54,7 +54,7 @@ julia --version
 **REPL起動**:
 
 ```bash
-julia
+cargo run --release
 ```
 
 **REPLモード**:
@@ -73,7 +73,7 @@ julia
 $ cargo run                    // プログラム実行
 $ rustdoc --open               // ドキュメント生成 & 表示
 $ ls                           // シェルコマンドはそのまま
-$ cargo add candle-core        // 依存クレート追加
+$ cargo add ndarray ndarray-rand  // 依存クレート追加
 ```
 
 #### 4.1.3 プロジェクト構造とProject.toml
@@ -83,7 +83,7 @@ Rustのプロジェクト隔離は**Project.toml**で管理:
 ```bash
 mkdir my_ml_project
 cd my_ml_project
-julia --project=.
+cargo run --release
 ```
 
 REPL内:
@@ -91,8 +91,8 @@ REPL内:
 ```rust
 # Cargo でプロジェクトを初期化し依存クレートを追加
 $ cargo init .
-$ cargo add candle-core candle-nn   # Lux + Reactant の相当クレート
-$ cargo add candle-core --features cuda  # GPU サポート (CUDA feature)
+$ cargo add ndarray ndarray-rand   # 行列演算クレート
+$ cargo add tch                    # tch-rs: PyTorch C++ バインディング（自動微分が必要な場合）
 ```
 
 生成される`Project.toml`:
@@ -108,7 +108,7 @@ Reactant = "..."
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 
 [compat]
-julia = "1.12"
+edition = "2021"
 ```
 
 **依存関係の凍結**:
@@ -120,7 +120,7 @@ julia = "1.12"
 **他環境での再現**:
 
 ```bash
-julia --project=.
+cargo run --release
 ] instantiate  # Manifest.tomlから依存復元
 ```
 
@@ -133,7 +133,7 @@ julia --project=.
 $ cargo install cargo-watch
 ```
 
-`~/.julia/config/startup.jl` に追記（REPLに自動ロード）:
+`~/.cargo/config.toml` に追記（REPLに自動ロード）:
 
 ```rust
 // Rust 起動時のホットリロード設定 (cargo-watch 使用)
@@ -212,67 +212,38 @@ $$
 
 コンパイラは実行時に型を見て、最も特化したメソッドを選択。
 
-#### 4.1.6 Candle + Burnでの訓練基盤
+#### 4.1.6 ndarray での推論基盤
 
-**[Candle](https://lux.csail.mit.edu/)** は、Rust DLフレームワーク（JAX/PyTorchスタイル）:
+**[ndarray](https://docs.rs/ndarray)** は、Rust の N 次元配列ライブラリ（NumPy 相当）。訓練は Python/PyTorch で行い、Rust は推論・配布・インフラを担う:
 
 ```rust
-// candle-nn による MLP 定義（Lux.Chain に相当）
-use candle_core::{Device, Result, Tensor};
-use candle_nn::{linear, Linear, Module, VarBuilder, VarMap};
+use ndarray::{Array1, Array2};
+use ndarray_rand::RandomExt;
+use ndarray_rand::rand_distr::Uniform;
 
-struct Mlp {
-    fc1: Linear, // 784 → 128
-    fc2: Linear, // 128 → 10
-}
+struct Linear { w: Array2<f32>, b: Array1<f32> }
 
-impl Mlp {
-    fn new(vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            fc1: linear(28 * 28, 128, vb.pp("fc1"))?,
-            fc2: linear(128, 10, vb.pp("fc2"))?,
-        })
+impl Linear {
+    fn new(in_dim: usize, out_dim: usize) -> Self {
+        let w = Array2::random((out_dim, in_dim), Uniform::new(-0.1, 0.1));
+        let b = Array1::zeros(out_dim);
+        Self { w, b }
     }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Chain: Dense(relu) → Dense
-        self.fc2.forward(&self.fc1.forward(x)?.relu()?)
+    fn forward(&self, x: &Array1<f32>) -> Array1<f32> {
+        self.w.dot(x) + &self.b  // W x + b
     }
 }
 
-fn main() -> Result<()> {
-    let dev   = Device::Cpu;
-    let varmap = VarMap::new();
-    let vb    = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &dev);
-    let model = Mlp::new(vb)?;
+// MLP: input(784) → hidden(256) → hidden(128) → output(10)
+let fc1 = Linear::new(784, 256);
+let fc2 = Linear::new(256, 128);
+let fc3 = Linear::new(128, 10);
 
-    // Forward pass: batch of 32
-    let x = Tensor::zeros((32, 28 * 28), candle_core::DType::F32, &dev)?;
-    let y = model.forward(&x)?;
-    println!("Output shape: {:?}", y.shape()); // [32, 10]
-    Ok(())
-}
-```
-
-**Burn統合**（XLAコンパイル）:
-
-```rust
-// candle は CPU/CUDA/Metal を Device で統一（Reactant.compile に相当）
-// 実行デバイスを切り替えるだけで同一コードが動作する
-use candle_core::Device;
-
-fn get_device() -> Device {
-    // CUDA が使える場合は GPU0、なければ CPU
-    Device::cuda_if_available(0).unwrap_or(Device::Cpu)
-}
-
-fn main() -> candle_core::Result<()> {
-    let dev = get_device();
-    // モデル・テンソルをすべて同一 Device に配置するだけで
-    // CPU/GPU/Metal を透過的に切り替えられる（XLA コンパイル相当）
-    println!("Running on: {:?}", dev);
-    Ok(())
-}
+let x = Array1::<f32>::zeros(784);
+let h1 = fc1.forward(&x).mapv(|v| v.max(0.0));  // ReLU
+let h2 = fc2.forward(&h1).mapv(|v| v.max(0.0));
+let logits = fc3.forward(&h2);
+println!("logits shape: {}", logits.len());  // 10
 ```
 
 **数式との対応**:
@@ -343,7 +314,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-candle-core = "0.8"  # HuggingFace Candle
+ndarray = "0.16"      # N次元配列（NumPy相当）
+ndarray-rand = "0.15" # ランダム初期化
 # rustler NIF for Elixir integration
 rustler = "0.36"     # Elixir FFI
 
@@ -375,7 +347,7 @@ cargo fmt            # Formatter
 
 // Facade pattern: 公開APIのみここに列挙
 pub use crate::inference::predict;
-pub use crate::ffi::julia_bridge;
+pub use crate::ffi::nif_bridge;
 pub use crate::ffi::elixir_nif;
 
 // 内部モジュール
@@ -629,17 +601,17 @@ on:
     branches: [ main ]
 
 jobs:
-  test-julia:
+  test-elixir:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: erlef/setup-beam@v1
         with:
           version: '1.12'
-      - uses: julia-actions/cache@v2
+      - uses: actions/cache@v4
       - run: |
-          julia --project=. -e 'using Pkg; Pkg.instantiate()'
-          julia --project=. -e 'using Pkg; Pkg.test()'
+          cargo run --release -e 'using Pkg; Pkg.instantiate()'
+          cargo run --release -e 'using Pkg; Pkg.test()'
 
   test-rust:
     runs-on: ubuntu-latest
@@ -696,7 +668,7 @@ jobs:
 
 ### 5.2 Step 1: Rustカーネル実装
 
-**`julia/MatrixKernel.jl`**:
+**`src/matrix_kernel.rs`**:
 
 ```rust
 // Rust モジュール: 行列積カーネル（ndarray BLAS バックエンドを使用）
@@ -756,7 +728,7 @@ use jlrs::prelude::*;
 use rustler::{Encoder, Env, NifResult, Term};
 
 /// Rust カーネル（Elixir NIF経由）
-fn call_julia_matmul(a: Vec<f64>, a_rows: usize, a_cols: usize,
+fn call_nif_matmul(a: Vec<f64>, a_rows: usize, a_cols: usize,
                      b: Vec<f64>, b_rows: usize, b_cols: usize) -> Vec<f64> {
     // Elixir NIF経由でRustカーネルを呼び出し
     // ここではRust実装
@@ -783,7 +755,7 @@ fn matmul_nif(a: Vec<f64>, a_rows: usize, a_cols: usize,
         return Err(rustler::Error::BadArg);
     }
 
-    let c = call_julia_matmul(a, a_rows, a_cols, b, b_rows, b_cols);
+    let c = call_nif_matmul(a, a_rows, a_cols, b, b_rows, b_cols);
 
     Ok((c, a_rows, b_cols))
 }
@@ -938,8 +910,8 @@ $$
 **Rust AOT.jl** [^3]:
 
 ```bash
-# juliacコンパイラ
-// juliac は削除 → cargo build --release
+# cargo compilerへ移行
+// cargo build --release は削除 → cargo build --release
 
 # トリミングしたバイナリ生成
 // $ cargo build --release --target x86_64-unknown-linux-musl
@@ -989,38 +961,34 @@ $$
 \end{aligned}
 $$
 
-**Candle統合** [^5]:
+**ndarray 推論統合**:
 
 ```rust
-// candle-nn: MLP 定義 + GPU 実行（Lux + Reactant の Rust 相当）
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{linear, Linear, Module, VarBuilder, VarMap};
+use ndarray::{Array1, Array2};
+use ndarray_rand::RandomExt;
+use ndarray_rand::rand_distr::Uniform;
 
-struct Mlp { fc1: Linear, fc2: Linear }
+struct Linear { w: Array2<f32>, b: Array1<f32> }
 
-impl Mlp {
-    fn new(vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            fc1: linear(784, 128, vb.pp("fc1"))?,
-            fc2: linear(128,  10, vb.pp("fc2"))?,
-        })
+impl Linear {
+    fn new(in_dim: usize, out_dim: usize) -> Self {
+        let w = Array2::random((out_dim, in_dim), Uniform::new(-0.1, 0.1));
+        let b = Array1::zeros(out_dim);
+        Self { w, b }
     }
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.fc2.forward(&self.fc1.forward(x)?.relu()?)
+    fn forward(&self, x: &Array1<f32>) -> Array1<f32> {
+        self.w.dot(x) + &self.b
     }
 }
 
-fn main() -> Result<()> {
-    // Device::cuda_if_available(0) で GPU を自動選択（XLA コンパイル相当）
-    let dev    = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    let varmap = VarMap::new();
-    let vb     = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
-    let model  = Mlp::new(vb)?;
+fn main() {
+    let fc1 = Linear::new(784, 128);
+    let fc2 = Linear::new(128,  10);
 
-    let x = Tensor::zeros((32, 784), DType::F32, &dev)?; // バッチ32
-    let y = model.forward(&x)?;
-    println!("Output shape: {:?}", y.shape()); // [32, 10]
-    Ok(())
+    let x  = Array1::<f32>::zeros(784);
+    let h1 = fc1.forward(&x).mapv(|v| v.max(0.0)); // ReLU
+    let y  = fc2.forward(&h1);
+    println!("Output len: {}", y.len()); // 10
 }
 ```
 
@@ -1032,7 +1000,7 @@ fn main() -> Result<()> {
 
 **制約**:
 
-- Burn対応していないライブラリあり → fallbackはRustランタイム実行
+- ndarray は訓練機能なし → 訓練は Python/PyTorch で行い ONNX エクスポートが推奨
 - 動的制御フロー（`if`/`while`）は制約あり
 
 ### 6.2 Rustler Precompiledとクロスプラットフォーム配布
@@ -1120,16 +1088,16 @@ fn heavy_compute(x: Vec<f64>) -> Vec<f64> {
 }
 ```
 
-### 6.3 rustlerの最新機能: julia_moduleマクロ
+### 6.3 rustlerの最新機能: rustler_moduleマクロ
 
-#### 6.3.1 julia_moduleによるRust→Rust型エクスポート
+#### 6.3.1 rustler_moduleによるRust→Elixir型エクスポート
 
-**rustler 0.21+** [^9] では、`julia_module!` マクロでRust型・関数をRustモジュールとして公開:
+**rustler 0.21+** [^9] では、`rustler_module!` マクロでRust型・関数をRustモジュールとして公開:
 
 ```rust
 use jlrs::prelude::*;
 
-#[julia_module]
+#[rustler::rustler_module]
 mod MyRustModule {
     use jlrs::prelude::*;
 
@@ -1323,7 +1291,7 @@ graph TD
 | **NIF (Native Implemented Function)** | Erlang/ElixirからC/Rustを呼び出す機構 | rustler |
 | **rustler** | RustからRustを呼び出すライブラリ | Rust-Rust FFI |
 | **rustler** | Rust NIFを安全に書くためのElixirライブラリ | Elixir-Rust FFI |
-| **Burn** | Rust関数をMLIR/XLAでコンパイルするライブラリ | XLA, Candle |
+| **Burn** | Rust関数をMLIR/XLAでコンパイルするライブラリ | XLA, ndarray |
 | **Rust AOT** | Rust静的コンパイラ（trimming機能付き） | Rust 1.12+ |
 | **Trimming** | 到達不能なコードを削除してバイナリサイズ削減 | Rust AOT |
 | **ゼロコスト抽象化 (Multiple Dispatch)** | 全引数の型に基づいてメソッドを選択 | Rustの核心機能 |
@@ -1417,7 +1385,7 @@ graph TD
 
 **実装スキル**:
 
-1. **🦀 Rust**: rustup・REPL駆動開発・cargo-watch・ゼロコスト抽象化・Candle + Burn
+1. **🦀 Rust**: rustup・REPL駆動開発・cargo-watch・ゼロコスト抽象化・ndarray + ort
 2. **🦀 Rust**: rustup・所有権/借用・Facade設計・rustler・rustler
 3. **🔮 Elixir**: asdf・Mix・IEx・GenServer・Supervisor・GenStage・Broadway
 
@@ -1480,7 +1448,7 @@ A: Rustは訓練に最適だが、**推論配信**には不向き:
 
 A: Rustは推論に最適だが、**訓練実装**が煩雑:
 - 数式→コードの翻訳が大変（型パズル、lifetime戦争）
-- 自動微分ライブラリが未成熟（CandleはPyTorchに及ばない）
+- 自動微分ライブラリが未成熟（tch-rsはPyTorchのRustバインディングだが、研究用途はPythonが有利）
 - 研究的試行錯誤がしづらい（コンパイル時間、型制約）
 
 Rustで訓練を書くのは、「アセンブリで機械学習」に近い苦行。
@@ -1532,9 +1500,9 @@ $$
 
 **第20回では**:
 
-- 🦀 **Rust訓練**: CandleでVAE・WGAN-GP・Micro-GPTを実装
+- 🐍 **Python訓練**: PyTorchでVAE・WGAN-GP・Micro-GPTを実装・訓練
 - **数式↔コード1:1対応**: ELBO各項・Gradient Penalty・Attentionの完全実装
-- 🦀 **Rust推論**: Candleでモデルロード・推論エンジン構築
+- 🦀 **Rust推論**: ort（ONNX Runtime）でモデルロード・推論エンジン構築
 - 🔮 **Elixir分散サービング**: GenStage/Broadwayでバッチ推論パイプライン
 - **耐障害性デモ**: プロセスkill → 自動復旧
 
@@ -1596,26 +1564,24 @@ Course IIの理論（第10-18回）が、ついに手を動かして動くコー
 > **Progress: 95%**
 > **理解度チェック**
 > 1. Rust AOT（rustc）で静的コンパイルすると何が変わり、どんな制約があるか？
-> 2. Burn がXLAを経由してGPU/TPUコンパイルする仕組みを概説せよ。
+> 2. ndarray で線形層を実装し、推論パスを概説せよ。
 
 ## 参考文献
 
 ### 主要論文
 
-[^1]: Rust Language Team (2025). *Rust 1.12 Highlights*. [https://julialang.org/blog/2025/10/julia-1.12-highlights/](https://julialang.org/blog/2025/10/julia-1.12-highlights/)
-<https://julialang.org/blog/2025/10/julia-1.12-highlights/>
+[^1]: Rust Language Team (2025). *Rust 1.84.0 Highlights*. [https://blog.rust-lang.org/2025/01/09/Rust-1.84.0/](https://blog.rust-lang.org/2025/01/09/Rust-1.84.0/)
+<https://blog.rust-lang.org/2025/01/09/Rust-1.84.0/>
 
 [^2]: Corbet, J. (2025). *New horizons for Rust*. LWN.net. [https://lwn.net/Articles/1006117/](https://lwn.net/Articles/1006117/)
 <https://lwn.net/Articles/1006117/>
 
-[^3]: RustLang (2025). *Rust AOT.jl: CLI app for compiling and bundling julia binaries*. GitHub. [https://github.com/RustLang/Rust AOT.jl](https://github.com/RustLang/Rust AOT.jl)
-<https://github.com/RustLang/Rust AOT.jl>
-
-[^4]: EnzymeAD (2025). *Burn: Optimize Rust Functions With MLIR and XLA*. GitHub. [https://github.com/EnzymeAD/Burn](https://github.com/EnzymeAD/Burn)
+[^3]: Matsakis, N. D., & Klock, F. S. (2014). "The Rust Language". *ACM SIGADA Ada Letters*, 34(3), 103-104.
+<https://doc.rust-lang.org/. *Burn: Optimize Rust Functions With MLIR and XLA*. GitHub. [https://github.com/EnzymeAD/Burn](https://github.com/EnzymeAD/Burn)
 <https://github.com/EnzymeAD/Burn>
 
-[^5]: LuxDL (2025). *Candle: Elegant and Performant Deep Learning*. [https://lux.csail.mit.edu/](https://lux.csail.mit.edu/)
-<https://lux.csail.mit.edu/>
+[^5]: ndarray contributors (2025). *ndarray: N-dimensional array for Rust*. [https://docs.rs/ndarray](https://docs.rs/ndarray)
+<https://docs.rs/ndarray>
 
 [^6]: Rust AOTon 2025. *Accelerating Machine Learning in Rust using Lux & Burn*. [https://pretalx.com/rustcon-2025/talk/KBVHS8/](https://pretalx.com/rustcon-2025/talk/KBVHS8/)
 <https://pretalx.com/rustcon-2025/talk/KBVHS8/>

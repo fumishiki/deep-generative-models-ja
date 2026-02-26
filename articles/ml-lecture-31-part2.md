@@ -1231,7 +1231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 **統合アーキテクチャ**:
 
 ```
-[Rust 訓練ループ (Candle)]
+[Rust 推論ループ (tch-rs)]
       │ MLflow.log_metric()
       ▼
 [MLflow Tracking Server] ──────► [MLflow Model Registry]
@@ -2458,7 +2458,7 @@ use std::thread;
 use std::collections::HashMap;
 
 // Ray Trainに相当するRust分散訓練フレームワーク
-// 実際のGPU分散訓練にはtorch-sys / candle / burn crateを使用する
+// 実際のGPU分散訓練にはtch-rs / torch-sysを使用する
 
 /// 訓練設定
 struct TrainingConfig {

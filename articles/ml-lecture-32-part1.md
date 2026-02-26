@@ -41,7 +41,7 @@ fn main() {
 **出力**:
 ```
 🎯 E2E System Status:
-  🦀 Rust Training Pipeline: Ready (Candle, VAE, GAN統合)
+  🦀 Rust Inference Pipeline: Ready (tch-rs + ort, VAE/GAN推論統合)
   🦀 Rust Inference Server: Running on port 8080 (Axum, ONNX Runtime)
   🔮 Elixir API Gateway: Running on port 4000 (Phoenix, JWT auth, Rate limit)
   📊 Monitoring: Prometheus metrics at :9090

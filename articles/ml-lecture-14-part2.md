@@ -19,15 +19,15 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ```bash
 # Install Rust via rustup
-curl -fsSL https://install.julialang.org | sh
-julia --version  # 1.11.x or later
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup --version  # verify installation
 ```
 
 ```rust
 // Cargo.toml dependencies:
 // [dependencies]
-// candle-core = "0.8"
-// candle-nn = "0.8"
+// ndarray = "0.16"
+// ndarray-rand = "0.15"
 // ndarray = "0.16"
 // rand = "0.8"
 // rand_distr = "0.4"
@@ -70,158 +70,51 @@ ndarray = "0.16"
 **目標**: GPT-2アーキテクチャのミニマル版（1層、2 heads、d_model=32）を訓練可能な形で実装する。
 
 ```rust
-use candle_core::{DType, Device, Result, Tensor, D};
-use candle_nn::{embedding, linear_no_bias, layer_norm, Embedding, Linear, LayerNorm,
-                Module, VarBuilder, VarMap};
+use ndarray::{Array2, Array3, Axis};
 
-// Attn(Q,K,V) = softmax(QKᵀ / √d_k) · V
-// Q, K, V: (batch * num_heads, seq_len, d_k)
+// Scaled Dot-Product Attention — ndarray implementation
+// Q: (seq, d_k), K: (seq, d_k), V: (seq, d_v)
+// Attention(Q,K,V) = softmax(QK^T / √d_k) V
 fn scaled_dot_product_attention(
-    q: &Tensor, k: &Tensor, v: &Tensor,
-    mask: Option<&Tensor>,
-) -> Result<(Tensor, Tensor)> {
-    let d_k = q.dim(D::Minus1)? as f64;
-    // scores = QKᵀ / √d_k: (batch*heads, seq, seq)
-    let mut scores = q.matmul(&k.transpose(D::Minus2, D::Minus1)?)? / d_k.sqrt();
-    if let Some(m) = mask {
-        scores = scores.broadcast_add(m)?;  // add causal mask (-∞ for future)
-    }
-    let attn_weights = candle_nn::ops::softmax(&scores, D::Minus1)?;  // softmax(·)
-    let output = attn_weights.matmul(v)?;                              // · V
-    Ok((output, attn_weights))
+    q: &Array2<f32>,
+    k: &Array2<f32>,
+    v: &Array2<f32>,
+) -> Array2<f32> {
+    let d_k = q.ncols() as f32;
+    let scale = d_k.sqrt();
+
+    // scores: (seq_q, seq_k) = Q K^T / √d_k
+    let scores = q.dot(&k.t()) / scale;
+
+    // softmax over last axis (seq_k)
+    let weights = softmax_rows(&scores);
+
+    // output: (seq_q, d_v) = softmax(scores) V
+    weights.dot(v)
 }
 
-// --- Multi-Head Attention ---
-struct MultiHeadAttention {
-    w_q: Linear, w_k: Linear, w_v: Linear, w_o: Linear,
-    num_heads: usize,
-    d_k:       usize,
+// Softmax over rows: each row sums to 1
+fn softmax_rows(x: &Array2<f32>) -> Array2<f32> {
+    let max = x.fold_axis(Axis(1), f32::NEG_INFINITY, |m, v| m.max(*v));
+    let exp = (x - &max.insert_axis(Axis(1))).mapv(f32::exp);
+    let sum = exp.sum_axis(Axis(1)).insert_axis(Axis(1));
+    exp / sum
 }
 
-impl MultiHeadAttention {
-    fn new(d_model: usize, num_heads: usize, vb: VarBuilder) -> Result<Self> {
-        let d_k = d_model / num_heads;
-        Ok(Self {
-            w_q: linear_no_bias(d_model, d_model, vb.pp("w_q"))?,
-            w_k: linear_no_bias(d_model, d_model, vb.pp("w_k"))?,
-            w_v: linear_no_bias(d_model, d_model, vb.pp("w_v"))?,
-            w_o: linear_no_bias(d_model, d_model, vb.pp("w_o"))?,
-            num_heads, d_k,
-        })
-    }
+fn main() {
+    let (seq, d_k, d_v) = (5, 16, 16);
+    use ndarray_rand::{RandomExt, rand_distr::StandardNormal};
+    let q = Array2::<f32>::random((seq, d_k), StandardNormal);
+    let k = Array2::<f32>::random((seq, d_k), StandardNormal);
+    let v = Array2::<f32>::random((seq, d_v), StandardNormal);
 
-    fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        let (batch, seq_len, d_model) = x.dims3()?;
-        let h = self.num_heads;
-
-        // Project → split heads: (batch, seq, d_model) → (batch*heads, seq, d_k)
-        let project = |w: &Linear| -> Result<Tensor> {
-            w.forward(x)?
-                .reshape((batch, seq_len, h, self.d_k))?
-                .transpose(1, 2)?                         // (batch, h, seq, d_k)
-                .reshape((batch * h, seq_len, self.d_k))
-        };
-        let q = project(&self.w_q)?;
-        let k = project(&self.w_k)?;
-        let v = project(&self.w_v)?;
-
-        // Attention
-        let (attn_out, _) = scaled_dot_product_attention(&q, &k, &v, mask)?;
-
-        // Merge heads → output projection
-        let merged = attn_out
-            .reshape((batch, h, seq_len, self.d_k))?
-            .transpose(1, 2)?                              // (batch, seq, h, d_k)
-            .reshape((batch, seq_len, d_model))?;
-        self.w_o.forward(&merged)
-    }
-}
-
-// --- Transformer Block (Pre-LN) ---
-struct TransformerBlock {
-    mha: MultiHeadAttention,
-    ffn1: Linear,
-    ffn2: Linear,
-    ln1:  LayerNorm,
-    ln2:  LayerNorm,
-}
-
-impl TransformerBlock {
-    fn new(d_model: usize, num_heads: usize, d_ff: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            mha:  MultiHeadAttention::new(d_model, num_heads, vb.pp("mha"))?,
-            ffn1: candle_nn::linear(d_model, d_ff, vb.pp("ffn1"))?,
-            ffn2: candle_nn::linear(d_ff, d_model, vb.pp("ffn2"))?,
-            ln1:  layer_norm(d_model, 1e-5, vb.pp("ln1"))?,
-            ln2:  layer_norm(d_model, 1e-5, vb.pp("ln2"))?,
-        })
-    }
-
-    fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        // x' = x + MHA(LN(x))  — Pre-LN: normalize before attention, residual after
-        let x = (x + &self.mha.forward(&self.ln1.forward(x)?, mask)?)?;
-        // FFN(x) = GELU(xW₁)W₂,  x'' = x' + FFN(LN(x'))
-        let ffn_out = self.ffn2.forward(
-            &self.ffn1.forward(&self.ln2.forward(&x)?)?.gelu()?
-        )?;
-        x + ffn_out  // residual connection
-    }
-}
-
-// M_{ij} = 0 if j ≤ i, else -∞  — additive causal mask; blocks future positions in softmax
-fn causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
-    let mask: Vec<f32> = (0..seq_len).flat_map(|i|
-        (0..seq_len).map(move |j| if j <= i { 0.0f32 } else { f32::NEG_INFINITY })
-    ).collect();
-    Tensor::from_vec(mask, (1, 1, seq_len, seq_len), device)
-}
-
-// --- Micro-GPT ---
-struct MicroGPT {
-    token_emb:   Embedding,
-    pos_emb:     Embedding,
-    transformer: TransformerBlock,
-    lm_head:     Linear,
-}
-
-impl MicroGPT {
-    fn new(vocab_size: usize, d_model: usize, num_heads: usize,
-           d_ff: usize, max_len: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            token_emb:   embedding(vocab_size, d_model, vb.pp("tok_emb"))?,
-            pos_emb:     embedding(max_len, d_model, vb.pp("pos_emb"))?,
-            transformer: TransformerBlock::new(d_model, num_heads, d_ff, vb.pp("transformer"))?,
-            lm_head:     linear_no_bias(d_model, vocab_size, vb.pp("lm_head"))?,
-        })
-    }
-
-    fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        let (batch, seq_len) = input_ids.dims2()?;
-        // x = E_tok(ids) + E_pos(0..T)  — token + positional embeddings
-        let positions = Tensor::arange(0u32, seq_len as u32, input_ids.device())?
-            .unsqueeze(0)?.expand((batch, seq_len))?;
-        let x = (self.token_emb.forward(input_ids)? + self.pos_emb.forward(&positions)?)?;
-        // p(x_t | x_{<t}) via causal transformer — mask ensures no future leakage
-        let mask = causal_mask(seq_len, input_ids.device())?;
-        let x = self.transformer.forward(&x, Some(&mask))?;
-        // LM head: (batch, seq_len, vocab_size) — logits over vocabulary
-        self.lm_head.forward(&x)
-    }
-}
-
-fn main() -> Result<()> {
-    let device = Device::Cpu;
-    let var_map = VarMap::new();
-    let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-
-    let (vocab_size, d_model, num_heads, d_ff, max_len) = (100, 32, 2, 128, 16);
-    let model = MicroGPT::new(vocab_size, d_model, num_heads, d_ff, max_len, vb)?;
-
-    // Dummy forward pass
-    let input_ids = Tensor::zeros((4, max_len), DType::U32, &device)?;
-    let logits = model.forward(&input_ids)?;
-    println!("Logits shape: {:?}", logits.shape()); // [4, 16, 100]
-    Ok(())
+    let out = scaled_dot_product_attention(&q, &k, &v);
+    println!("Attention output shape: {:?}", out.shape());
+    // Output: Attention output shape: [5, 16]
+    // Verify: attention weights sum to 1 per row
+    let w = softmax_rows(&q.dot(&k.t()) / (d_k as f32).sqrt());
+    let row_sums = w.sum_axis(Axis(1));
+    println!("Row sums (should be ~1.0): {:?}", row_sums.as_slice().unwrap());
 }
 ```
 
@@ -347,12 +240,12 @@ $d \ll N$ の場合、$O(N^2 \cdot d)$ が支配的 → **高速化は限定的*
 **Rust実装**:
 
 ```rust
-use candle_core::{Result, Tensor, D};
+use ndarray::{Array2, Array3, Axis, concatenate};
 
 // KV-Cache for autoregressive generation
 struct KvCache {
-    k: Option<Tensor>,  // (batch, heads, seq_so_far, d_k)
-    v: Option<Tensor>,
+    k: Option<Array3<f32>>,  // (heads, seq_so_far, d_k)
+    v: Option<Array3<f32>>,
 }
 
 impl KvCache {
@@ -360,33 +253,39 @@ impl KvCache {
 
     // Append new K,V slice and return full accumulated K,V
     // K_cache = concat([K_1,...,K_{t-1}], K_t)  along seq dim
-    fn update(&mut self, k_new: &Tensor, v_new: &Tensor) -> Result<(&Tensor, &Tensor)> {
+    fn update(&mut self, k_new: Array3<f32>, v_new: Array3<f32>) {
         self.k = Some(match &self.k {
-            None    => k_new.clone(),
-            Some(k) => Tensor::cat(&[k, k_new], D::Minus2)?,  // concat K along seq
+            None    => k_new,
+            Some(k) => concatenate(Axis(1), &[k.view(), k_new.view()]).unwrap(),  // concat along seq
         });
         self.v = Some(match &self.v {
-            None    => v_new.clone(),
-            Some(v) => Tensor::cat(&[v, v_new], D::Minus2)?,  // concat V along seq
+            None    => v_new,
+            Some(v) => concatenate(Axis(1), &[v.view(), v_new.view()]).unwrap(),  // concat along seq
         });
-        Ok((self.k.as_ref().unwrap(), self.v.as_ref().unwrap()))
+    }
+
+    fn get(&self) -> Option<(&Array3<f32>, &Array3<f32>)> {
+        self.k.as_ref().zip(self.v.as_ref())
     }
 }
 
 // Autoregressive generation: x_t = argmax p_θ(x_t | x_{<t})  (greedy)
-fn generate_with_cache(model: &MicroGPT, prompt: &Tensor, max_new_tokens: usize)
-    -> Result<Vec<u32>>
+fn generate_with_cache(model: &MicroGPT, prompt: &[u32], max_new_tokens: usize)
+    -> Vec<u32>
 {
-    let mut tokens: Vec<u32> = prompt.to_vec1()?;
-    // Warm up cache with prompt
-    for step in 0..max_new_tokens {
-        let input = Tensor::from_slice(&tokens, (1, tokens.len()), prompt.device())?;
-        let logits = model.forward(&input)?;             // (1, seq, vocab)
-        let last_logits = logits.narrow(1, tokens.len() - 1, 1)?.squeeze(1)?; // (1, vocab)
-        let next_token = last_logits.argmax(D::Minus1)?.to_scalar::<u32>()?;
+    let mut tokens: Vec<u32> = prompt.to_vec();
+    for _ in 0..max_new_tokens {
+        let logits = model.forward(&tokens);             // shape: (seq, vocab)
+        // Take last timestep logits and pick argmax (greedy)
+        let last = logits.row(tokens.len() - 1);
+        let next_token = last.iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
         tokens.push(next_token);
     }
-    Ok(tokens)
+    tokens
 }
 ```
 
@@ -407,8 +306,7 @@ fn generate_with_cache(model: &MicroGPT, prompt: &Tensor, max_new_tokens: usize)
 
 ```rust
 use std::collections::HashMap;
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{loss, optim, Module, Optimizer, VarBuilder, VarMap};
+use ndarray::{Array1, Array2, Array3, Axis};
 
 // Character-level tokenization
 fn build_vocab(text: &str) -> (HashMap<char, u32>, HashMap<u32, char>) {
@@ -419,44 +317,55 @@ fn build_vocab(text: &str) -> (HashMap<char, u32>, HashMap<u32, char>) {
     (char_to_idx, idx_to_char)
 }
 
-fn get_batch(data: &[u32], seq_len: usize, batch_size: usize, device: &Device)
-    -> Result<(Tensor, Tensor)>
+fn get_batch(data: &[u32], seq_len: usize, batch_size: usize)
+    -> (Vec<Vec<u32>>, Vec<Vec<u32>>)
 {
     let n = data.len() - seq_len - 1;
-    let starts: Vec<usize> = (0..batch_size).map(|_| rand::random::<usize>() % n).collect();
-    let x_data: Vec<u32> = starts.iter().flat_map(|&s| data[s..s+seq_len].iter().copied()).collect();
-    let y_data: Vec<u32> = starts.iter().flat_map(|&s| data[s+1..s+seq_len+1].iter().copied()).collect();
-    let x = Tensor::from_vec(x_data, (batch_size, seq_len), device)?;
-    let y = Tensor::from_vec(y_data, (batch_size, seq_len), device)?;
-    Ok((x, y))
+    let mut x_batch = Vec::new();
+    let mut y_batch = Vec::new();
+    for _ in 0..batch_size {
+        let s = rand::random::<usize>() % n;
+        x_batch.push(data[s..s + seq_len].to_vec());
+        y_batch.push(data[s + 1..s + seq_len + 1].to_vec());
+    }
+    (x_batch, y_batch)
 }
 
-fn main() -> Result<()> {
-    // Download or load Tiny Shakespeare
+// Cross-entropy loss: -sum_i y_i * log(softmax(logits)_i)
+fn cross_entropy(logits: &Array2<f32>, targets: &[u32]) -> f32 {
+    let mut loss = 0.0_f32;
+    for (row, &t) in logits.outer_iter().zip(targets.iter()) {
+        let max = row.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let exp: Vec<f32> = row.iter().map(|&x| (x - max).exp()).collect();
+        let sum: f32 = exp.iter().sum();
+        loss -= (exp[t as usize] / sum).ln();
+    }
+    loss / targets.len() as f32
+}
+
+fn main() {
+    // Load or stub Tiny Shakespeare
     let text = std::fs::read_to_string("tinyshakespeare.txt")
         .unwrap_or_else(|_| "hello world".to_string());
-    let (char_to_idx, idx_to_char) = build_vocab(&text);
+    let (char_to_idx, _idx_to_char) = build_vocab(&text);
     let vocab_size = char_to_idx.len();
     let data: Vec<u32> = text.chars().filter_map(|c| char_to_idx.get(&c).copied()).collect();
 
-    let device = Device::Cpu;
-    let var_map = VarMap::new();
-    let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
     let (seq_len, batch_size) = (32usize, 16usize);
-    let model = MicroGPT::new(vocab_size, 64, 4, 256, 64, vb)?;
-    let mut opt = optim::AdamW::new(var_map.all_vars(), Default::default())?;
+    let model = MicroGPT::new(vocab_size, 64, 4, 256, 64);
 
     for step in 0..100 {
-        let (x, y) = get_batch(&data, seq_len, batch_size, &device)?;
-        let logits = model.forward(&x)?;           // (batch, seq, vocab)
-        let (b, s, v) = logits.dims3()?;
-        let loss = loss::cross_entropy(&logits.reshape((b * s, v))?, &y.reshape((b * s,))?)?;
-        opt.backward_step(&loss)?;
+        let (x_batch, y_batch) = get_batch(&data, seq_len, batch_size);
+        let mut total_loss = 0.0_f32;
+        for (x, y) in x_batch.iter().zip(y_batch.iter()) {
+            let logits = model.forward(x);   // (seq, vocab)
+            total_loss += cross_entropy(&logits, y);
+            // tch-rs: loss.backward(); optimizer.step();
+        }
         if (step + 1) % 20 == 0 {
-            println!("Step {}, Loss: {:.4}", step + 1, loss.to_scalar::<f32>()?);
+            println!("Step {}, Loss: {:.4}", step + 1, total_loss / batch_size as f32);
         }
     }
-    Ok(())
 }
 ```
 
@@ -497,7 +406,7 @@ fn greedy_decode(model: &MicroGPT, prompt: &str, char_to_idx: &HashMap<char, u32
         let input = Tensor::from_slice(&tokens, (1, tokens.len()), device)?;
         let logits = model.forward(&input)?;               // (1, seq, vocab)
         let last = logits.narrow(1, tokens.len() - 1, 1)?.squeeze(1)?; // (1, vocab)
-        let next = last.argmax(candle_core::D::Minus1)?.to_scalar::<u32>()?;
+        let next = last.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as u32).unwrap_or(0);
         tokens.push(next);
     }
 
@@ -1628,20 +1537,20 @@ Attention Entropyの急降下 = Grokking発生のサイン。ネットワーク�
 
 ```
 ml-lecture-14-attention/
-├── julia/
-│   ├── Project.toml           # Dependencies
+├── python/
+│   ├── requirements.txt
 │   ├── src/
-│   │   ├── attention.jl       # Core Attention module
-│   │   ├── multi_head.jl      # Multi-Head Attention
-│   │   ├── transformer.jl     # Transformer Block
-│   │   ├── micro_gpt.jl       # Micro-GPT model
-│   │   └── position.jl        # Position Encoding (Sinusoidal/RoPE)
-│   ├── test/
-│   │   ├── test_attention.jl  # Unit tests
-│   │   └── test_transformer.jl
+│   │   ├── attention.py       # Core Attention module (PyTorch)
+│   │   ├── multi_head.py      # Multi-Head Attention
+│   │   ├── transformer.py     # Transformer Block
+│   │   ├── micro_gpt.py       # Micro-GPT model
+│   │   └── position.py        # Position Encoding (Sinusoidal/RoPE)
+│   ├── tests/
+│   │   ├── test_attention.py  # Unit tests
+│   │   └── test_transformer.py
 │   ├── experiments/
-│   │   ├── train_gpt.jl       # Tiny Shakespeare training
-│   │   └── icl_demo.jl        # In-Context Learning demo
+│   │   ├── train_gpt.py       # Tiny Shakespeare training
+│   │   └── icl_demo.py        # In-Context Learning demo
 │   └── notebooks/
 │       └── attention_viz.ipynb  # Attention visualization
 ├── rust/

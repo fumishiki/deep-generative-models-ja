@@ -387,7 +387,7 @@ Rustでラスタライザを書いたが、訓練パイプライン全体はRust
 
 ```rust
 // nerf_training.rs
-// 実際の実装では candle-nn / tch-rs を使用 (構造と学習ループの概念を示す)
+// 実際の実装では Python (PyTorch) を使用 (訓練ループ); 推論は tch-rs
 
 use std::f32::consts::PI;
 
@@ -396,7 +396,7 @@ pub struct NeRFModel {
     pub l_pos: usize,      // 位置符号化の周波数帯域数 (default: 10)
     pub l_dir: usize,      // 方向符号化の周波数帯域数 (default: 4)
     pub hidden_dim: usize, // 隠れ層の次元 (default: 256)
-    // 実際には candle_nn::Linear × N の密度/色ネットワークをここに持つ
+    // 実際には nn.Linear × N の密度/色ネットワーク (Python PyTorch) をここに持つ
 }
 
 impl NeRFModel {
@@ -469,7 +469,7 @@ pub fn train_nerf(
             // Forward: NeRF評価 → Volume Render → MSE Loss
             // let samples = eval_nerf_along_ray(&model, &ray_o, &ray_d, 2.0, 6.0, 64);
             // let (pred, _, _) = volume_render_differentiable(&samples, &t_vals);
-            // Backward + Update (candle-nn の optimiser を使用)
+            // Backward + Update (Python PyTorch の optimizer を使用)
             let _ = (ray_o, ray_d, gt); // placeholder
             0.0_f32
         }).sum();
@@ -946,7 +946,7 @@ fn volume_render(
 
 // === 訓練ループ ===
 fn train_tiny_nerf(data: &[([f64; 3], [f64; 3], [f64; 3])], epochs: usize) {
-    // モデル: 学習済み重み (実際は candle-nn の Linear × 4 + 出力層)
+    // モデル: 学習済み重み (実際は Python PyTorch nn.Linear × 4 + 出力層)
     // ここでは訓練ループの構造のみ示す
     let t_vals: Vec<f64> = (0..64).map(|i| 0.1 + 9.9 * i as f64 / 63.0).collect();
 
@@ -957,7 +957,7 @@ fn train_tiny_nerf(data: &[([f64; 3], [f64; 3], [f64; 3])], epochs: usize) {
             let pred = volume_render(&dummy_nerf, *ray_o, *ray_d, &t_vals);
             // MSE Loss
             pred.iter().zip(gt_color).map(|(p, g)| (p - g).powi(2)).sum::<f64>() / 3.0
-            // Backward + Update (candle-nn の optimiser を使用)
+            // Backward + Update (Python PyTorch の optimizer を使用)
         }).sum();
 
         if epoch % 10 == 0 {
@@ -1113,7 +1113,7 @@ pub fn optimize_gaussians(
     cameras: &[Camera],
     iters: usize,
 ) {
-    // パラメータ化: [μ, q, s, c, α] を全て1つのベクトルに (candle-nn の Var を使用)
+    // パラメータ化: [μ, q, s, c, α] を全て1つのベクトルに (Python PyTorch の nn.Parameter を使用)
     // ここでは最適化ループの構造を示す
 
     for iter in 0..iters {
@@ -1128,7 +1128,7 @@ pub fn optimize_gaussians(
             loss += l1; // + (1.0 - ssim(&rendered, img));
         }
 
-        // Backward + Update (candle-nn の optimiser を使用)
+        // Backward + Update (Python PyTorch の optimizer を使用)
         // let grads = loss.backward();
         // optimiser.step(&grads);
 
@@ -1166,7 +1166,7 @@ pub fn optimize_gaussians(
 
 ```rust
 // DreamFusion 擬似コード (Text-to-3D via Score Distillation Sampling)
-// 実際の実装: stable-diffusion-rs + candle-nn + NeRF
+// 実際の実装: stable-diffusion-rs (tch-rs 推論) + Python PyTorch (SDS 訓練) + NeRF
 
 // prompt = "a DSLR photo of a corgi"
 // nerf: InstantNGP (HashEncoding + 小さいMLP)

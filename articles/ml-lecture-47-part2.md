@@ -19,8 +19,15 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 #### 環境構築
 
 ```bash
-# Rust (cargo 1.75+)
-julia --project=@. -e 'using Pkg; Pkg.add(["Lux", "Optimisers", "MLUtils", "JLD2", "ProgressMeter"])'
+# Rust 1.75+ required
+cargo new motion_diffusion
+cd motion_diffusion
+# Add to Cargo.toml [dependencies]:
+# tch = "0.17"   # tch-rs (PyTorch Rust bindings) for inference
+# (training: use Python PyTorch; see train.py)
+# ndarray = "0.16"
+# safetensors = "0.4"
+# indicatif = "0.17"  # progress bars
 ```
 
 #### Tiny Motion Diffusion Model
@@ -28,7 +35,7 @@ julia --project=@. -e 'using Pkg; Pkg.add(["Lux", "Optimisers", "MLUtils", "JLD2
 ```rust
 // Motion Diffusion 訓練フレームワーク
 // 実際の MDM は Transformer を使用; ここは MLP で構造を示す
-// 実装: candle-nn / tch-rs
+// 実装: tch-rs (推論) / Python PyTorch (訓練)
 
 // Motion data: (T, J, 3) = (30 frames, 22 joints, 3D) をフラット化して 1980次元
 const T_FRAMES: usize = 30;
@@ -41,7 +48,7 @@ pub struct MotionDenoiser {
     // Input: MOTION_DIM + 1(timestep) + 128(text) = 2109
     // hidden_dim: 512
     // Output: MOTION_DIM
-    // 実際は candle_nn::Linear の Vec
+    // 実際は tch::nn::Linear の Vec (推論時 tch-rs)
     pub hidden_dim: usize,
 }
 

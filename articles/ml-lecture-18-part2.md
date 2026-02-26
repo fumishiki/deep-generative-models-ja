@@ -168,7 +168,7 @@ Tiny Hybrid Model initialized:
 
 ```rust
 // Pseudo-code: Training loop
-// Full training requires automatic differentiation (e.g., candle-nn, burn, or tch-rs)
+// Full training requires automatic differentiation (e.g., tch-rs or a custom autograd)
 fn train(
     model: &mut TinyHybridModel,
     x_train: &Array2<f64>,
@@ -784,7 +784,7 @@ Uniform spread             |     96.0 |    97.0 |  94 |      98.0 |
 
 ```rust
 // Placeholder: SmolVLM2 inference demo
-// In practice, use the `candle` crate or `hf-hub` to download and run the model.
+// In practice, use `ort` (ONNX Runtime) or `hf-hub` + `tch-rs` to download and run the model.
 
 fn main() {
     println!(r#"
@@ -795,8 +795,8 @@ SmolVLM2-256M 推論デモ (Placeholder)
 📊 Parameters: 256M
 🎯 Task: Image → Text generation
 
-// Rust demo code (conceptual, using candle):
-// use candle_core::{Device, Tensor};
+// Rust demo code (conceptual, using ort + hf-hub):
+// use ort::{Environment, SessionBuilder, Value};
 // use hf_hub::api::sync::Api;
 //
 // let api    = Api::new()?;
@@ -936,7 +936,7 @@ fn main() {
 
 - Multi-Head: `W_Q, W_K, W_V` を head数分に分割 → `rearrange` で `(batch, seq, heads, d_head)`
 - Selective SSM: `Δ = σ(Linear_Δ(x))` で入力依存の時間ステップ
-- Adam: `Candle` or `Optim.jl` を使う
+- Adam: `tch-rs` (`torch::nn::Adam`) または手動実装（`m = β₁m + (1-β₁)g; v = β₂v + (1-β₂)g²`）を使う
 
 </details>
 

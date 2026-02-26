@@ -299,7 +299,7 @@ PixelCNNはConvだがAutoregressive — RNNではない。WaveNetも同様。Tra
 
 第9回でRustデビュー(ゼロコピー50x高速)、第10回でRustデビュー(ゼロコスト抽象化+数式1:1対応)を経て、本講義では 🦀Rust と 🦀Rust の **協調** を示す:
 
-- Rust: 訓練ループ(Candle + ゼロコスト抽象化)
+- Rust: 訓練ループ(ndarray + ゼロコスト抽象化)
 - Rust: 推論カーネル(ONNX Runtime + 並列デコード)
 
 PixelCNN訓練をRustで書き、推論をRustで高速化 — 「適材適所の多言語戦略」を体感する。Python一本では絶対に到達できない世界だ。

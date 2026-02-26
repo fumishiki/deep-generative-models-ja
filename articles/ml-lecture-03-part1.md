@@ -41,24 +41,26 @@ keywords: ["SVD", "特異値分解", "行列微分", "自動微分", "逆伝播"
 > Progress: 3%
 
 ```python
-import numpy as np
+import torch
+torch.set_float32_matmul_precision("high")
 
 # 100×80 matrix (grayscale image)
-np.random.seed(42)
-A = np.random.randn(100, 80)
+torch.manual_seed(42)
+A = torch.randn(100, 80)              # shape: (100, 80)
 
 # SVD
-U, s, Vt = np.linalg.svd(A, full_matrices=False)
+U, s, Vt = torch.linalg.svd(A, full_matrices=False)
+# U: (100, 80), s: (80,), Vt: (80, 80)
 
 # Rank-5 approximation
 k = 5
-A_approx = U[:, :k] @ np.diag(s[:k]) @ Vt[:k, :]
+A_approx = U[:, :k] @ torch.diag(s[:k]) @ Vt[:k, :]  # shape: (100, 80)
 
 # Metrics
-original = A.size                           # 8000
-compressed = k * (A.shape[0] + A.shape[1] + 1)  # 905
-print(f"Compression: {compressed/original:.1%}")  # 11.3%
-print(f"Error:       {np.linalg.norm(A - A_approx, 'fro') / np.linalg.norm(A, 'fro'):.4f}")
+original = A.numel()                                    # 8000
+compressed = k * (A.shape[0] + A.shape[1] + 1)        # 905
+print(f"Compression: {compressed/original:.1%}")        # 11.3%
+print(f"Error:       {torch.linalg.norm(A - A_approx, ord='fro') / torch.linalg.norm(A, ord='fro'):.4f}")
 ```
 
 出力:

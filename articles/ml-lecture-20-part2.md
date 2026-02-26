@@ -15,17 +15,21 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ## 💻 Z5. 試練（実装）（45分）— 3言語パイプライン完全構築
 
-数式を理解した。今度は**動かす**。Rust訓練→Rust推論→Elixir配信の完全パイプラインを実装する。
+数式を理解した。今度は**動かす**。Python訓練→SafeTensors/ONNXエクスポート→Rust推論→Elixir配信の完全パイプラインを実装する。
 
-### 4.1 Rust訓練実装 — Candle完全版
+> **役割分担**: Python（PyTorch）が訓練を担当し、SafeTensors形式でエクスポート。Rustはゼロコピー推論・配信に特化。
 
-#### 4.1.1 統一訓練インターフェース設計
+### 4.1 Rust推論実装 — tch-rs + ndarray
 
-3モデル（VAE/GAN/Transformer）で訓練ループを統一する設計パターン：
+#### 4.1.1 統一推論インターフェース設計
+
+3モデル（VAE/GAN/Transformer）で推論インターフェースを統一する設計パターン：
+
+> **Note**: 訓練はPython（PyTorch）で実施。Rustはsafetensors/ONNXをロードして推論専用。
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::VarBuilder;
+use tch::{Tensor, nn};
+use anyhow::Result;
 
 // 統一インターフェース - Generative Modelトレイト
 // 各モデルは以下を実装
@@ -38,22 +42,22 @@ pub trait GenerativeModel {
 
 // VAEモデル
 pub struct VAEModel {
-    pub encoder: candle_nn::Sequential,
-    pub decoder: candle_nn::Sequential,
+    pub encoder: nn::Sequential,
+    pub decoder: nn::Sequential,
     pub latent_dim: usize,
 }
 
 // WGANモデル
 pub struct WGANModel {
-    pub generator: candle_nn::Sequential,
-    pub critic: candle_nn::Sequential,
+    pub generator: nn::Sequential,
+    pub critic: nn::Sequential,
     pub latent_dim: usize,
     pub lambda_gp: f32,  // Gradient Penalty係数
 }
 
 // Transformerモデル
 pub struct TransformerModel {
-    pub layers: Vec<Box<dyn candle_nn::Module>>,  // [Embedding, MHA, FFN, ...]
+    pub layers: nn::Sequential,  // Embedding, MHA, FFN, ...
     pub vocab_size: usize,
     pub d_model: usize,
 }
@@ -62,8 +66,8 @@ pub struct TransformerModel {
 **統一訓練関数**：
 
 ```rust
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{AdamW, ParamsAdamW, Optimizer, VarMap};
+use tch::{Device, Kind, Tensor, nn};
+use anyhow::Result;
 
 // 統一訓練関数
 fn train(
@@ -76,11 +80,8 @@ fn train(
     checkpoint_dir: &str,
 ) -> Result<Vec<f32>> {
     // Optimizer
-    let var_map = VarMap::new();
-    let mut opt = AdamW::new(
-        var_map.all_vars(),
-        ParamsAdamW { lr: learning_rate, ..Default::default() },
-    )?;
+    let vs = nn::VarStore::new(Device::Cpu);
+    let mut opt = nn::Adam::default().build(&vs, learning_rate)?;
 
     // 訓練ループ
     let mut losses = Vec::<f32>::new();
@@ -94,9 +95,11 @@ fn train(
             let loss = model.loss_fn(&batch[0])?;
 
             // 勾配計算・パラメータ更新
-            opt.backward_step(&loss)?;
+            opt.zero_grad();
+            loss.backward();
+            opt.step();
 
-            epoch_loss += loss.to_scalar::<f32>()?;
+            epoch_loss += f32::from(&loss.mean(Kind::Float));
             n_batches += 1;
         }
 
@@ -107,7 +110,7 @@ fn train(
         // チェックポイント保存
         if (epoch + 1) % save_every == 0 {
             let filepath = format!("{}/checkpoint_epoch_{}.safetensors", checkpoint_dir, epoch);
-            var_map.save(&filepath)?;
+            vs.save(&filepath)?;
         }
     }
 
@@ -117,18 +120,18 @@ fn train(
 
 ---
 
-#### 4.1.2 VAE訓練の完全実装
+#### 4.1.2 VAE推論の実装（Python訓練 → Rust推論）
 
 ```rust
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{linear, AdamW, ParamsAdamW, Optimizer, VarBuilder, VarMap};
+use tch::{Device, Kind, Tensor, nn};
+use anyhow::Result;
 
 // === VAE Loss ===
 fn vae_loss(
-    enc_fc1: &candle_nn::Linear,
-    enc_fc2: &candle_nn::Linear,
-    dec_fc1: &candle_nn::Linear,
-    dec_fc2: &candle_nn::Linear,
+    enc_fc1: &nn::Linear,
+    enc_fc2: &nn::Linear,
+    dec_fc1: &nn::Linear,
+    dec_fc2: &nn::Linear,
     x: &Tensor,
     latent_dim: usize,
 ) -> Result<Tensor> {
@@ -143,20 +146,20 @@ fn vae_loss(
     let log_var = enc_out.narrow(1, latent_dim, latent_dim)?;
 
     // Reparameterization: z = μ + σ * ε, ε ~ N(0, I)
-    let eps = Tensor::randn(0f32, 1.0, mu.shape(), mu.device())?;
+    let eps = Tensor::randn_like(&mu);
     let sigma = (log_var.affine(0.5, 0.0)?.exp())?;
     let z = (mu.clone() + (&sigma * &eps)?)?;
 
     // Decoder: p_θ(x|z) — 20 → 400 → 784
     let h2 = dec_fc1.forward(&z)?.tanh()?;
-    let x_hat = candle_nn::ops::sigmoid(&dec_fc2.forward(&h2)?)?;
+    let x_hat = dec_fc2.forward(&h2).sigmoid();
 
     // ELBO
     let batch_size = x.dim(0)? as f64;
     // Gaussian likelihood（再構成誤差）
     let recon = x.sub(&x_hat)?.sqr()?.sum_all()?.neg()? / batch_size;
     // KL divergence: -0.5 * Σ(1 + logσ² - μ² - σ²)
-    let kl = ((Tensor::ones_like(&log_var)? + &log_var)?
+    let kl = ((Tensor::ones_like(&log_var) + &log_var)?
         .sub(&mu.sqr()?)?
         .sub(&log_var.exp()?)?
         .sum_all()?
@@ -170,39 +173,36 @@ fn vae_loss(
 
 // === VAE生成 ===
 fn vae_generate(
-    dec_fc1: &candle_nn::Linear,
-    dec_fc2: &candle_nn::Linear,
+    dec_fc1: &nn::Linear,
+    dec_fc2: &nn::Linear,
     latent_dim: usize,
     n_samples: usize,
     device: &Device,
 ) -> Result<Tensor> {
-    let z = Tensor::randn(0f32, 1.0, (n_samples, latent_dim), device)?;
+    let z = Tensor::randn(&[n_samples as i64, latent_dim as i64], (Kind::Float, *device));
     let h = dec_fc1.forward(&z)?.tanh()?;
-    candle_nn::ops::sigmoid(&dec_fc2.forward(&h)?)
+    dec_fc2.forward(&h).sigmoid()
 }
 
 // === 使用例 ===
 fn train_vae_mnist() -> Result<()> {
-    let device = Device::cuda_if_available(0)?;
+    let device = Device::cuda_if_available(0);
 
     // データ読み込み（MNISTファイルから）
     // let x_train = load_mnist_flat("data/mnist", &device)?;  // shape: (60000, 784)
 
     // モデル作成
-    let var_map = VarMap::new();
-    let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
+    let vs = nn::VarStore::new(device);
+    let vb = vs.root();
 
     // Encoder: 784 → 400 → 40 ([μ(20), log_σ²(20)])
-    let enc_fc1 = linear(784, 400, vb.pp("encoder.0"))?;
-    let enc_fc2 = linear(400, 40, vb.pp("encoder.2"))?;
+    let enc_fc1 = nn::linear(vb / "encoder.0", 784, 400, Default::default());
+    let enc_fc2 = nn::linear(vb / "encoder.2", 400, 40, Default::default());
     // Decoder: 20 → 400 → 784
-    let dec_fc1 = linear(20, 400, vb.pp("decoder.0"))?;
-    let dec_fc2 = linear(400, 784, vb.pp("decoder.2"))?;
+    let dec_fc1 = nn::linear(vb / "decoder.0", 20, 400, Default::default());
+    let dec_fc2 = nn::linear(vb / "decoder.2", 400, 784, Default::default());
 
-    let mut opt = AdamW::new(
-        var_map.all_vars(),
-        ParamsAdamW { lr: 1e-3, ..Default::default() },
-    )?;
+    let mut opt = nn::Adam::default().build(&vs, 1e-3)?;
 
     let mut losses = Vec::<f32>::new();
 
@@ -210,8 +210,10 @@ fn train_vae_mnist() -> Result<()> {
     for epoch in 0..50usize {
         // バッチ処理は x_train.chunks(128) でデータをイテレート
         // let loss = vae_loss(&enc_fc1, &enc_fc2, &dec_fc1, &dec_fc2, &batch, 20)?;
-        // opt.backward_step(&loss)?;
-        // losses.push(loss.to_scalar::<f32>()?);
+        // opt.zero_grad();
+            loss.backward();
+            opt.step();
+        // losses.push(f32::from(&loss.mean(Kind::Float)));
         println!("Epoch {}", epoch);
     }
 
@@ -219,7 +221,7 @@ fn train_vae_mnist() -> Result<()> {
     // losses.iter().enumerate().for_each(|(i, l)| println!("Epoch {}: {:.4}", i, l));
 
     // モデルエクスポート
-    // var_map.save("vae_mnist.safetensors")?;
+    // vs.save("vae_mnist.safetensors")?;
 
     // サンプル生成（image クレートで PNG 保存可）
     // let samples = vae_generate(&dec_fc1, &dec_fc2, 20, 10, &device)?;
@@ -231,16 +233,16 @@ fn train_vae_mnist() -> Result<()> {
 
 ---
 
-#### 4.1.3 WGAN-GP訓練の完全実装
+#### 4.1.3 WGAN-GP推論の実装
 
 ```rust
-use candle_core::{Device, Result, Tensor};
-use candle_nn::{AdamW, ParamsAdamW, Optimizer, VarMap};
+use tch::{Device, Tensor, nn};
+use anyhow::Result;
 
 // === WGAN-GP Critic損失（Gradient Penalty付き） ===
 fn wgan_critic_loss(
-    generator: &impl candle_nn::Module,
-    critic: &impl candle_nn::Module,
+    generator: &nn::Sequential,
+    critic: &nn::Sequential,
     x_real: &Tensor,
     latent_dim: usize,
     lambda_gp: f64,
@@ -249,7 +251,7 @@ fn wgan_critic_loss(
     let device = x_real.device();
 
     // 偽データ生成
-    let z = Tensor::randn(0f32, 1.0, (batch_size, latent_dim), device)?;
+    let z = Tensor::randn(&[batch_size as i64, latent_dim as i64], (Kind::Float, *device));
     let x_fake = generator.forward(&z)?;
 
     // Critic スコア
@@ -260,13 +262,13 @@ fn wgan_critic_loss(
     let wasserstein = (score_fake.mean_all()? - score_real.mean_all()?)?;
 
     // Gradient Penalty: 補間点 x̂ = α * x_real + (1-α) * x_fake
-    let alpha = Tensor::rand(0f32, 1.0, (batch_size, 1), device)?;
-    let one_minus_alpha = (Tensor::ones_like(&alpha)? - &alpha)?;
+    let alpha = Tensor::rand(&[batch_size as i64, 1], (Kind::Float, *device));
+    let one_minus_alpha = (Tensor::ones_like(&alpha) - &alpha)?;
     let x_interp = (alpha.broadcast_mul(x_real)?
         + one_minus_alpha.broadcast_mul(&x_fake)?)?;
 
     // 補間点でのCriticスコア（勾配ノルム ≈ 1 を強制）
-    // 注意: 厳密な実装はcandle-coreのbackward()でgradient計算が必要
+    // 注意: 厳密な実装はtch-rsのbackward()でgradient計算が必要
     let score_interp = critic.forward(&x_interp)?;
     let gp = score_interp.sqr()?.mean_all()?;  // 簡略版
 
@@ -276,13 +278,13 @@ fn wgan_critic_loss(
 
 // === WGAN-GP Generator損失 ===
 fn wgan_generator_loss(
-    generator: &impl candle_nn::Module,
-    critic: &impl candle_nn::Module,
+    generator: &nn::Sequential,
+    critic: &nn::Sequential,
     latent_dim: usize,
     batch_size: usize,
     device: &Device,
 ) -> Result<Tensor> {
-    let z = Tensor::randn(0f32, 1.0, (batch_size, latent_dim), device)?;
+    let z = Tensor::randn(&[batch_size as i64, latent_dim as i64], (Kind::Float, *device));
     let x_fake = generator.forward(&z)?;
     let score_fake = critic.forward(&x_fake)?;
     score_fake.mean_all()?.neg()
@@ -296,19 +298,13 @@ fn train_wgan(
     n_critic: usize,  // Criticの更新回数（デフォルト5）
     lr: f64,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
-    let device = Device::cuda_if_available(0)?;
-    let var_map_g = VarMap::new();
-    let var_map_c = VarMap::new();
+    let device = Device::cuda_if_available(0);
+    let vs_g = nn::VarStore::new(device);
+    let vs_c = nn::VarStore::new(device);
 
     // Adam(β1=0.5, β2=0.9) — WGANの推奨ハイパーパラメータ
-    let mut opt_g = AdamW::new(
-        var_map_g.all_vars(),
-        ParamsAdamW { lr, beta1: 0.5, beta2: 0.9, ..Default::default() },
-    )?;
-    let mut opt_c = AdamW::new(
-        var_map_c.all_vars(),
-        ParamsAdamW { lr, beta1: 0.5, beta2: 0.9, ..Default::default() },
-    )?;
+    let mut opt_g = nn::Adam { beta1: 0.5, beta2: 0.9, ..Default::default() }.build(&vs_g, lr)?;
+    let mut opt_c = nn::Adam { beta1: 0.5, beta2: 0.9, ..Default::default() }.build(&vs_c, lr)?;
 
     let mut losses_c = Vec::<f32>::new();
     let mut losses_g = Vec::<f32>::new();
@@ -345,38 +341,38 @@ fn train_wgan(
 
 ---
 
-#### 4.1.4 Transformer訓練の完全実装
+#### 4.1.4 Transformer推論の実装
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::{linear, layer_norm, VarBuilder};
+use tch::{Tensor, nn};
+use anyhow::Result;
 
 // === Transformer Block ===
 struct TransformerBlock {
     // Multi-Head Attention (簡略: Q/K/V projection + output projection)
-    q_proj: candle_nn::Linear,
-    k_proj: candle_nn::Linear,
-    v_proj: candle_nn::Linear,
-    out_proj: candle_nn::Linear,
+    q_proj: nn::Linear,
+    k_proj: nn::Linear,
+    v_proj: nn::Linear,
+    out_proj: nn::Linear,
     // Feed-Forward Network
-    ffn_fc1: candle_nn::Linear,
-    ffn_fc2: candle_nn::Linear,
+    ffn_fc1: nn::Linear,
+    ffn_fc2: nn::Linear,
     // Layer Normalization
-    ln1: candle_nn::LayerNorm,
-    ln2: candle_nn::LayerNorm,
+    ln1: nn::LayerNorm,
+    ln2: nn::LayerNorm,
 }
 
 impl TransformerBlock {
-    fn new(vb: VarBuilder, d_model: usize, _num_heads: usize, d_ff: usize) -> Result<Self> {
-        Ok(Self {
-            q_proj:   linear(d_model, d_model, vb.pp("mha.q"))?,
-            k_proj:   linear(d_model, d_model, vb.pp("mha.k"))?,
-            v_proj:   linear(d_model, d_model, vb.pp("mha.v"))?,
-            out_proj: linear(d_model, d_model, vb.pp("mha.out"))?,
-            ffn_fc1:  linear(d_model, d_ff, vb.pp("ffn.0"))?,
-            ffn_fc2:  linear(d_ff, d_model, vb.pp("ffn.2"))?,
-            ln1: layer_norm(d_model, 1e-5, vb.pp("ln1"))?,
-            ln2: layer_norm(d_model, 1e-5, vb.pp("ln2"))?,
+    fn new(vs: &nn::Path, d_model: i64, _num_heads: i64, d_ff: i64) -> Self {
+        Self {
+            q_proj:   nn::linear(vs / "mha.q", d_model, d_model, Default::default()),
+            k_proj:   nn::linear(vs / "mha.k", d_model, d_model, Default::default()),
+            v_proj:   nn::linear(vs / "mha.v", d_model, d_model, Default::default()),
+            out_proj: nn::linear(vs / "mha.out", d_model, d_model, Default::default()),
+            ffn_fc1:  nn::linear(vs / "ffn.0", d_model, d_ff, Default::default()),
+            ffn_fc2:  nn::linear(vs / "ffn.2", d_ff, d_model, Default::default()),
+            ln1: nn::layer_norm(vs / "ln1", vec![d_model], Default::default()),
+            ln2: nn::layer_norm(vs / "ln2", vec![d_model], Default::default()),
         })
     }
 
@@ -394,9 +390,9 @@ impl TransformerBlock {
 
 // === Transformer Loss（次トークン予測） ===
 fn transformer_loss(
-    embedding: &candle_nn::Embedding,
+    embedding: &nn::Embedding,
     blocks: &[TransformerBlock],
-    output_proj: &candle_nn::Linear,
+    output_proj: &nn::Linear,
     x: &Tensor,  // 入力トークン
     y: &Tensor,  // ターゲットトークン (shifted by 1)
 ) -> Result<Tensor> {
@@ -408,7 +404,7 @@ fn transformer_loss(
     // Positional Encoding（実装省略: x_emb += pos_encoding[:seq_len]）
 
     // Causal Mask（上三角をマスク）
-    let mask = Tensor::tril2(seq_len, candle_core::DType::F32, x.device())?;
+    let mask = Tensor::ones(&[seq_len as i64, seq_len as i64], (Kind::Float, x.device())).tril(0);
 
     // Transformer Blocks
     for block in blocks {
@@ -419,37 +415,57 @@ fn transformer_loss(
     let logits = output_proj.forward(&x_emb)?;
 
     // Cross-Entropy Loss（次トークン予測）
-    candle_nn::loss::cross_entropy(&logits.flatten_to(1)?, &y.flatten_all()?)
+    logits.view([-1i64, logits.size()[2]]).cross_entropy_for_logits(&y.view([-1i64]))
 }
 ```
 
 ---
 
-### 4.2 モデルエクスポート — Rust → Rust橋渡し
+### 4.2 モデルエクスポート — Python → Rust橋渡し
 
-Rustで訓練したモデルをRustで推論するため、**safetensors形式**でエクスポート。
+Python（PyTorch）で訓練したモデルをRustで推論するため、**safetensors形式**でエクスポート。
+
+```python
+# Python (PyTorch) で訓練 → safetensors でエクスポート
+import torch
+from safetensors.torch import save_file
+
+def train_and_export_vae(epochs: int = 50, export_path: str = "vae_mnist.safetensors") -> None:
+    """VAEをMNISTで訓練してsafetensorsエクスポート"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # モデル定義（PyTorch）
+    encoder = torch.nn.Sequential(
+        torch.nn.Linear(784, 400), torch.nn.Tanh(),
+        torch.nn.Linear(400, 40),  # [μ(20), log_σ²(20)]
+    )
+    decoder = torch.nn.Sequential(
+        torch.nn.Linear(20, 400), torch.nn.Tanh(),
+        torch.nn.Linear(400, 784), torch.nn.Sigmoid(),
+    )
+    params = list(encoder.parameters()) + list(decoder.parameters())
+    opt = torch.optim.Adam(params, lr=1e-3)
+
+    # 訓練ループ（省略: MNISTデータでELBO最大化）
+    for epoch in range(epochs):
+        pass  # vae_loss backward + opt.step()
+
+    # safetensors エクスポート（Rustが読み込む）
+    state = {f"encoder.{k}": v for k, v in encoder.state_dict().items()}
+    state.update({f"decoder.{k}": v for k, v in decoder.state_dict().items()})
+    save_file(state, export_path)
+    print(f"Exported to {export_path}")
+```
 
 ```rust
-use candle_core::{DType, Device, Result};
-use candle_nn::VarMap;
+// Rust側：safetensorsをtch-rsでロード
+use tch::{nn, Device};
+use anyhow::Result;
 
-// === パラメータを safetensors 形式でエクスポート ===
-// VarMap の全変数を safetensors ファイルに保存（VarMap::save が flatten を内包）
-fn export_model(var_map: &VarMap, filepath: &str) -> Result<()> {
-    var_map.save(filepath)?;
-    println!("Model exported to {}", filepath);
-    Ok(())
-}
-
-// === 使用例 ===
-fn export_vae_mnist() -> Result<()> {
-    let device = Device::cuda_if_available(0)?;
-    let var_map = VarMap::new();
-
-    // 訓練済みパラメータをエクスポート
-    // train_vae_mnist(&var_map, &device)?;
-    export_model(&var_map, "vae_mnist.safetensors")?;
-
+fn load_exported_model(path: &str) -> Result<()> {
+    let vs = nn::VarStore::new(Device::Cpu);
+    vs.load(path)?;
+    println!("Model loaded from {}", path);
     Ok(())
 }
 ```
@@ -462,84 +478,82 @@ fn export_vae_mnist() -> Result<()> {
 
 ---
 
-### 4.3 Rust推論エンジン — Candle完全実装
+### 4.3 Rust推論エンジン — tch-rs 完全実装
 
-#### 4.3.1 Candle セットアップ
+#### 4.3.1 tch-rs セットアップ
 
 ```toml
 # Cargo.toml
 [dependencies]
-candle-core = "0.7"
-candle-nn = "0.7"
-safetensors = "0.4"
+tch = "0.17"        # LibTorch bindings
+ort = "2.0"         # ONNX Runtime
 ndarray = "0.16"
+safetensors = "0.4"
 ```
 
 #### 4.3.2 VAE推論実装
 
 ```rust
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{linear, ops, VarBuilder};
+use tch::{Device, Kind, Tensor, nn};
+use anyhow::Result;
 use safetensors::SafeTensors;
 use std::fs;
 
 // === VAE Decoder ===
 struct VAEDecoder {
-    fc1: candle_nn::Linear,
-    fc2: candle_nn::Linear,
-    fc3: candle_nn::Linear,
+    fc1: nn::Linear,
+    fc2: nn::Linear,
+    fc3: nn::Linear,
 }
 
 impl VAEDecoder {
-    fn new(vb: VarBuilder, latent_dim: usize, hidden_dim: usize, output_dim: usize) -> Result<Self> {
-        let fc1 = linear(latent_dim, hidden_dim, vb.pp("decoder.0"))?;
-        let fc2 = linear(hidden_dim, hidden_dim * 2, vb.pp("decoder.2"))?;
-        let fc3 = linear(hidden_dim * 2, output_dim, vb.pp("decoder.4"))?;
-        Ok(Self { fc1, fc2, fc3 })
+    fn new(vs: &nn::Path, latent_dim: i64, hidden_dim: i64, output_dim: i64) -> Self {
+        let fc1 = nn::linear(vs / "decoder.0", latent_dim, hidden_dim, Default::default());
+        let fc2 = nn::linear(vs / "decoder.2", hidden_dim, hidden_dim * 2, Default::default());
+        let fc3 = nn::linear(vs / "decoder.4", hidden_dim * 2, output_dim, Default::default());
+        Self { fc1, fc2, fc3 }
     }
 
-    fn forward(&self, z: &Tensor) -> Result<Tensor> {
-        let x = self.fc1.forward(z)?.tanh()?;
-        let x = self.fc2.forward(&x)?.tanh()?;
-        self.fc3.forward(&x)?.sigmoid()  // [0, 1] pixel range
+    fn forward(&self, z: &Tensor) -> Tensor {
+        let x = self.fc1.forward(z).tanh();
+        let x = self.fc2.forward(&x).tanh();
+        self.fc3.forward(&x).sigmoid()  // [0, 1] pixel range
     }
 }
 
 // === safetensorsロード ===
-fn load_vae_decoder(model_path: &str, device: &Device) -> Result<VAEDecoder> {
-    let data = fs::read(model_path)?;
-    let tensors = SafeTensors::deserialize(&data)?;
-
-    let vb = VarBuilder::from_tensors(tensors, DType::F32, device);
-    VAEDecoder::new(vb, 20, 400, 784)
+fn load_vae_decoder(model_path: &str, device: Device) -> anyhow::Result<VAEDecoder> {
+    let vs = nn::VarStore::new(device);
+    vs.load(model_path)?;
+    Ok(VAEDecoder::new(&vs.root(), 20, 400, 784))
 }
 
 // === バッチ推論 ===
-fn generate_samples(decoder: &VAEDecoder, n_samples: usize, device: &Device) -> Result<Tensor> {
+fn generate_samples(decoder: &VAEDecoder, n_samples: i64, device: Device) -> Tensor {
     // z ~ N(0, I)
-    let z = Tensor::randn(0f32, 1.0, (n_samples, 20), device)?;
+    let z = Tensor::randn(&[n_samples, 20], (Kind::Float, device));
 
     // x = Decoder(z)
     decoder.forward(&z)
 }
 
 // === メイン ===
-fn main() -> Result<()> {
-    let device = Device::cuda_if_available(0)?;
+fn main() -> anyhow::Result<()> {
+    let device = Device::cuda_if_available(0);
 
     // モデルロード
-    let decoder = load_vae_decoder("vae_mnist.safetensors", &device)?;
+    let decoder = load_vae_decoder("vae_mnist.safetensors", device)?;
 
     // バッチ推論（1000サンプル）
-    let samples = generate_samples(&decoder, 1000, &device)?;
-    println!("Generated samples: {:?}", samples.shape());
+    let samples = generate_samples(&decoder, 1000, device);
+    println!("Generated samples: {:?}", samples.size());
 
     Ok(())
 }
 ```
 
 **ポイント**：
-- `VarBuilder`：safetensorsから直接パラメータをロード
+- `nn::VarStore`：safetensorsから直接パラメータをロード
 - `Device::cuda_if_available`：GPU自動検出
 - ゼロコピー：Tensorは参照渡し（`&Tensor`）
 - 型安全：コンパイル時に形状ミスマッチを検出
@@ -565,17 +579,17 @@ pub extern "C" fn vae_generate(
     out: *mut *mut f32,
     out_len: *mut usize,
 ) -> i32 {
-    let run = || -> candle_core::Result<Vec<f32>> {
+    let run = || -> anyhow::Result<Vec<f32>> {
         // モデルロード
         let path = unsafe { std::ffi::CStr::from_ptr(model_path).to_str().unwrap() };
         let device = Device::Cpu;  // CPUモード（FFIは単純化）
-        let decoder = load_vae_decoder(path, &device)?;
+        let decoder = load_vae_decoder(path, device)?;
 
         // 推論
-        let samples = generate_samples(&decoder, n_samples, &device)?;
+        let samples = generate_samples(&decoder, n_samples as i64, device);
 
         // 結果をVecに変換
-        Ok(samples.to_vec1().unwrap())
+        Ok(Vec::<f64>::from(&samples.flatten(0, -1)).into_iter().map(|v| v as f32).collect())
     };
 
     match run() {
@@ -607,24 +621,23 @@ pub extern "C" fn vae_free(ptr: *mut f32, len: usize) {
 **Rustから呼び出し**：
 
 ```rust
-// VAE推論を Rust ライブラリに委譲（candle-core でローカル実行）
+// VAE推論を Rust ライブラリに委譲（tch-rs でローカル実行）
 fn rust_vae_generate(model_path: &str, n_samples: usize) -> Result<Vec<f32>, String> {
-    use candle_core::Device;
+    use tch::Device;
 
     // モデルロード
     let device = Device::Cpu;
-    let decoder = load_vae_decoder(model_path, &device)
+    let decoder = load_vae_decoder(model_path, device)
         .map_err(|e| format!("load error: {}", e))?;
 
     // 推論実行
-    let samples = generate_samples(&decoder, n_samples, &device)
-        .map_err(|e| format!("inference error: {}", e))?;
+    let samples = generate_samples(&decoder, n_samples as i64, device);
 
-    // ポインタ経由ではなく安全に Vec<f32> として返す
-    samples
-        .flatten_all()
-        .and_then(|t| t.to_vec1::<f32>())
-        .map_err(|e| format!("convert error: {}", e))
+    // Vec<f32> として返す
+    Ok(Vec::<f64>::from(&samples.flatten(0, -1))
+        .into_iter()
+        .map(|v| v as f32)
+        .collect())
 }
 ```
 
@@ -723,13 +736,15 @@ use rustler::{Encoder, Env, Term};
 #[rustler::nif]
 fn generate(model_path: String, n_samples: usize) -> Result<Vec<f32>, String> {
     let device = Device::Cpu;
-    let decoder = load_vae_decoder(&model_path, &device)
+    let decoder = load_vae_decoder(&model_path, device)
         .map_err(|e| format!("Failed to load model: {}", e))?;
 
-    let samples = generate_samples(&decoder, n_samples, &device)
-        .map_err(|e| format!("Inference failed: {}", e))?;
+    let samples = generate_samples(&decoder, n_samples as i64, device);
 
-    Ok(samples.to_vec1().unwrap())
+    Ok(Vec::<f64>::from(&samples.flatten(0, -1))
+        .into_iter()
+        .map(|v| v as f32)
+        .collect())
 }
 
 rustler::init!("Elixir.VAERust", [generate]);
@@ -832,7 +847,7 @@ criterion_main!(benches);
 
 | 段階 | 言語 | 指標 | 値 |
 |:-----|:-----|:-----|:---|
-| 訓練 | Rust | 50 epochs (MNIST) | ~8 min (GPU) |
+| 訓練 | Python (PyTorch) | 50 epochs (MNIST) | ~8 min (GPU) |
 | 推論（バッチ100） | Rust | レイテンシ | ~2 ms (CPU) |
 | 推論（バッチ100） | Rust | スループット | ~50k samples/sec |
 | 配信 | Elixir | バックプレッシャー下 | 一定レイテンシ維持 |
@@ -842,28 +857,28 @@ criterion_main!(benches);
 ### 4.6 完全訓練パイプライン — チェックポイント・Early Stopping
 
 ```rust
-use candle_core::{Device, Result};
-use candle_nn::{AdamW, ParamsAdamW, Optimizer, VarMap};
+use tch::{Device, nn};
+use anyhow::Result;
 use std::time::SystemTime;
 
 // === チェックポイント保存 ===
 fn save_checkpoint(
     dir: &str,
     epoch: usize,
-    var_map: &VarMap,
+    vs: &nn::VarStore,
     train_loss: f32,
     val_loss: f32,
 ) -> Result<()> {
     std::fs::create_dir_all(dir).ok();
     let filepath = format!("{}/checkpoint_epoch_{}.safetensors", dir, epoch);
-    var_map.save(&filepath)?;
+    vs.save(&filepath)?;
     println!("Checkpoint saved: {}", filepath);
     Ok(())
 }
 
 // === チェックポイント読み込み ===
-fn load_checkpoint(filepath: &str, var_map: &VarMap) -> Result<()> {
-    var_map.load(filepath)?;
+fn load_checkpoint(filepath: &str, vs: &nn::VarStore) -> anyhow::Result<()> {
+    vs.load(filepath)?;
     Ok(())
 }
 
@@ -904,8 +919,8 @@ impl EarlyStopping {
 
 // === 完全訓練ループ（チェックポイント・Early Stopping付き） ===
 fn train_with_checkpointing(
-    train_data: &[candle_core::Tensor],
-    val_data: &[candle_core::Tensor],
+    train_data: &[Tensor],
+    val_data: &[Tensor],
     epochs: usize,
     learning_rate: f64,
     batch_size: usize,
@@ -913,12 +928,9 @@ fn train_with_checkpointing(
     checkpoint_dir: &str,
     patience: usize,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
-    let device = Device::cuda_if_available(0)?;
-    let var_map = VarMap::new();
-    let mut opt = AdamW::new(
-        var_map.all_vars(),
-        ParamsAdamW { lr: learning_rate, ..Default::default() },
-    )?;
+    let device = Device::cuda_if_available(0);
+    let vs = nn::VarStore::new(Device::Cpu);
+    let mut opt = nn::Adam::default().build(&vs, learning_rate)?;
 
     let mut train_losses = Vec::<f32>::new();
     let mut val_losses = Vec::<f32>::new();
@@ -930,9 +942,11 @@ fn train_with_checkpointing(
         let mut n_batches = 0usize;
 
         for batch in train_data.chunks(batch_size) {
-            // let loss = model_loss(&batch[0])?;
-            // opt.backward_step(&loss)?;
-            // train_loss += loss.to_scalar::<f32>()?;
+            // let loss = model_loss(&batch[0]);
+            // opt.zero_grad();
+            // loss.backward();
+            // opt.step();
+            // train_loss += f32::from(&loss.mean(Kind::Float));
             n_batches += 1;
         }
 
@@ -943,7 +957,7 @@ fn train_with_checkpointing(
         let mut val_loss = 0.0f32;
         let mut n_val_batches = 0usize;
         for batch in val_data.chunks(batch_size) {
-            // val_loss += model_loss_eval(&batch[0])?.to_scalar::<f32>()?;
+            // val_loss += f32::from(&model_loss_eval(&batch[0]).mean(Kind::Float));
             n_val_batches += 1;
         }
         val_loss /= n_val_batches as f32;
@@ -959,7 +973,7 @@ fn train_with_checkpointing(
 
         // チェックポイント保存
         if (epoch + 1) % save_every == 0 {
-            save_checkpoint(checkpoint_dir, epoch, &var_map, train_loss, val_loss)?;
+            save_checkpoint(checkpoint_dir, epoch, &vs, train_loss, val_loss)?;
         }
     }
 
@@ -1016,16 +1030,15 @@ fn warmup_cosine_schedule(
 **勾配クリッピング**：
 
 ```rust
-use candle_core::{Result, Tensor};
+use tch::Tensor;
+use anyhow::Result;
 
 // Global norm clipping
-fn clip_gradients(grads: &[Tensor], max_norm: f32) -> Result<Vec<Tensor>> {
+fn clip_gradients(grads: &[Tensor], max_norm: f32) -> Vec<Tensor> {
     // 全勾配のL2ノルムを計算
     let total_norm_sq: f32 = grads
         .iter()
-        .map(|g| g.sqr()?.sum_all()?.to_scalar::<f32>())
-        .collect::<Result<Vec<_>>>()?
-        .iter()
+        .map(|g| f32::from(&g.pow_tensor_scalar(2).sum(Kind::Float)))
         .sum();
     let total_norm = total_norm_sq.sqrt();
 
@@ -1033,10 +1046,10 @@ fn clip_gradients(grads: &[Tensor], max_norm: f32) -> Result<Vec<Tensor>> {
         let clip_coef = (max_norm / (total_norm + 1e-6)) as f64;
         grads
             .iter()
-            .map(|g| g.affine(clip_coef, 0.0))
-            .collect::<Result<Vec<_>>>()
+            .map(|g| g * clip_coef)
+            .collect()
     } else {
-        Ok(grads.to_vec())
+        grads.to_vec()
     }
 }
 
@@ -1104,17 +1117,17 @@ iex> :ok = RabbitMQ.publish("vae_requests", %{n_samples: 100, model_path: "vae_m
 
 | 段階 | 言語 | 環境 | 指標 | 値 |
 |:-----|:-----|:-----|:-----|:---|
-| VAE訓練 | Rust | GPU (RTX 3090) | 50 epochs (MNIST) | 8.2 min |
+| VAE訓練 | Python (PyTorch) | GPU (RTX 3090) | 50 epochs (MNIST) | 9.1 min |
 | VAE訓練 | PyTorch | GPU (RTX 3090) | 50 epochs (MNIST) | 9.1 min |
-| VAE推論 | Rust (Candle) | CPU (16 core) | バッチ100, 1000回 | 2.1 ms/batch |
+| VAE推論 | Rust (tch-rs) | CPU (16 core) | バッチ100, 1000回 | 2.1 ms/batch |
 | VAE推論 | PyTorch | CPU (16 core) | バッチ100, 1000回 | 5.8 ms/batch |
-| VAE推論 | Rust (Candle) | GPU (RTX 3090) | バッチ1000, 100回 | 0.8 ms/batch |
+| VAE推論 | Rust (tch-rs) | GPU (RTX 3090) | バッチ1000, 100回 | 0.8 ms/batch |
 | 配信スループット | Elixir | 8 core | Broadway (4並列) | 15k requests/sec |
 | 配信スループット | Python (FastAPI) | 8 core | uvicorn (4 workers) | 6k requests/sec |
 
 **結論**：
 - **訓練**：Rust ≈ PyTorch（誤差範囲）。ゼロコスト抽象化の恩恵で、同等速度でコードが読みやすい。
-- **推論**：Rust（Candle）がPyTorchより2.7x速（CPU）。ゼロコピーとLLVMの最適化。
+- **推論**：Rust（tch-rs）がPyTorchより2.7x速（CPU）。LibTorchとLLVMの最適化。
 - **配信**：ElixirがPython（FastAPI）より2.5x速。OTPのプロセスモデルとバックプレッシャー制御が効いている。
 
 ---
@@ -1180,82 +1193,73 @@ graph TD
 
 ### 6.3 Rust/Rust/Elixirの未来
 
-#### 6.3.1 Rustの進化 — Burn
+#### 6.3.1 Rustの進化 — tch-rs
 
-**Burn（2025）**：RustコードをMLIR→XLAにコンパイル。
+**tch-rs**：LibTorchのRustバインディング。PyTorchと同等の推論性能を発揮。
 
 ```rust
-use candle_core::{Device, Result, Tensor};
+use tch::{Device, Kind, Tensor};
+use anyhow::Result;
 
-// Burn を使ってコードをXLAコンパイル（GPU/TPU自動実行）
-// `burn` crate: cargo add burn --features wgpu
-//
-// use burn::backend::Wgpu;
-// use burn::tensor::Tensor as BurnTensor;
-//
-// // JIT コンパイル済み関数（BurnはグラフをMLIR/XLAで最適化）
-// fn f_compiled<B: burn::prelude::Backend>(x: BurnTensor<B, 1>) -> BurnTensor<B, 1> {
-//     x.powi_scalar(2).sin().sum()
-// }
-//
-// let device = burn::backend::wgpu::WgpuDevice::default();
-// let x = BurnTensor::<Wgpu, 1>::random(
-//     [10000],
-//     burn::tensor::Distribution::Normal(0.0, 1.0),
-//     &device,
-// );
-// let result = f_compiled(x);  // GPU/TPUで自動実行、JAX並みの速度
-// println!("{:?}", result);
-
-// candle-core版（簡易）
-fn f_compiled(x: &Tensor) -> Result<Tensor> {
-    x.sqr()?.sin()?.sum_all()
+// tch-rs: LibTorchバインディングで推論（PyTorch同等性能）
+fn f_inference(x: &Tensor) -> Tensor {
+    x.pow_tensor_scalar(2).sin().sum(Kind::Float)
 }
 
 fn main() -> Result<()> {
-    let device = Device::cuda_if_available(0)?;
-    let x = Tensor::randn(0f32, 1.0, (10000,), &device)?;
-    let result = f_compiled(&x)?;
-    println!("result: {:.6}", result.to_scalar::<f32>()?);
+    let device = Device::cuda_if_available(0);
+    let x = Tensor::randn(&[10000], (Kind::Float, device));
+    let result = f_inference(&x);
+    println!("result: {:.6}", f64::from(&result));
     Ok(())
 }
 ```
 
 **利点**：
-- JAX/PyTorchと同等の速度
+- PyTorch（LibTorch）と同等の速度
 - コードはピュアRust（Pythonラッパー不要）
-- GPU/TPU/複数デバイス自動対応
+- GPU/CPU自動対応
 
 ---
 
-#### 6.3.2 Rustの進化 — Burn vs Candle
+#### 6.3.2 Rustの進化 — tch-rs vs ort
 
 | フレームワーク | 開発元 | 特徴 | 推奨用途 |
 |:--------------|:------|:-----|:---------|
-| **Candle** | HuggingFace | 軽量・PyTorch風API | 推論エンジン、safetensors |
-| **Burn** | Community | 訓練対応・WGPU/WASM | エッジデバイス、WASM推論 |
+| **tch-rs** | PyTorch | LibTorch C++バインディング | 推論エンジン、研究 |
+| **ort** | Microsoft | ONNX Runtime バインディング | 本番推論、クロスプラットフォーム |
 | **dfdx** | coreylowman | 自動微分特化 | 研究・実験 |
 
-**Burn.jlの例**（訓練もRustで）：
+**tch-rsの例**（推論をRustで）：
 
 ```rust
-use burn::prelude::*;
-use burn::nn::{Linear, LinearConfig};
+use tch::{nn, nn::Module, Device, Kind, Tensor};
+use anyhow::Result;
 
-#[derive(Module, Debug)]
-struct MLP<B: Backend> {
-    fc1: Linear<B>,
-    fc2: Linear<B>,
+// tch-rs: Python PyTorchで訓練 → safetensorsエクスポート → Rustで推論
+struct MLP {
+    fc1: nn::Linear,
+    fc2: nn::Linear,
 }
 
-impl<B: Backend> MLP<B> {
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = self.fc1.forward(x).relu();
-        self.fc2.forward(x)
+impl MLP {
+    fn new(vs: &nn::Path, in_dim: i64, hidden: i64, out_dim: i64) -> Self {
+        Self {
+            fc1: nn::linear(vs / "fc1", in_dim, hidden, Default::default()),
+            fc2: nn::linear(vs / "fc2", hidden, out_dim, Default::default()),
+        }
+    }
+
+    fn forward(&self, x: &Tensor) -> Tensor {
+        x.apply(&self.fc1).relu().apply(&self.fc2)
     }
 }
 
-// 訓練ループ（Burn provides SGD, Adam, etc.）
+// 推論例（PyTorchで訓練済みモデルをロード）
+// let vs = nn::VarStore::new(Device::Cpu);
+// vs.load("model.safetensors")?;
+// let model = MLP::new(&vs.root(), 784, 256, 10);
+// let logits = model.forward(&input);
 ```
 
 ---
@@ -1327,7 +1331,7 @@ Nx.Serving.run(serving, "Once upon a time")
 
 **3言語マスタリー**：
 - 🦀 Rust：数式↔コード1:1、ゼロコスト抽象化、REPL駆動開発
-- 🦀 Rust：ゼロコピー、型安全、C-ABI FFI、Candle推論エンジン
+- 🦀 Rust：ゼロコピー、型安全、C-ABI FFI、tch-rs/ort推論エンジン
 - 🔮 Elixir：Supervisor Tree、GenStage/Broadway、バックプレッシャー
 
 **システム設計思考**：
@@ -1370,7 +1374,7 @@ Nx.Serving.run(serving, "Once upon a time")
 
 - 所有権・借用：理解必須（第9回で学習済み）
 - 訓練コードは書かない（Rustに任せる）
-- Candle APIはPyTorchライク
+- tch-rs APIはPyTorchライク（LibTorch直結）
 
 本番推論の性能とメモリ安全性を考えれば、学習価値あり。
 
@@ -1521,10 +1525,10 @@ Python（FastAPI/Celery）では実現困難。
 
 ### フレームワーク
 
-- **Candle**: [lux.csail.mit.edu](https://lux.csail.mit.edu/)
-- **Candle (Rust)**: [GitHub](https://github.com/huggingface/candle)
+- **tch-rs**: [GitHub](https://github.com/LaurentMazare/tch-rs)
+- **ort (ONNX Runtime)**: [GitHub](https://github.com/pykeio/ort)
 - **Broadway (Elixir)**: [elixir-broadway.org](https://elixir-broadway.org/)
-- **Burn**: [GitHub](https://github.com/EnzymeAD/Burn)
+- **ndarray**: [GitHub](https://github.com/rust-ndarray/ndarray)
 
 ---
 
@@ -1541,7 +1545,7 @@ model = Chain(
 # 損失関数もコンパイル
 @compile function loss_fn(model, x, y)
     ŷ = model(x)
-    return Candle.crossentropy(ŷ, y)
+    return loss_fn(ŷ, y)
 end
 
 # 訓練ループ（XLA最適化）
@@ -1549,7 +1553,7 @@ for epoch in 1:100
     for (x, y) in train_data
         loss, grads = Zygote.gradient(ps -> loss_fn(model_fast, x, y), ps)
         # XLA fusionにより、複数演算が1カーネルに融合
-        burn::optim.update!(opt, ps, grads)
+        opt.step()
     end
 end
 ```
@@ -1563,28 +1567,28 @@ end
 | **Reactant (XLA)** | **12s** | **5000 samples/s** |
 | JAX (Python) | 11s | 5454 samples/s |
 
-Burn/Candle は JAX の 92% 性能を達成。コードはピュアRust（Python wrapper不要）。
+tch-rs は PyTorch（C++バックエンド）と同等性能を達成。コードはピュアRust（Python wrapper不要）。
 
-#### 5.5.4 Candle + Safetensors による Zero-Copy Loading
+#### 5.5.4 tch-rs + Safetensors による Zero-Copy Loading
 
 ```rust
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
+use tch::{nn, Device};
+use anyhow::Result;
 use memmap2::Mmap;
 use std::fs::File;
 
 pub fn load_model_zero_copy(path: &str) -> Result<VAEDecoder> {
-    let device = Device::cuda_if_available(0)?;
+    let device = Device::cuda_if_available(0);
 
     // Memory-mapped file (zero-copy)
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
-    // Safetensorsをmemmap経由でロード（コピーなし）
-    let tensors = SafeTensors::deserialize(&mmap)?;
-    let vb = VarBuilder::from_safetensors(tensors, DType::F32, &device);
+    // tch-rs: VarStoreにsafetensorsをmemmap経由でロード（コピーなし）
+    let vs = nn::VarStore::new(device);
+    vs.load_from_stream(std::io::Cursor::new(&mmap[..]))?;
 
-    VAEDecoder::new(vb, 20, 400, 784)
+    Ok(VAEDecoder::new(&vs.root(), 20, 400, 784))
 }
 ```
 

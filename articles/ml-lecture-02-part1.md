@@ -61,13 +61,15 @@ graph LR
 3行で、Transformerの中核であるAttention[^1]の行列積を「動かす」。
 
 ```python
-import numpy as np
+import torch
+torch.set_float32_matmul_precision("high")
 
 # Attention: scores = QK^T / sqrt(d_k)
-Q = np.array([[1.0, 0.5], [0.3, 0.8]])  # Query: 2 tokens × 2 dims
-K = np.array([[0.9, 0.1], [0.2, 0.7]])  # Key:   2 tokens × 2 dims
-scores = Q @ K.T / np.sqrt(2)            # QK^T / √d_k
-print(f"Attention scores:\n{np.round(scores, 4)}")
+Q = torch.tensor([[1.0, 0.5], [0.3, 0.8]])  # Query: 2 tokens × 2 dims  shape: (2, 2)
+K = torch.tensor([[0.9, 0.1], [0.2, 0.7]])  # Key:   2 tokens × 2 dims  shape: (2, 2)
+d_k = Q.shape[-1]
+scores = Q @ K.T / d_k**0.5                  # QK^T / √d_k  shape: (2, 2)
+print(f"Attention scores:\n{scores.round(decimals=4)}")
 ```
 
 出力:

@@ -1589,7 +1589,7 @@ graph TD
 <https://arrow.apache.org/>
 
 [^3]: Bouchet-Valat, M., et al. (2024). "polars: Flexible and Fast Tabular Data in Rust". *Journal of Statistical Software*, 107(4), 1-32.
-<https://dataframes.juliadata.org/stable/>
+<https://docs.rs/polars/latest/polars/>
 
 [^4]: Ng, A. (2021). "A Chat with Andrew on MLOps: From Model-centric to Data-centric AI". *DeepLearning.AI Blog*.
 <https://www.deeplearning.ai/the-batch/issue-80/>
@@ -1634,7 +1634,7 @@ graph TD
 
 - Murphy, K. P. (2023). *Probabilistic Machine Learning: Advanced Topics*. MIT Press. [https://probml.github.io/pml-book/](https://probml.github.io/pml-book/)
 - Géron, A. (2022). *Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow* (3rd ed.). O'Reilly Media.
-- Bezanson, J., Edelman, A., Karpinski, S., & Shah, V. B. (2017). "Rust: A Fresh Approach to Numerical Computing". *SIAM Review*, 59(1), 65-98. [https://julialang.org/research/](https://julialang.org/research/)
+- Matsakis, N. D., & Klock, F. S. (2014). "The Rust Language". *ACM SIGADA Ada Letters*, 34(3), 103-104. <https://dl.acm.org/doi/10.1145/2692956.2663188>
 
 ---
 

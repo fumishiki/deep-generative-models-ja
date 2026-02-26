@@ -1324,7 +1324,7 @@ Zone 1で学んだ3D Convの数式をRustで実装する。C Pointer Modelに従
 
 ### 4.2 Rust DiT訓練: Lux + Burn GPU加速
 
-Zone 3のDiT理論をRustで実装する。Candle (Candle後継) + Burn (XLA AOT GPU) でGPU訓練を実現。
+Zone 3のDiT理論をPythonで実装する。PyTorch + Triton でGPU訓練を実現。Rust (tch-rs) は推論・配布に使用。
 
 
 ### 4.3 3言語統合: Rust訓練 → Rust推論 → Elixir配信
@@ -1564,12 +1564,12 @@ graph LR
 
 | パッケージ | 用途 | インストール |
 |:----------|:-----|:-----------|
-| **Candle** | Neural network framework (Candle後継) | `using Pkg; Pkg.add("Lux")` |
+| **PyTorch** | Neural network framework | `pip install torch` |
 | **Burn** | XLA AOT GPU compilation | `Pkg.add("Burn")` |
 | **VideoIO.jl** | 動画読み込み・書き込み | `Pkg.add("VideoIO")` |
 | **Transformers.jl** | HuggingFace互換推論 | `Pkg.add("Transformers")` |
 | **CUDA.jl** | NVIDIA GPU programming | `Pkg.add("CUDA")` |
-| **burn::optim** | Adam, AdamW, etc. | `Pkg.add("burn::optim")` |
+| **torch.optim** | Adam, AdamW, etc. | `pip install torch` |
 
 実装時のトラブルシューティング:
 

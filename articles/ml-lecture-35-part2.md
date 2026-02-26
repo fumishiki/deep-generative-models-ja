@@ -17,20 +17,15 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 **Rust環境**:
 
 ```bash
-# Rust (cargo 1.75+)
-julia --project=@score_matching -e '
-using Pkg
-Pkg.add([
-    "Lux",          # Deep learning framework
-    "Optimisers",   # Optimizers
-    "Zygote",       # Automatic differentiation
-    "CUDA",         # GPU support (optional)
-    "Plots",        # Visualization
-    "Statistics",
-    "LinearAlgebra",
-    "Random"
-])
-'
+# Rust 1.75+ required
+cargo new score_matching
+cd score_matching
+# Add to Cargo.toml [dependencies]:
+# tch = "0.16"   # tch-rs: libtorch bindings for Rust inference
+# ndarray = "0.16"
+# rand = "0.8"
+# rand_distr = "0.4"
+# plotters = "0.3"
 ```
 
 **Rust環境**:
@@ -47,7 +42,7 @@ cd langevin_sampler
 
 ### 4.2 Rust: 2D Gaussian MixtureのScore Matching訓練
 
-**目標**: CandleでDenoising Score Matchingを実装し、2D Gaussian mixtureのスコア関数を学習。
+**目標**: tch-rsでDenoising Score Matchingを実装し、2D Gaussian mixtureのスコア関数を学習。
 
 **実装設計の方針**:
 
@@ -100,8 +95,8 @@ fn true_score_gmm(x: &[f64; 2]) -> [f64; 2] {
 
 // Score network: MLP(x) -> score
 // Input: x ∈ R^2, Output: score ∈ R^2
-// Uses candle_nn::Sequential with layers: Dense(2,64,tanh) -> Dense(64,64,tanh) -> Dense(64,2)
-// fn build_score_network(vb: candle_nn::VarBuilder) -> candle_core::Result<impl candle_nn::Module> { ... }
+// Uses tch::nn with layers: Linear(2,64,tanh) -> Linear(64,64,tanh) -> Linear(64,2)
+// fn build_score_network(vs: &nn::Path) -> anyhow::Result<impl nn::Module> { ... }
 
 // L_DSM = E_{x,ε}[||s_θ(x̃) - ∇_{x̃} log q(x̃|x)||²]  (Vincent 2011)
 // where ∇_{x̃} log q(x̃|x) = -(x̃-x)/σ² = -ε/σ  (Gaussian kernel)
@@ -135,7 +130,7 @@ fn train_score_network(
         // Sample batch
         let x_batch = sample_gmm(batch_size, &mut rng);
 
-        // Compute loss (gradient update handled by candle_nn optimizer in full impl)
+        // Compute loss (gradient update handled by tch-rs Adam optimizer in full impl)
         let loss = dsm_loss(&x_batch, sigma, &mut rng);
         losses.push(loss);
 
@@ -745,7 +740,7 @@ fn main() {
 ```
 
 **ハイブリッドパイプライン性能**:
-- Rust訓練: Candle GPU活用
+- Rust推論: tch-rs GPU活用
 - Rust推論: CPU並列サンプリング 2380 samples/s
 - **Total throughput**: 10x baseline Rust
 
@@ -1341,8 +1336,8 @@ fn swiss_roll(n: usize, rng: &mut impl Rng) -> Vec<[f64; 2]> {
 // 4. Compare with standard denoising autoencoder
 // 5. Measure PSNR / SSIM
 
-// Load MNIST via the `mnist` crate or candle datasets
-// use candle_datasets::vision::mnist;
+// Load MNIST via the `mnist` crate or tch-rs vision helpers
+// use tch::vision::mnist;
 
 fn add_gaussian_noise(image: &[f64], sigma: f64, rng: &mut impl Rng) -> Vec<f64> {
     let normal = rand_distr::Normal::new(0.0, sigma).unwrap();

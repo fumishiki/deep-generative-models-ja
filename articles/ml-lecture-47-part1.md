@@ -369,8 +369,8 @@ $$
 
 **Before (第42回まで)**:
 - 画像・動画: Rust/Rust で十分
-- Diffusion 訓練: Rust (Candle)
-- 推論: Rust (Candle)
+- Diffusion 訓練: Python (PyTorch/Triton)
+- 推論: Rust (tch-rs / ort)
 
 **After (第47回)**:
 - **Rust**: モーション Diffusion 訓練 (数式↔コードの透明性)
@@ -1566,7 +1566,7 @@ U-Net の受容野は $O(k \cdot L)$（$k$: カーネルサイズ、$L$: レイ�
 
 [^8]: Jiang, B., Chen, X., Liu, W., Yu, J., Yu, G., & Chen, T. (2023). MotionGPT: Human Motion as a Foreign Language. *arXiv:2306.14795*.
 
-[^9]: Zhou, J., Ma, X., Sun, Q., Liu, S., Zhang, X., Feng, J., & Wu, Q. (2024). UniMo: Universal Motion Correction for Medical Images without Network Retraining. [arXiv:2409.14204](https://arxiv.org/abs/2409.14204)
+[^9]: Zhou, J., Ma, X., Sun, Q., Liu, S., Zhang, X., Feng, J., & Wu, Q. (2024). UniMo: A Unified Deep Learning Framework for Motion Correction in Medical Imaging. [arXiv:2409.14204](https://arxiv.org/abs/2409.14204)
 
 [^10]: Liu, S., Chen, L., Li, B., Zhang, B., Zhou, Y., & Hu, L. (2024). RDT-1B: a Diffusion Foundation Model for Bimanual Manipulation. *arXiv:2410.07864*.
 

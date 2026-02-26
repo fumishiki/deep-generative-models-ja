@@ -18,7 +18,7 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 **訓練の全体像**:
 1. データローディング (MNIST)
-2. DiT モデル定義 (Candle)
+2. DiT モデル定義 (tch-rs)
 3. 拡散スケジュール (DDPM noise schedule)
 4. 損失関数 (MSE between predicted & true noise)
 5. 訓練ループ (Adam optimizer)
@@ -88,7 +88,7 @@ fn train_dit(epochs: usize, batch_size: usize) {
     let t_steps = 1000;
     let (_, _, alpha_bar) = get_noise_schedule(t_steps);
 
-    // Placeholder model (replace with real candle_nn DiT)
+    // Placeholder model (replace with real tch-rs DiT)
     let model = |x: &Array4<f32>, _t: usize| x.clone();
 
     let num_batches = 1000 / batch_size;
@@ -112,45 +112,45 @@ fn main() {
 ```
 
 **Rust の強み**:
-- **Candle** — Pure functional NN library (JAX-like)
-- **Zygote.jl** — Reverse mode AD (自動微分)
-- **burn::data** — Data loading & batching
-- **Burn** (未使用だが重要) — GPU AOT compilation
+- **tch-rs** — PyTorch C++ bindings for Rust（低レイテンシ推論）
+- **ndarray** — N-dimensional arrays (CPU 前処理)
+- **torch::utils::data** / Python `DataLoader` — Data loading & batching
+- **ort** — ONNX Runtime（クロスプラットフォーム GPU 推論）
 
-> **⚠️ Warning:** Lux の `withgradient` でモデルの `st`（state）を返す際、学習フラグ・BN統計などが含まれる。`st` を更新せずに再利用すると BatchNorm の running statistics が訓練中に固定されてしまう。必ず `ps, st = burn::optim.update(...)` の後に更新した `st` を次のイテレーションに渡すこと。
+> **⚠️ Warning:** PyTorch での訓練ループでは、`optimizer.step()` 後に必ず `optimizer.zero_grad(set_to_none=True)` を呼ぶこと。BatchNorm 統計は `model.train()` / `model.eval()` フラグに依存するため、評価時は必ず `model.eval()` にセットし、`torch.no_grad()` コンテキストで推論すること。
 
 ### 4.2 🦀 Rust: DiT 推論サーバー
 
 **推論の全体像**:
-1. Candle でモデルロード
+1. tch-rs でモデルロード
 2. DDPM sampling loop
 3. バッチ処理
 4. HTTP API (Axum)
 
 **完全実装**:
 ```rust
-use candle_core::{Tensor, Device, DType};
-use candle_nn::{Linear, VarBuilder, Module};
+use tch::{Device, Kind, Tensor, nn};
+use tch::nn::Module;
 use anyhow::Result;
 
 // DiT Block (simplified)
 struct DiTBlock {
-    attn: Linear,
-    mlp: Linear,
+    attn: nn::Linear,
+    mlp:  nn::Linear,
 }
 
 impl DiTBlock {
-    fn new(vb: VarBuilder, hidden_dim: usize) -> Result<Self> {
-        let attn = Linear::new(vb.pp("attn").get((hidden_dim, hidden_dim))?, None);
-        let mlp = Linear::new(vb.pp("mlp").get((4*hidden_dim, hidden_dim))?, None);
-        Ok(Self { attn, mlp })
+    fn new(vs: &nn::Path, hidden_dim: i64) -> Self {
+        let attn = nn::linear(vs / "attn", hidden_dim,     hidden_dim,     Default::default());
+        let mlp  = nn::linear(vs / "mlp",  hidden_dim, 4 * hidden_dim, Default::default());
+        Self { attn, mlp }
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let a = self.attn.forward(x)?;
-        let x = (x + a)?;  // residual
-        let m = self.mlp.forward(&x)?;
-        x + m  // residual
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let a = self.attn.forward(x);
+        let x = x + a;   // residual
+        let m = self.mlp.forward(&x);
+        x + m            // residual
     }
 }
 
@@ -160,51 +160,50 @@ struct DiT {
 }
 
 impl DiT {
-    fn new(vb: VarBuilder, num_layers: usize, hidden_dim: usize) -> Result<Self> {
+    fn new(vs: &nn::Path, num_layers: usize, hidden_dim: i64) -> Self {
         let blocks = (0..num_layers)
-            .map(|i| DiTBlock::new(vb.pp(&format!("block_{i}")), hidden_dim))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self { blocks })
+            .map(|i| DiTBlock::new(&(vs / format!("block_{i}")), hidden_dim))
+            .collect();
+        Self { blocks }
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.blocks.iter().try_fold(x.clone(), |x, block| block.forward(&x))
+    fn forward(&self, x: &Tensor) -> Tensor {
+        self.blocks.iter().fold(x.shallow_clone(), |x, block| block.forward(&x))
     }
 }
 
 // DDPM Sampling
-fn ddpm_sample(model: &DiT, schedule: &NoiseSchedule, shape: &[usize]) -> Result<Tensor> {
+fn ddpm_sample(model: &DiT, schedule: &NoiseSchedule, shape: &[i64]) -> Tensor {
     let device = Device::Cpu;
-    let mut x_t = Tensor::randn(0f32, 1.0, shape, &device)?;
+    let mut x_t = Tensor::randn(shape, (Kind::Float, device));
 
-    for t in (0..schedule.T).rev() {
+    for t in (0..schedule.t_steps).rev() {
         // Predict noise
-        let epsilon_pred = model.forward(&x_t)?;
+        let epsilon_pred = model.forward(&x_t);
 
         // x_{t-1} = (x_t - β_t/√(1-ᾱ_t)·ε_θ) / √α_t + σ_t·z  (DDPM reverse step)
-        let alpha_t = schedule.alpha[t];
-        let alpha_bar_t = schedule.alpha_bar[t];
-        let beta_t = schedule.beta[t];
+        let alpha_t     = schedule.alpha[t] as f64;
+        let alpha_bar_t = schedule.alpha_bar[t] as f64;
+        let beta_t      = schedule.beta[t] as f64;
 
         // 数式の各係数の意味:
         // 1/sqrt(α_t): ノイズスケール補正
         // β_t/sqrt(1-ᾱ_t): ε_θ の寄与を α_t スケールに変換
 
-        let coeff1 = (1.0 / alpha_t.sqrt())?;
-        let coeff2 = (beta_t / (1.0 - alpha_bar_t).sqrt())?;
-        let mean = ((x_t - (epsilon_pred * coeff2)?)? * coeff1)?;
+        let coeff2 = beta_t / (1.0 - alpha_bar_t).sqrt();
+        let mean   = (&x_t - epsilon_pred * coeff2) / alpha_t.sqrt();
 
         let z = if t > 0 {
-            Tensor::randn(0f32, 1.0, shape, &device)?
+            Tensor::randn(shape, (Kind::Float, device))
         } else {
-            Tensor::zeros(shape, DType::F32, &device)?
+            Tensor::zeros(shape, (Kind::Float, device))
         };
 
-        let sigma_t = beta_t.sqrt()?;
-        x_t = (mean + (z * sigma_t)?)?;
+        let sigma_t = beta_t.sqrt();
+        x_t = mean + z * sigma_t;
     }
 
-    Ok(x_t)
+    x_t
 }
 
 // HTTP Server (Axum)
@@ -226,16 +225,15 @@ async fn main() -> Result<()> {
 
     async fn generate(Json(req): Json<GenerateRequest>) -> Json<GenerateResponse> {
         // Load model (dummy)
-        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
-        let model = DiT::new(vb, 12, 768).unwrap();
+        let vs = nn::VarStore::new(Device::Cpu);
+        let model = DiT::new(&vs.root(), 12, 768);
         let schedule = NoiseSchedule::new(1000);
 
         // Generate
         let images = (0..req.num_samples)
             .map(|_| {
-                ddpm_sample(&model, &schedule, &[1, 28, 28])
-                    .and_then(|img| img.to_vec1::<f32>())
-                    .unwrap()
+                let t: Vec<f32> = ddpm_sample(&model, &schedule, &[1, 28, 28]).into();
+                t
             })
             .collect::<Vec<_>>();
 
@@ -251,33 +249,33 @@ async fn main() -> Result<()> {
 }
 
 struct NoiseSchedule {
-    T: usize,
+    t_steps: usize,
     beta: Vec<f32>,
     alpha: Vec<f32>,
     alpha_bar: Vec<f32>,
 }
 
 impl NoiseSchedule {
-    fn new(T: usize) -> Self {
-        let beta: Vec<f32> = (0..T)
-            .map(|i| 1e-4 + (0.02 - 1e-4) * (i as f32 / T as f32))
+    fn new(t_steps: usize) -> Self {
+        let beta: Vec<f32> = (0..t_steps)
+            .map(|i| 1e-4 + (0.02 - 1e-4) * (i as f32 / t_steps as f32))
             .collect();
         let alpha: Vec<f32> = beta.iter().map(|b| 1.0 - b).collect();
         let alpha_bar: Vec<f32> = alpha.iter()
             .scan(1.0f32, |acc, &a| { *acc *= a; Some(*acc) })
             .collect();
-        Self { T, beta, alpha, alpha_bar }
+        Self { t_steps, beta, alpha, alpha_bar }
     }
 }
 ```
 
 **Rust の強み**:
-- **Candle** — HuggingFace の Rust ML framework
+- **tch-rs** — PyTorch C++ bindings for Rust（低レイテンシ推論）
 - **Axum** — 高速 HTTP server (Tokio)
 - **Zero-copy** — メモリ効率
 - **型安全性** — コンパイル時エラー検出
 
-> **⚠️ Warning:** `candle_core::Tensor` の演算は `Result<Tensor>` を返すため、全演算に `?` が必要。長いサンプリングループでは `?` エラーが途中で中断されやすい。`unwrap_or_else` で fallback を用意するか、`anyhow::Result` で上位にエラー伝播させること。
+> **⚠️ Warning:** `tch::Tensor` の演算は panic でエラーを報告するため、本番コードでは推論結果を `anyhow::Result` でラップして上位に伝播させること。長いサンプリングループでは `tch::no_grad()` ブロック内で実行し、不要な勾配テープを避けること。
 
 ### 4.3 🔮 Elixir: 分散サービング
 
@@ -1437,7 +1435,7 @@ graph LR
 
 > **Note:** **第43回完了！ Course V スタートダッシュ成功。** DiT・MM-DiT・SiT・高速Sampling を完全習得した。次は音声モダリティへ — 静止画から時系列データへの拡張。第44回で会おう！
 
-> **⚠️ Warning:** この講義で実装した Tiny DiT on MNIST は教育用の簡略実装であり、本番品質には不十分な点がある。特に: (1) `MultiHeadAttention` の実装が Candle の低レイテンシ版ではなく、(2) `patchify/unpatchify` が純粋 Rust（BLAS 最適化なし）、(3) AdaLN-Zero の Zero 初期化が省略されている。Production 利用には DiT 公式実装（PyTorch）または Candle の最適化版を参照のこと。
+> **⚠️ Warning:** この講義で実装した Tiny DiT on MNIST は教育用の簡略実装であり、本番品質には不十分な点がある。特に: (1) `MultiHeadAttention` の実装が tch-rs の低レイテンシ最適化版ではなく、(2) `patchify/unpatchify` が純粋 Rust（BLAS 最適化なし）、(3) AdaLN-Zero の Zero 初期化が省略されている。Production 利用には DiT 公式実装（PyTorch）または tch-rs + libtorch の最適化版を参照のこと。
 
 ---
 

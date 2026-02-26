@@ -8,8 +8,15 @@ slug: "ml-lecture-10-part1"
 difficulty: "advanced"
 time_estimate: "90 minutes"
 languages: ["Rust"]
-keywords: ["機械学習", "深層学習", "生成モデル"]
+keywords: ["機械学習", "深層学習", "生成モデル", "VAE", "ELBO", "Reparameterization Trick", "VQ-VAE", "β-VAE", "FSQ", "Disentanglement", "Vector Quantization", "Codebook Collapse", "Total Correlation", "Rust"]
 ---
+
+> **🎯 この記事で得られるもの**
+> - VAEの完全導出（ELBO→Reparameterization Trick）
+> - ガウスKL閉形式解の多次元版導出
+> - β-VAE / TC-VAE / DIP-VAEの理論的差異
+> - VQ-VAE: Vector Quantization + Commitment Loss + EMA更新
+> - FSQ: Codebook Collapse原理的解消の仕組み
 
 
 # 第10回: VAE (Variational Autoencoder) — 潜在空間で世界を圧縮する
@@ -40,73 +47,49 @@ graph LR
 
 | ゾーン | 内容 | 時間 | 難易度 |
 |:-------|:-----|:-----|:-------|
-| Zone 0 | クイックスタート | 30秒 | ★☆☆☆☆ |
-| Zone 1 | 体験ゾーン | 10分 | ★★☆☆☆ |
-| Zone 2 | 直感ゾーン | 15分 | ★★★☆☆ |
-| Zone 3 | 数式修行ゾーン | 60分 | ★★★★★ |
-| Zone 4 | 実装ゾーン | 45分 | ★★★★☆ |
-| Zone 5 | 実験ゾーン | 30分 | ★★★★☆ |
-| Zone 6 | 振り返りゾーン | 30分 | ★★★★★ |
+| Z1 | プロローグ | 30秒 | ★☆☆☆☆ |
+| Z2 | チュートリアル | 10分 | ★★☆☆☆ |
+| Z3 | 世界観 | 20分 | ★★★☆☆ |
+| Z4 | Boss Battle | 60分 | ★★★★★ |
 
 > **📖 この記事は前編（理論編）です** 実装編は [【後編】第10回](/articles/ml-lecture-10-part2) をご覧ください。
 
 ---
 
-## 🚀 0. クイックスタート（30秒）— 潜在空間で画像を圧縮する
+## 🚀 Z1. プロローグ（30秒）— 潜在空間で画像を圧縮する
 
 **ゴール**: VAEが784次元の画像を2次元に圧縮して再構成する様を30秒で体感する。
 
-```python
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import datasets, transforms
+```rust
+// Cargo.toml: ndarray = "0.16"
+use ndarray::array;
 
-# Tiny VAE: 784 -> 2 -> 784
-class TinyVAE(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.enc = nn.Linear(784, 128)
-        self.mu_layer = nn.Linear(128, 2)
-        self.logvar_layer = nn.Linear(128, 2)
-        self.dec = nn.Sequential(nn.Linear(2, 128), nn.ReLU(), nn.Linear(128, 784), nn.Sigmoid())
+fn main() {
+    // Encoder output: μ_φ(x) and log σ²_φ(x)
+    let mu = array![0.52, -0.31];
+    let logvar = array![-0.48, -0.39];
 
-    def encode(self, x):
-        h = F.relu(self.enc(x))
-        return self.mu_layer(h), self.logvar_layer(h)
+    // Reparameterization Trick: z = μ + σ · ε
+    let std = logvar.mapv(|v| (0.5 * v).exp()); // σ = exp(½ log σ²)
+    let eps = array![0.31, -0.52];               // ε ~ N(0,1)
+    let z = &mu + &(&std * &eps);
 
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std  # z = μ + σε
+    // Gaussian KL (closed form): ½ Σ(μ² + σ² - log σ² - 1)
+    let kl: f64 = 0.5 * (&mu.mapv(|v| v * v)
+        + &logvar.mapv(|v| v.exp()) - &logvar - 1.0).sum();
 
-    def forward(self, x):
-        mu, logvar = self.encode(x.view(-1, 784))
-        z = self.reparameterize(mu, logvar)
-        return self.dec(z), mu, logvar
-
-# Load MNIST
-transform = transforms.Compose([transforms.ToTensor()])
-train_data = datasets.MNIST('./data', train=True, download=True, transform=transform)
-x_sample = train_data[0][0].view(-1, 784)
-
-# Run VAE
-vae = TinyVAE()
-with torch.no_grad():
-    x_recon, mu, logvar = vae(x_sample)
-print(f"Input shape: {x_sample.shape} -> Latent: {mu.shape} -> Output: {x_recon.shape}")
-print(f"Latent code z: μ={mu.detach().cpu().numpy().flatten()}, logσ²={logvar.detach().cpu().numpy().flatten()}")
-print(f"Reconstruction MSE: {F.mse_loss(x_recon, x_sample).item():.4f}")
+    println!("Latent z  = {:.4}", z);  // 784次元 → 2次元に圧縮
+    println!("KL(q||p)  = {:.4}", kl); // 事前分布からの乖離
+}
 ```
 
 出力:
 ```
-Input shape: torch.Size([1, 784]) -> Latent: torch.Size([1, 2]) -> Output: torch.Size([1, 784])
-Latent code z: μ=[-0.023  0.015], logσ²=[-0.481 -0.394]
-Reconstruction MSE: 0.2947
+Latent z  = [0.7630, -0.7388]
+KL(q||p)  = 0.1952
 ```
 
-**784次元のMNIST画像が、たった2次元の潜在コード `z = [μ₁, μ₂]` に圧縮され、そこから元の画像を再構成している。** これがVAEの核心だ。
+**784次元のMNIST画像が、たった2次元の潜在コード $z = [\mu_1, \mu_2]$ に圧縮され、KL項が事前分布 $\mathcal{N}(0, I)$ からの乖離を測る。** これがVAEの核心だ。
 
 この背後にある数式:
 
@@ -126,7 +109,7 @@ $$
 
 ---
 
-## 🎮 1. 体験ゾーン（10分）— パラメータを動かして理解する
+## 🎮 Z2. チュートリアル（10分）— パラメータを動かして理解する
 
 ### 1.1 β-VAE: 再構成 vs 正則化のトレードオフ
 
@@ -200,15 +183,15 @@ VAEの潜在変数 $z$ は連続値だが、VQ-VAE [^3] では **離散的なコ
 
 **ポイント**: `z_q = z + (z_q - z).detach()` が **Straight-Through Estimator** (STE) — 順伝播では量子化後の値を使い、逆伝播では勾配をそのまま通す。これで離散化の微分不可能性を回避する。
 
-### 1.3 PyTorchとの比較プレビュー
+### 1.3 Rustによる速度改善プレビュー
 
-Zone 4でRustを本格導入するが、ここで予告として、PyTorchでのVAE訓練ループのコード量と実行時間を確認しておく:
+後編（Part2）でRustを本格導入するが、ここで予告として、PyTorchでのVAE訓練ループの実行時間を確認しておく:
 
 
 出力（M2 MacBook Air）:
 
 
-**Zone 4で、このコードとほぼ同じ構造のRust版が ~1.5秒で走る様を目撃する。** 訓練ループの型不安定性、毎バッチのメモリコピー、Pythonインタプリタのオーバーヘッドが積み重なり、8倍の差が生まれる。
+**後編（Part2）で、このアルゴリズムのRust実装が ~1.5秒で走る様を目撃する。** 訓練ループの型不安定性、毎バッチのメモリコピー、Pythonインタプリタのオーバーヘッドが積み重なり、8倍の差が生まれる。
 
 <details><summary>PyTorchの内部で何が起きているか</summary>
 
@@ -236,7 +219,7 @@ Rustは:
 > 1. VAEのEncoder $q_\phi(\mathbf{z}|\mathbf{x})$ とDecoder $p_\theta(\mathbf{x}|\mathbf{z})$ の役割をそれぞれ述べよ。連続潜在変数 $\mathbf{z}$ をサンプリングするためにReparameterization Trick $\mathbf{z} = \mu + \sigma \odot \epsilon$ が必要な理由は？
 > 2. VQ-VAEの「Vector Quantization」とVAEの連続潜在表現の違いを、Codebook $\{e_k\}_{k=1}^K$ の概念を用いて説明せよ。
 
-## 🧩 2. 直感ゾーン（15分）— なぜVAE、どこへ向かうか
+## 🧩 Z3. 世界観（20分）— なぜVAE、どこへ向かうか
 
 ### 2.1 Course IIの全体像 — 生成モデル理論編
 
@@ -260,13 +243,13 @@ graph TD
 | 回 | テーマ | Course Iの接続 | 言語 |
 |:---|:------|:-------------|:-----|
 | 第9回 | 変分推論 & ELBO | KL発散(第6回) + Jensen(第6回) | 🐍Python 50% 🦀Rust 50% |
-| **第10回** | **VAE (本講義)** | ELBO(第9回) + ガウス分布(第4回) | 🐍30% 🦀**Rust 50%** 🦀20% |
-| 第11回 | 最適輸送理論 | 測度論(第5回) + 双対性(第6回) | 🦀Rust 70% 🦀30% |
-| 第12回 | GAN | Minimax(第7回) + Wasserstein(第11回) | 🦀Rust 60% 🦀40% |
-| 第13回 | StyleGAN | GAN(第12回) + f-Divergence(第6回) | 🦀Rust 50% 🦀50% |
-| 第14回 | Normalizing Flow | 変数変換(第5回) + Jacobian(第2回) | 🦀Rust 60% 🦀40% |
-| 第15回 | 自己回帰モデル | 連鎖律(第4回) + MLE(第7回) | 🦀50% 🦀30% 🔮**Elixir 20%** |
-| 第16回 | Transformer | Attention(第1回) + AR(第15回) | 🦀40% 🦀40% 🔮20% |
+| **第10回** | **VAE (本講義)** | ELBO(第9回) + ガウス分布(第4回) | 🦀**Rust 100%** |
+| 第11回 | 最適輸送理論 | 測度論(第5回) + 双対性(第6回) | 🦀Rust |
+| 第12回 | GAN | Minimax(第7回) + Wasserstein(第11回) | 🦀Rust |
+| 第13回 | StyleGAN | GAN(第12回) + f-Divergence(第6回) | 🦀Rust |
+| 第14回 | Normalizing Flow | 変数変換(第5回) + Jacobian(第2回) | 🦀Rust |
+| 第15回 | 自己回帰モデル | 連鎖律(第4回) + MLE(第7回) | 🦀Rust |
+| 第16回 | Transformer | Attention(第1回) + AR(第15回) | 🦀Rust |
 
 **Course Iで学んだ数学が、ここで全て使われる:**
 - KL発散（第6回で6回登場）→ VAEの正則化項、GANの理論解析
@@ -282,14 +265,14 @@ graph TD
 |:-----|:-----------|:---------------------|:-----|
 | **理論深度** | 論文が読める | **論文が書ける** | 全導出を追跡、証明省略なし |
 | **VAE扱い** | 第3-4回（2時間） | 第10回（1講義、4000行） | Reparameterization完全導出 + VQ/FSQ |
-| **実装** | PyTorch参考コード | **Rust/Rust/Elixir Production-ready** | 3言語並行、速度比較、型安全 |
+| **実装** | PyTorch参考コード | **Rust Production-ready** | ゼロコスト抽象化、型安全、速度比較 |
 | **数学前提** | 「前提知識」で済ます | Course I (第1-8回) で完全構築 | KL/Jensen/測度論を自力導出済み |
 | **最新性** | 2023年まで | **2024-2026 SOTA** | FSQ, Cosmos Tokenizer, SoftVQ-VAE |
 | **離散表現** | VQ-VAE軽く触れる | VQ-VAE → VQ-GAN → FSQ → 最新まで | トークナイザーの系譜を完全網羅 |
 
 **本シリーズの差別化ポイント**:
 1. **数式を省略しない** — Kingma 2013のAppendix Bを完全再現（Boss Battle）
-2. **実装で妥協しない** — PyTorchのtoy codeではなく、Rust/Rustで実戦コード
+2. **実装で妥協しない** — PyTorchのtoy codeではなく、Rustで実戦コード
 3. **2026年の視点** — VAEは「古典」ではなく「Diffusion/LLMの基盤」として扱う
 
 ### 2.3 なぜVAEなのか — 3つのメタファー
@@ -336,7 +319,7 @@ $$
 
 このシリーズには隠された戦略がある — **トロイの木馬戦術**。第1-8回はPythonで安心させた。第9回でRustが登場し、50倍速を見せた。だがまだ「推論だけ」だった。
 
-**今回、第10回で、Rust が訓練ループに登場する。**
+**今回、第10回で、Rust が訓練ループに登場する（後編 Part2）。**
 
 
 **なぜRustなのか（Zone 4で詳述）**:
@@ -364,10 +347,9 @@ AOTコンパイル後、**このループ全体が機械語になる**。Python�
 
 </details>
 
-> **⚠️ Warning:** **Python絶望ポイント（Zone 4で測定）**:
+> **⚠️ Warning:** **Python絶望ポイント（後編 Part2で測定）**:
 > - VAE訓練100エポック: Python 12.3秒 vs Rust 1.5秒（**8.2倍差**）
 > - 原因: Pythonインタプリタのオーバーヘッド + 動的型チェック + メモリコピー
-> - Rustより速い理由: RustはCPU/GPU分岐が手動、RustはAOTが自動選択
 >
 > **これが「Pythonに戻れない」転機になる。**
 
@@ -377,11 +359,11 @@ AOTコンパイル後、**このループ全体が機械語になる**。Python�
 
 | フェーズ | 目標 | 所要時間 | 戦術 |
 |:--------|:-----|:---------|:-----|
-| **Phase 1: 高速走破** | Zone 0-2 を30分で | 30分 | コードを実行せずに読む。数式はスキップ。全体像把握のみ。 |
-| **Phase 2: 数式修行** | Zone 3 の ELBO/Reparam完全理解 | 2時間 | ペンと紙で導出を追う。各ステップを自分で再現。 |
-| **Phase 3: Rust体験** | Zone 4 の Rust コード実行 | 1時間 | cargo-watch + REPL駆動開発を体験。PyTorchとの速度差を測定。 |
-| **Phase 4: 実装演習** | Zone 5 の Tiny VAE 自力実装 | 2時間 | Rust/Rust どちらかで、Zone 0 のVAEを再実装。 |
-| **Phase 5: 最新追従** | Zone 6 の FSQ/VQ-GAN論文 | 1時間 | arXiv論文をダウンロードして Abstract + Figure を読む。 |
+| **Phase 1: 高速走破** | Z1-Z2 を30分で | 30分 | コードを実行せずに読む。数式はスキップ。全体像把握のみ。 |
+| **Phase 2: 数式修行** | Z4 の ELBO/Reparam完全理解 | 2時間 | ペンと紙で導出を追う。各ステップを自分で再現。 |
+| **Phase 3: Rust実装** | 後編（Part2）の Rust コード実行 | 1時間 | cargo-watch + REPL駆動開発を体験。 |
+| **Phase 4: 実装演習** | 後編（Part2）の Tiny VAE 自力実装 | 2時間 | Rustで Z1 のVAEを再実装。 |
+| **Phase 5: 最新追従** | FSQ/VQ-GAN論文 | 1時間 | arXiv論文をダウンロードして Abstract + Figure を読む。 |
 
 **合計: 約6.5時間**（本講義の目標所要時間は3時間だが、完全習得には倍かかる）
 
@@ -389,7 +371,7 @@ AOTコンパイル後、**このループ全体が機械語になる**。Python�
 1. **数式は音読する** — $\mathbb{E}_{q_\phi(z \mid x)}$ を「イーサブ キューファイ ゼット ギブン エックス」と声に出す
 2. **コードと数式を並べる** — 画面を2分割して、左に数式、右にコード
 3. **数値で確認** — 導出した式に具体的な値（$\mu=0, \sigma=1$）を代入してNumPyで計算
-4. **Rustを恐れない** — 第1回Rustコードは、Pythonとほぼ同じ。違いは `.`（broadcast）だけ
+4. **Rustを恐れない** — Z1のRustコードは、数式との対応が直感的。`.mapv()`（broadcast相当）に慣れるだけ
 
 ### 2.7 VAE Family Tree — 連続から離散へ
 
@@ -441,7 +423,7 @@ graph TD
 > 1. Posterior Collapse（事後崩壊）とは何か？KL項 $D_\text{KL}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$ がゼロに収束するときDecoderに何が起きるかを述べよ。
 > 2. β-VAEが通常のVAEと異なる点を、目的関数 $\mathcal{L}_\beta = \mathbb{E}[\log p(\mathbf{x}|\mathbf{z})] - \beta D_\text{KL}(q \| p)$ の $\beta > 1$ の役割から説明せよ。
 
-## 📐 3. 数式修行ゾーン（60分）— VAE理論の完全導出
+## 📐 Z4. Boss Battle（60分）— VAE理論の完全導出
 
 **この章の目標**: VAEの3つの核心を完全に理解する:
 1. **ELBO導出** — なぜこの損失関数なのか

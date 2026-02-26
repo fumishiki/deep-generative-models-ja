@@ -426,7 +426,7 @@ fn evaluate_model(
 
 ```rust
 // Simplified model stubs for evaluation demo.
-// For production: use the `candle` or `burn` deep learning crate.
+// For production: use tch-rs or ort for neural network layers with autodiff.
 
 /// Tiny VAE: encoder → (μ, logσ) → reparameterize → decoder
 struct TinyVAE {
@@ -1001,13 +1001,13 @@ graph LR
 >       - uses: actions/checkout@v3
 >
 >       - name: Setup Rust
->         uses: julia-actions/setup-julia@v1
+>         uses: dtolnay/rust-toolchain@stable
 >         with:
->           version: '1.10'
+>           toolchain: stable
 >
 >       - name: Install dependencies
 >         run: |
->           julia --project=. -e 'using Pkg; Pkg.instantiate()'
+>           cargo build
 >
 >       - name: Download test dataset
 >         run: |
@@ -1016,7 +1016,7 @@ graph LR
 >
 >       - name: Run evaluation
 >         run: |
->           julia --project=. scripts/evaluate.jl \
+>           cargo run -- scripts/evaluate.jl \
 >             --model models/generator.jld2 \
 >             --real-data data/test_real/ \
 >             --output results/metrics.json
@@ -1029,7 +1029,7 @@ graph LR
 >
 >       - name: Quality gate check
 >         run: |
->           julia --project=. scripts/check_quality.jl \
+>           cargo run -- scripts/check_quality.jl \
 >             --metrics results/metrics.json \
 >             --fid-threshold 15.0 \
 >             --is-threshold 8.0

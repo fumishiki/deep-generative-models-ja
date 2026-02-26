@@ -26,8 +26,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 Flow Matchingの本質を3行で動かす。拡散モデルが「ノイズ→データ」へ複雑な経路をたどるのに対し、Flow Matchingは**直線的な輸送**を学習する。
 
 ```rust
-use candle_core::{Device, Result, Tensor};
-use candle_nn::{linear, seq, Activation, Module, VarBuilder};
+use anyhow::Result;
+use tch::{nn, Device, Tensor};
 use rand::Rng;
 use rand_distr::StandardNormal;
 
@@ -98,7 +98,8 @@ fn main() -> Result<()> {
         .map(|_| rand::thread_rng().sample::<f32, _>(StandardNormal))
         .collect();
 
-    let vb = VarBuilder::zeros(candle_core::DType::F32, &device);
+    let vs = nn::VarStore::new(device);
+    let vb = vs.root();
     let model = build_velocity_net(vb)?;
 
     // Loss計算

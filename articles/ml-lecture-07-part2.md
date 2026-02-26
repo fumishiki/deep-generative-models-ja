@@ -53,31 +53,36 @@ H(p,q)=-\sum_x p(x)\log q(x),\quad
 D_{\mathrm{KL}}(p\|q)=\sum_x p(x)\log\frac{p(x)}{q(x)}=H(p,q)-H(p)\ge 0
 $$
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
+torch.set_float32_matmul_precision("high")
+
+# Symbol↔variable: θ=theta (shape: (K,)), p̂=p_hat (shape: (K,)), q_θ=q (shape: (K,))
+def softmax(theta: torch.Tensor) -> torch.Tensor:
+    # numerically stable: F.softmax shifts by max(theta) internally
+    return F.softmax(theta, dim=-1)
 
 
-def softmax(theta: np.ndarray) -> np.ndarray:
-    z = theta - float(np.max(theta))
-    e = np.exp(z)
-    return e / float(np.sum(e))
+def cross_entropy(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-12) -> float:
+    # H(p,q) = -Σ_x p(x) log q(x);  p,q shape: (K,)
+    return float(-(p * torch.log(q + eps)).sum())
 
 
-def cross_entropy(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
-    return float(-np.sum(p * np.log(q + eps)))
+def kl(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-12) -> float:
+    # D_KL(p‖q) = Σ_x p(x)[log p(x) - log q(x)] ≥ 0;  shape: (K,)
+    return float((p * (torch.log(p + eps) - torch.log(q + eps))).sum())
 
 
-def kl(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
-    return float(np.sum(p * (np.log(p + eps) - np.log(q + eps))))
+# counts shape: (K,) → p_hat shape: (K,)  [K=3 vocabulary size]
+counts = torch.tensor([50.0, 30.0, 20.0])
+p_hat  = counts / counts.sum()
 
+# theta shape: (K,) → q shape: (K,)
+theta = torch.tensor([0.2, -0.1, 0.0])
+q     = softmax(theta)
 
-counts = np.array([50, 30, 20])
-p_hat = counts / float(np.sum(counts))
-
-theta = np.array([0.2, -0.1, 0.0])
-q = softmax(theta)
-
-H_pq = cross_entropy(p_hat, q)
-H_p = cross_entropy(p_hat, p_hat)
+H_pq  = cross_entropy(p_hat, q)
+H_p   = cross_entropy(p_hat, p_hat)
 KL_pq = kl(p_hat, q)
 
 print('p_hat=', p_hat)
@@ -88,6 +93,59 @@ print('KL    =', KL_pq)
 
 assert KL_pq >= -1e-12
 assert abs(H_pq - (H_p + KL_pq)) < 1e-10
+```
+
+```python
+import triton
+import triton.language as tl
+import torch
+
+# logsumexp is the mathematical core of GMM, softmax, and KL divergence in this lecture.
+# logsumexp(a) = log Σ_k exp(a_k)  — computed with max-shift for numerical stability.
+
+
+@triton.jit
+def _logsumexp_kernel(
+    x_ptr,              # input pointer: x shape (N,)
+    out_ptr,            # output pointer: scalar result
+    N: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """Parallel reduction for logsumexp over N elements in one Triton program."""
+    # load with out-of-bounds masking (BLOCK may exceed N)
+    offs = tl.arange(0, BLOCK)                            # (BLOCK,)
+    mask = offs < N
+    x    = tl.load(x_ptr + offs, mask=mask, other=-float("inf"))
+
+    # Step 1: global max for numerical stability (log-sum-exp shift trick)
+    x_max = tl.max(x, axis=0)                            # scalar
+
+    # Step 2: Σ exp(x_i - x_max), with -inf guard on out-of-bounds lanes
+    shifted = tl.where(mask, x - x_max, -float("inf"))
+    exp_sum = tl.sum(tl.exp(shifted), axis=0)            # scalar
+
+    # logsumexp(x) = x_max + log Σ exp(x_i - x_max)
+    tl.store(out_ptr, x_max + tl.log(exp_sum))
+
+
+def logsumexp_triton(x: torch.Tensor) -> torch.Tensor:
+    """Launcher: x shape (N,) on CUDA → scalar tensor."""
+    N     = x.numel()
+    BLOCK = triton.next_power_of_2(N)                    # BLOCK ≥ N, passed as constexpr
+    out   = torch.empty(1, device=x.device, dtype=x.dtype)
+    _logsumexp_kernel[(1,)](x, out, N=N, BLOCK=BLOCK)
+    return out[0]
+
+
+# Numerical check: logsumexp([0.2, -0.1, 0.0])
+logits = torch.tensor([0.2, -0.1, 0.0])
+ref    = torch.logsumexp(logits, dim=0)
+print(f"torch ref  logsumexp = {ref.item():.6f}")
+if torch.cuda.is_available():
+    tri = logsumexp_triton(logits.cuda())
+    print(f"triton GPU logsumexp = {tri.item():.6f}")
+    assert abs(tri.item() - ref.item()) < 1e-5
+# log softmax = logit_i - logsumexp → softmax sums to 1 ✅
 ```
 
 この検算が通ると、Part1 の「三位一体」がコード上で固定される。
@@ -172,50 +230,56 @@ $$
 + \mathrm{Tr}\Bigl(\Sigma_r + \Sigma_g - 2(\Sigma_r\Sigma_g)^{1/2}\Bigr)
 $$
 ```python
-import numpy as np
+import torch
+torch.set_float32_matmul_precision("high")
+torch.manual_seed(0)
+
+# Symbol↔variable: μ_r=mu_r (shape: (d,)), Σ_r=Sigma_r (shape: (d,d)), d=feature dim
+def cov(X: torch.Tensor) -> torch.Tensor:
+    # X shape: (N, d) → unbiased covariance (d, d)
+    Xc = X - X.mean(dim=0, keepdim=True)
+    return (Xc.T @ Xc) / (X.shape[0] - 1)
 
 
-def cov(X: np.ndarray) -> np.ndarray:
-    Xc = X - X.mean(axis=0, keepdims=True)
-    return (Xc.T @ Xc) / float(X.shape[0] - 1)
+def sqrtm_psd(A: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    # Numerically stable matrix sqrt via eigendecomposition; A shape: (d, d)
+    A    = 0.5 * (A + A.T)                      # enforce symmetry
+    w, V = torch.linalg.eigh(A)                 # w shape: (d,), V shape: (d,d)
+    w    = w.clamp(min=eps)                      # clip negative eigenvalues
+    return (V * w.sqrt()) @ V.T
 
 
-def sqrtm_psd(A: np.ndarray, eps: float = 1e-10) -> np.ndarray:
-    A = 0.5 * (A + A.T)
-    w, V = np.linalg.eigh(A)
-    w = np.maximum(w, eps)
-    return (V * np.sqrt(w)[None, :]) @ V.T
+def fid_gaussian(
+    mu_r: torch.Tensor, Sigma_r: torch.Tensor,
+    mu_g: torch.Tensor, Sigma_g: torch.Tensor,
+) -> float:
+    # FID = ‖μ_r-μ_g‖² + Tr(Σ_r+Σ_g-2(Σ_r Σ_g)^½)
+    d       = mu_r.shape[0]
+    Sigma_r = 0.5 * (Sigma_r + Sigma_r.T) + 1e-6 * torch.eye(d)
+    Sigma_g = 0.5 * (Sigma_g + Sigma_g.T) + 1e-6 * torch.eye(d)
 
-
-def fid_gaussian(mu_r: np.ndarray, Sigma_r: np.ndarray, mu_g: np.ndarray, Sigma_g: np.ndarray) -> float:
-    d = mu_r.shape[0]
-    Sigma_r = 0.5 * (Sigma_r + Sigma_r.T) + 1e-6 * np.eye(d)
-    Sigma_g = 0.5 * (Sigma_g + Sigma_g.T) + 1e-6 * np.eye(d)
-
-    diff = mu_r - mu_g
-
-    Sr12 = sqrtm_psd(Sigma_r)
-    middle = Sr12 @ Sigma_g @ Sr12
+    diff        = mu_r - mu_g                   # shape: (d,)
+    Sr12        = sqrtm_psd(Sigma_r)
+    middle      = Sr12 @ Sigma_g @ Sr12
     middle_sqrt = sqrtm_psd(middle)
 
-    tr = float(np.trace(Sigma_r + Sigma_g - 2.0 * middle_sqrt))
+    tr = torch.trace(Sigma_r + Sigma_g - 2.0 * middle_sqrt)
     return float(diff @ diff + tr)
 
 
 # synthetic features (stand-in for Inception features)
-rng = np.random.default_rng(0)
-N, d = 800, 16
-Xr = rng.normal(loc=0.0, scale=1.0, size=(N, d))
-Xg = rng.normal(loc=0.2, scale=1.1, size=(N, d))
-
-mu_r, mu_g = Xr.mean(axis=0), Xg.mean(axis=0)
+# Xr, Xg shape: (N, d)
+N, d             = 800, 16
+Xr               = torch.randn(N, d)
+Xg               = torch.randn(N, d) * 1.1 + 0.2
+mu_r, mu_g       = Xr.mean(dim=0), Xg.mean(dim=0)
 Sigma_r, Sigma_g = cov(Xr), cov(Xg)
 
-fid = fid_gaussian(mu_r, Sigma_r, mu_g, Sigma_g)
+fid  = fid_gaussian(mu_r, Sigma_r, mu_g, Sigma_g)
 fid0 = fid_gaussian(mu_r, Sigma_r, mu_r, Sigma_r)
 print('FID=', fid)
 print('FID (same)=', fid0)
-assert fid >= -1e-6
+assert fid  >= -1e-6
 assert abs(fid0) < 1e-6
 ```
 
@@ -244,32 +308,64 @@ $$
 **shape**: `x` は `(N,)`, `mu` は `(2,)`, `sigma` は `(2,)`, `pi1` はスカラー。
 
 ```python
-import numpy as np
-from scipy.optimize import minimize
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+import math
 
-def log_likelihood_gmm(params: np.ndarray, x: np.ndarray) -> float:
-    """2-component GMM negative log-likelihood."""
-    pi1_logit, mu1, log_s1, mu2, log_s2 = params
-    pi1 = 1.0 / (1.0 + np.exp(-pi1_logit))  # sigmoid → (0,1)
+torch.manual_seed(42)
+torch.set_float32_matmul_precision("high")
+
+# Symbol↔variable: π₁=pi1, μ_k=mu1/mu2, σ_k=s1/s2 (via log_s1/log_s2), x shape: (N,)
+_LOG_2PI = math.log(2 * math.pi)
+
+
+def log_likelihood_gmm(params: Tensor, x: Tensor) -> Tensor:
+    """2-component GMM negative log-likelihood (logsumexp-stable)."""
+    # params shape: (5,)
+    pi1_logit, mu1, log_s1, mu2, log_s2 = params.unbind()
+    pi1 = torch.sigmoid(pi1_logit)           # π₁ ∈ (0,1) via sigmoid
     pi2 = 1.0 - pi1
-    s1, s2 = np.exp(log_s1), np.exp(log_s2)  # positive via exp
-    # Gaussian PDF
-    def norm_pdf(x_: np.ndarray, mu_: float, s_: float) -> np.ndarray:
-        return np.exp(-0.5 * ((x_ - mu_) / s_) ** 2) / (s_ * np.sqrt(2 * np.pi))
-    mixture = pi1 * norm_pdf(x, mu1, s1) + pi2 * norm_pdf(x, mu2, s2)
-    return float(-np.sum(np.log(mixture + 1e-12)))
+    s1, s2 = log_s1.exp(), log_s2.exp()      # σ_k > 0 via exp reparameterisation
 
-rng = np.random.default_rng(42)
-x_data = np.concatenate([rng.normal(-3, 1, 300), rng.normal(3, 1, 200)])
-# init: rough guess
-p0 = np.array([0.0, -2.0, 0.0, 2.0, 0.0])  # pi1≈0.5, mu1=-2, s1=1, mu2=2, s2=1
-res = minimize(log_likelihood_gmm, p0, args=(x_data,),
-               method='L-BFGS-B', options={'maxiter': 500})
-pi1_logit, mu1, log_s1, mu2, log_s2 = res.x
-pi1 = 1.0 / (1.0 + np.exp(-pi1_logit))
-print(f"pi1={pi1:.3f}, mu1={mu1:.3f}, s1={np.exp(log_s1):.3f}")
-print(f"pi2={1-pi1:.3f}, mu2={mu2:.3f}, s2={np.exp(log_s2):.3f}")
-# 期待値: pi1≈0.6, mu1≈-3, s1≈1, mu2≈3, s2≈1
+    # log N(x|μ_k, σ_k²) = -½(x-μ_k)²/σ_k² - log σ_k - ½log(2π); shape: (N,)
+    log_n1 = -0.5 * ((x - mu1) / s1).pow(2) - log_s1 - 0.5 * _LOG_2PI
+    log_n2 = -0.5 * ((x - mu2) / s2).pow(2) - log_s2 - 0.5 * _LOG_2PI
+
+    # log[π_k N(x|μ_k,σ_k²)]; shape: (2, N)
+    log_comp = torch.stack([pi1.log() + log_n1, pi2.log() + log_n2])
+
+    # NLL = -Σ_i logsumexp_k [log π_k + log N(x_i|μ_k, σ_k²)]
+    return -torch.logsumexp(log_comp, dim=0).sum()
+
+
+# x_data shape: (N=500,)
+x_data = torch.cat([
+    torch.randn(300) - 3.0,   # N(-3, 1)
+    torch.randn(200) + 3.0,   # N( 3, 1)
+])
+
+# params: [pi1_logit, mu1, log_s1, mu2, log_s2]
+# init: pi1≈0.5, mu1≈-2, s1≈1, mu2≈2, s2≈1
+params = torch.tensor([0.0, -2.0, 0.0, 2.0, 0.0], requires_grad=True)
+opt    = torch.optim.LBFGS([params], max_iter=500, line_search_fn="strong_wolfe")
+
+
+def closure() -> Tensor:
+    opt.zero_grad()
+    loss = log_likelihood_gmm(params, x_data)
+    loss.backward()
+    return loss
+
+
+opt.step(closure)
+
+with torch.no_grad():
+    pi1_logit, mu1, log_s1, mu2, log_s2 = params.unbind()
+    pi1 = torch.sigmoid(pi1_logit)
+    print(f"pi1={pi1:.3f}, mu1={mu1:.3f}, s1={log_s1.exp():.3f}")
+    print(f"pi2={1-pi1:.3f}, mu2={mu2:.3f}, s2={log_s2.exp():.3f}")
+    # 期待値: pi1≈0.6, mu1≈-3, s1≈1, mu2≈3, s2≈1
 ```
 
 落とし穴: `log(mixture)` で `mixture = 0` が起きると `-inf`。`+ 1e-12` で防ぐ。`sigma` を直接最適化すると負になるため `log(sigma)` をパラメータにして `exp` で戻す。
@@ -1323,15 +1419,15 @@ mindmap
 | 数式 | Python | 注意点 |
 |:-----|:-------|:-------|
 | $\hat{\theta}_{MLE} = \arg\max_\theta \sum \log p_\theta(x_i)$ | `minimize(nll, theta0)` | `-sum(log_p(theta, x_data))` |
-| $D_{KL}(p \| q) \geq 0$ | `np.sum(p * (np.log(p) - np.log(q)))` | `eps` で log(0) 回避 |
+| $D_{KL}(p \| q) \geq 0$ | `(p * (p.log() - q.log())).sum()` | `eps` で log(0) 回避 |
 | $H(p,q) = H(p) + D_{KL}(p\|q)$ | `cross_entropy(p,q) = entropy(p) + kl(p,q)` | 数値検算必須 |
-| $I(\theta) = \mathbb{E}[(\partial_\theta \log p)^2]$ | `np.var(scores)` | `scores` は score関数の配列 |
+| $I(\theta) = \mathbb{E}[(\partial_\theta \log p)^2]$ | `scores.var()` | `scores` は score関数の配列 |
 | $\text{FID} = \|\mu_r-\mu_g\|^2 + \text{Tr}(\cdot)$ | `fid_gaussian(mu_r, Sigma_r, ...)` | `sqrtm` の対称化必須 |
 | $J_{SM}(\theta) = \mathbb{E}[\frac{1}{2}\|s_\theta\|^2 + \text{tr}(\nabla s_\theta)]$ | `score_matching_loss(score_fn, x_data)` | 1Dは数値微分, 高次元はHutchinson |
 | $w_i = p(x_i)/q(x_i)$ (IS) | `log_w = log_p(x) - log_q(x)` | log space で計算し `exp` |
 | $\hat{p}_{KDE}(x) = \frac{1}{Nh}\sum K(\frac{x-x_i}{h})$ | `gaussian_kde(x_data)` | bw_method で帯域幅制御 |
 | $\text{ESS} = (\sum w_i)^2 / \sum w_i^2$ | `w.sum()**2 / (w**2).sum()` | w は unnormalized でよい |
-| $z = \mu + \sigma \epsilon, \epsilon \sim \mathcal{N}(0,I)$ | `z = mu + np.exp(log_sigma) * eps` | `eps = rng.standard_normal(shape)` |
+| $z = \mu + \sigma \epsilon, \epsilon \sim \mathcal{N}(0,I)$ | `z = mu + log_sigma.exp() * eps` | `eps = torch.randn(shape)` |
 | $\log p_\theta(x) = \log p_z(f^{-1}(x)) + \log|\det J|$ | `log_pz + log_abs_det_jac` | 1D: `log_abs_det_jac = -log_sigma` |
 | $\text{Var}(\hat{\theta}) \geq 1/I(\theta)$ | `1 / fisher_info(theta, x)` | `fisher_info` = score の分散 |
 
@@ -1551,12 +1647,12 @@ Large Language Models の訓練は $\max_\theta \sum_{t} \log p_\theta(x_t|x_{<t
 
 ## 参考文献
 
-[^1]: Fisher, R. A. (1922). "On the Mathematical Foundations of Theoretical Statistics." *Philosophical Transactions of the Royal Society of London. Series A*, 222, 309-368. [arXiv:2104.03765](https://arxiv.org/abs/2104.03765) (survey)
+[^1]: Fisher, R. A. (1922). "On the Mathematical Foundations of Theoretical Statistics." *Philosophical Transactions of the Royal Society of London. Series A*, 222, 309-368.
 [^2]: Goodfellow, I., et al. (2014). "Generative Adversarial Nets." *NeurIPS 2014*. [arXiv:1406.2661](https://arxiv.org/abs/1406.2661)
 [^3]: Kingma, D. P., & Welling, M. (2013). "Auto-Encoding Variational Bayes." *ICLR 2014*. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114)
 [^4]: Mohamed, S., & Lakshminarayanan, B. (2016). "Learning in Implicit Generative Models." *arXiv preprint*. [arXiv:1610.03483](https://arxiv.org/abs/1610.03483)
 [^5]: Rezende, D. J., & Mohamed, S. (2015). "Variational Inference with Normalizing Flows." *ICML 2015*. [arXiv:1505.05770](https://arxiv.org/abs/1505.05770)
-[^6]: Hyvärinen, A. (2005). "Estimation of Non-Normalized Statistical Models by Score Matching." *JMLR*, 6, 695-709. [arXiv:2101.03288](https://arxiv.org/abs/2101.03288)
+[^6]: Hyvärinen, A. (2005). "Estimation of Non-Normalized Statistical Models by Score Matching." *JMLR*, 6, 695-709.
 [^7]: Song, Y., & Ermon, S. (2019). "Generative Modeling by Estimating Gradients of the Data Distribution." *NeurIPS 2019*. [arXiv:1907.05600](https://arxiv.org/abs/1907.05600)
 [^8]: Heusel, M., et al. (2017). "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium." *NeurIPS 2017*. [arXiv:1706.08500](https://arxiv.org/abs/1706.08500)
 [^9]: Salimans, T., et al. (2016). "Improved Techniques for Training GANs." *NeurIPS 2016*. [arXiv:1606.03498](https://arxiv.org/abs/1606.03498)

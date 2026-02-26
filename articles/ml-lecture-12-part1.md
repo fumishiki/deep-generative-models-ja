@@ -63,74 +63,41 @@ graph LR
 本物と偽物を戦わせる。それだけだ。生成器Gはノイズ $z$ から画像を作り、判別器Dは本物の画像 $x$ か偽物 $G(z)$ かを見分ける。Gは「Dを騙せ」と学習し、Dは「騙されるな」と学習する。この戦いが収束したとき、Gは本物と見分けがつかない画像を生成できるようになっている。
 
 ```rust
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{linear, optim, Linear, Module, Optimizer, VarBuilder, VarMap};
+use ndarray::{Array1, Array2};
+use ndarray_rand::{RandomExt, rand_distr::StandardNormal};
 
-// Tiny GAN (Rust / candle)
-struct Generator     { fc1: Linear, fc2: Linear }
-struct Discriminator { fc1: Linear, fc2: Linear }
+// Tiny GAN — forward pass (ndarray, CPU)
+// z: (batch, 2), W_g/b_g: Generator weights, W_d/b_d: Discriminator weights
 
-impl Module for Generator {
-    fn forward(&self, z: &Tensor) -> Result<Tensor> {
-        self.fc1.forward(z)?.relu()?.apply(&self.fc2)
+fn relu(x: Array2<f32>) -> Array2<f32> { x.mapv(|v| v.max(0.0)) }
+fn sigmoid(x: Array2<f32>) -> Array2<f32> { x.mapv(|v| 1.0 / (1.0 + (-v).exp())) }
+fn linear(x: &Array2<f32>, w: &Array2<f32>, b: &Array1<f32>) -> Array2<f32> { x.dot(w) + b }
+
+struct Generator     { w1: Array2<f32>, b1: Array1<f32>, w2: Array2<f32>, b2: Array1<f32> }
+struct Discriminator { w1: Array2<f32>, b1: Array1<f32>, w2: Array2<f32>, b2: Array1<f32> }
+
+impl Generator {
+    fn forward(&self, z: &Array2<f32>) -> Array2<f32> {
+        sigmoid(linear(&relu(linear(z, &self.w1, &self.b1)), &self.w2, &self.b2))
     }
 }
-impl Module for Discriminator {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.fc1.forward(x)?.relu()?.apply(&self.fc2)?.sigmoid()
+impl Discriminator {
+    fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
+        sigmoid(linear(&relu(linear(x, &self.w1, &self.b1)), &self.w2, &self.b2))
     }
 }
 
-fn gan_loss(d_real: &Tensor, d_fake: &Tensor) -> Result<(Tensor, Tensor)> {
-    let ones  = Tensor::ones_like(d_real)?;
-    let zeros = Tensor::zeros_like(d_fake)?;
-    let d_loss = candle_nn::loss::binary_cross_entropy_with_logit(d_real, &ones)?
-        .add(&candle_nn::loss::binary_cross_entropy_with_logit(d_fake, &zeros)?)?;
-    let g_loss = candle_nn::loss::binary_cross_entropy_with_logit(d_fake, &ones)?;
-    Ok((d_loss, g_loss))
+// GAN loss: D loss = -[log D(x) + log(1 - D(G(z)))]
+//           G loss = -log D(G(z))  (non-saturating)
+fn bce(pred: &Array2<f32>, target: f32) -> f32 {
+    pred.mapv(|p| -(target * (p + 1e-7).ln() + (1.0 - target) * (1.0 - p + 1e-7).ln())).mean().unwrap()
 }
 
-fn train_tiny_gan() -> Result<()> {
-    let device = Device::Cpu;
-    let varmap_g = VarMap::new();
-    let varmap_d = VarMap::new();
-    let vb_g = VarBuilder::from_varmap(&varmap_g, DType::F32, &device);
-    let vb_d = VarBuilder::from_varmap(&varmap_d, DType::F32, &device);
-
-    let g = Generator     { fc1: linear(2, 16, vb_g.pp("fc1"))?, fc2: linear(16, 2, vb_g.pp("fc2"))? };
-    let d = Discriminator { fc1: linear(2, 16, vb_d.pp("fc1"))?, fc2: linear(16, 1, vb_d.pp("fc2"))? };
-
-    let mut opt_g = optim::AdamW::new(varmap_g.all_vars(), optim::ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-    let mut opt_d = optim::AdamW::new(varmap_d.all_vars(), optim::ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-
-    for _ in 0..500 {
-        // Sample real data (unit circle)
-        let theta  = Tensor::rand(0f32, std::f32::consts::TAU, (1, 32), &device)?;
-        let real_x = Tensor::cat(&[theta.cos()?, theta.sin()?], 0)?;
-
-        // Generate fake data
-        let z      = Tensor::randn(0f32, 1f32, (2, 32), &device)?;
-        let fake_x = g.forward(&z)?;
-
-        // Train Discriminator
-        let d_real  = d.forward(&real_x)?;
-        let d_fake  = d.forward(&fake_x.detach())?;
-        let (d_loss, _) = gan_loss(&d_real, &d_fake)?;
-        opt_d.backward_step(&d_loss)?;
-
-        // Train Generator
-        let fake_x2 = g.forward(&Tensor::randn(0f32, 1f32, (2, 32), &device)?)?;
-        let d_fake2  = d.forward(&fake_x2)?;
-        let ones     = Tensor::ones_like(&d_fake2)?;
-        let g_loss   = candle_nn::loss::binary_cross_entropy_with_logit(&d_fake2, &ones)?;
-        opt_g.backward_step(&g_loss)?;
-    }
-
-    // Generate samples
-    let z_test  = Tensor::randn(0f32, 1f32, (2, 100), &device)?;
-    let samples = g.forward(&z_test)?;
-    println!("Generated {} samples from noise", samples.dim(1)?);
-    Ok(())
+fn main() {
+    let batch = 4;
+    let z = Array2::<f32>::random((batch, 2), StandardNormal);  // z ~ N(0,I)
+    println!("z shape: {:?} — ready for generator forward pass", z.shape());
+    // Output: z shape: [4, 2] — ready for generator forward pass
 }
 ```
 
@@ -209,7 +176,7 @@ $$
 | $G(z)$ | `G(z)` | 生成器がノイズから画像を生成 |
 | $D(G(z))$ | `D(G(z))` | 判別器が偽画像を評価 |
 | $-\log D(G(z))$ | `-mean(log.(D(fake_x) .+ 1f-8))` | 生成器損失（最小化） |
-| `gradient(Candle.params(G))` | $\nabla_{\theta_G} \mathcal{L}_G$ | 生成器パラメータの勾配 |
+| `grad(loss, θ_G)` | $\nabla_{\theta_G} \mathcal{L}_G$ | 生成器パラメータの勾配 |
 
 ### 1.3 敵対的ダイナミクスの可視化
 

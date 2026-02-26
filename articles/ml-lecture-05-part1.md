@@ -58,7 +58,7 @@ flowchart LR
 **ゴール**: Lebesgue測度の直感を30秒で掴む。
 
 ```python
-import numpy as np
+import torch
 
 # Cantor set: uncountably infinite points, but Lebesgue measure = 0
 # Approximate by iteratively removing middle thirds
@@ -1553,7 +1553,7 @@ flowchart TD
 
 [^10]: Särkkä, S., & Solin, A. (2019). *Applied Stochastic Differential Equations*. Cambridge University Press.
 
-[^11]: Choi, J., & Fan, C. (2025). A Simple Analysis of Discretization Error in Diffusion Models. [arXiv:2506.08337](https://arxiv.org/abs/2506.08337)
+[^11]: Choi, J., & Fan, C. (2025). Diffusion Models under Alternative Noise: Simplified Analysis and Sensitivity. [arXiv:2506.08337](https://arxiv.org/abs/2506.08337)
 
 [^12]: Liang, Y., Liang, Y., Lai, L., & Shroff, N. (2025). Discrete Diffusion Models: Novel Analysis and New Sampler Guarantees. [arXiv:2509.16756](https://arxiv.org/abs/2509.16756)
 

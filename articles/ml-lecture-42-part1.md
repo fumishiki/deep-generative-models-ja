@@ -68,7 +68,8 @@ graph TD
 ```rust
 // 4つの生成モデル損失関数の統一的表現
 // Input: データサンプル x, モデルサンプル x_gen, パラメータ θ
-use candle_core::{Tensor, Result};
+use anyhow::Result;
+use tch::Tensor;
 
 // VAE: ELBO = 𝔼[log p(x|z)] - KL[q(z|x) || p(z)]
 fn vae_loss(x: &Tensor, z_mean: &Tensor, z_logvar: &Tensor) -> Result<Tensor> {
@@ -118,7 +119,7 @@ fn get_alpha_bar(t: f32) -> f32 { 1.0 - t }  // Linear noise schedule
 
 // Test
 fn main() -> Result<()> {
-    let dev = &candle_core::Device::Cpu;
+    let dev = tch::Device::Cpu;
     let x       = Tensor::randn(0f32, 1f32, (4, 2), dev)?;
     let z_mean  = Tensor::randn(0f32, 1f32, (4, 2), dev)?;
     let z_logvar= Tensor::randn(0f32, 1f32, (4, 2), dev)?;

@@ -313,7 +313,7 @@ defmodule CrystalGeneration do
 
   defp generate_crystal_for_bandgap(target_eg) do
     # Elixir Port経由でRustを呼び出し
-    port = Port.open({:spawn, "julia crystal_gen.jl #{target_eg}"}, [:binary])
+    port = Port.open({:spawn, "./crystal_gen #{target_eg}"}, [:binary])
 
     receive do
       {^port, {:data, result}} ->
@@ -768,8 +768,8 @@ Discovery → Prediction → Design のパラダイムシフト。
 // ndarray-rand = "0.15"
 // rand = "0.8"
 // rayon = "1.10"
-// candle-core = "0.8"     # テンソル演算
-// candle-nn = "0.8"       # NNフレームワーク
+// tch = "0.17"            # PyTorch Rust bindings (inference)
+// ort = "2.0"             # ONNX Runtime (production inference)
 
 // プロジェクト初期化
 // cargo init crystal_flow_project

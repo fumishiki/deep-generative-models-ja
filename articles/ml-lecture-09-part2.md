@@ -1499,7 +1499,7 @@ $\log p(x)$ のこと。ベイズ統計では周辺尤度を "evidence" と呼�
 - β-VAE / FactorVAE — Disentanglement の数理
 - VQ-VAE — 離散潜在変数と Straight-Through Estimator
 - FSQ (Finite Scalar Quantization) — シンプルで高性能な量子化
-- Rust 実装: Candle で VAE を構築し、MNIST で潜在空間可視化
+- Rust 実装: ndarray + rayon で VAE の推論パスを構築し、MNIST で潜在空間可視化
 
 **Boss Battle**: 変分推論（第9回）の ELBO を、ニューラルネットワークでスケーラブルに解く。
 
@@ -1507,7 +1507,7 @@ $\log p(x)$ のこと。ベイズ統計では周辺尤度を "evidence" と呼�
 
 この講義は以下の研究と実装に基づいています:
 - PyTorch/JAX コミュニティの VAE 実装
-- Rust ML エコシステム (ndarray, burn, candle)
+- Rust ML エコシステム (ndarray, rayon)
 - Course I の数学的基盤（8講義分）
 
 ### 7.5 最後のメッセージ

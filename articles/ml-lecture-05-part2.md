@@ -31,601 +31,652 @@ keywords: ["MCMC", "importance sampling", "SDE", "Langevin dynamics", "Fokker-Pl
 
 > **Note:** Part1（理論編）と合わせて読むことを推奨。特に §4.5 Radon-Nikodym, §4.8 Markov連鎖, §4.10 伊藤積分は本Part2で直接実装する内容と1:1対応している。
 
-## 💻 Z5. 実装ゾーン（45分）— 測度論を Python に翻訳する
+## 💻 Z5. 実装ゾーン（60分）— 測度論を PyTorch に翻訳する
 
-> **Zone 5 目標**: 測度論の抽象概念を具体的なコードに落とし込む。Monte Carlo積分、KDE、Markov連鎖シミュレーション、Brown運動パス生成を実装する。
+> **Zone 5 目標**: 測度論・確率過程の抽象概念を PyTorch と Triton に翻訳する。コードブロックは3本に絞り、削除した実装の内容は数式・直感・落とし穴で補完する。
 
-### 5.1 Monte Carlo 積分 — Lebesgue積分の近似
+### 5.1 Monte Carlo 積分と分散低減 — $O(1/\sqrt{N})$ の壁
 
-理論では $\int f \, d\mu$ と書くが、実務ではMonte Carlo法で近似する。大数の法則が収束を保証する。
+大数の法則は $N \to \infty$ での収束を保証するが、**速さ**は保証しない。Monte Carlo の収束速度は常に $O(1/\sqrt{N})$ であり、この壁を突破するには分散 $\sigma^2 = \text{Var}[f(X)]$ を小さくするしかない。
+
+**Monte Carlo 推定量と精度**:
 
 $$
-\int f(x) \, p(x) \, dx \approx \frac{1}{N} \sum_{i=1}^{N} f(X_i), \quad X_i \sim p
+\hat{I}_N = \frac{1}{N}\sum_{i=1}^N f(X_i), \quad \text{Var}[\hat{I}_N] = \frac{\sigma^2}{N}, \quad \sigma^2 = \mathbb{E}[f(X)^2] - \left(\mathbb{E}[f(X)]\right)^2
 $$
+
+$N$ を 100 倍にすると SE は $\sqrt{100} = 10$ 倍しか改善しない。精度 $\epsilon$ を達成するには $N = \sigma^2/\epsilon^2$ サンプルが必要で、**次元数 $d$ には非依存** — これが高次元積分で Monte Carlo が選ばれる理由だ。ただし $\sigma^2$ 自体は $d$ と共に爆発しうる。
+
+**中心極限定理による区間推定**:
+
+$$
+\sqrt{N}\left(\hat{I}_N - \mu\right) \xrightarrow{d} \mathcal{N}(0, \sigma^2)
+$$
+
+95% 信頼区間は $\hat{I}_N \pm 1.96\,\hat{\sigma}/\sqrt{N}$（$\hat{\sigma}^2 = \frac{1}{N-1}\sum_i(f(X_i)-\hat{I}_N)^2$、Bessel 補正）。「100 試行中 95 回は真値を含む」という確率的保証だ。
+
+**分散低減の3手法**:
+
+1. **層化サンプリング**: 積分域を $K$ 層に分割し各層から $N/K$ 個均等にサンプル。層内分散の和 $\leq$ 全体分散なので必ず改善:
+
+$$
+\hat{I}_{\text{strat}} = \sum_{k=1}^K \frac{1}{K}\cdot\frac{K}{N}\sum_{i \in k} f(X_i), \quad \text{Var}[\hat{I}_{\text{strat}}] \leq \text{Var}[\hat{I}_{\text{crude}}]
+$$
+
+2. **重点サンプリング**: Radon-Nikodym 重み $w(x) = p(x)/q(x)$ で代理分布を補正（§5.3 詳述）
+
+3. **制御変量法**: 期待値既知の補助変量 $C$ を使い $\text{Var}[f - \alpha(C - \mathbb{E}[C])]$ を最小化
 
 **記号対応**:
 
 | 数式 | コード変数 | shape |
 |:-----|:----------|:------|
-| $f(X_i)$ | `f(x)` | `(N,)` |
-| $\hat{I}_N = \frac{1}{N}\sum_i f(X_i)$ | `np.mean(f(x))` | scalar |
-| $\text{Var}[\hat{I}_N] = \sigma^2/N$ | `f(x).var()/n` | scalar |
-| $X_i \sim p$ | `sampler(n)` | `(N,)` |
+| $\hat{I}_N$ | `mean_crude` | scalar |
+| $\text{SE} = \hat{\sigma}/\sqrt{N}$ | `se_crude` | scalar |
+| $X_i \sim \mathcal{N}(0,1)$ | `dist.sample((n,))` | `(n,)` |
+| $u_{kj} \in [k/K,\,(k+1)/K]$ | `u` | `(K, n_each)` |
+| $F^{-1}(u_{kj})$ | `dist.icdf(u)` | `(K, n_each)` |
+| $\hat{I}_{\text{strat}}$ | `mean_strat` | scalar |
 
-**収束速度**: 標準誤差 $\text{SE} = \sigma/\sqrt{N}$。$N$ を10倍にするとSEは $\sqrt{10}$ 倍減少。次元に依存しない（次元の呪いからの解放）。
-
-
-```python
-import numpy as np
-
-def monte_carlo_integrate(f, sampler, n_samples: int, n_trials: int = 20) -> tuple[float, float]:
-    """Monte Carlo integration.
-
-    E[f(X)] ≈ (1/N) Σ f(X_i)
-    Variance: Var[estimate] = Var[f(X)] / N
-    """
-    est = np.array([float(np.mean(f(sampler(n_samples)))) for _ in range(n_trials)], dtype=np.float64)
-    return float(est.mean()), float(est.std(ddof=1))
-
-# E[X^2] where X ~ N(0,1) should be 1
-f = lambda x: x * x
-rng = np.random.default_rng(42)
-sampler = lambda n: rng.standard_normal(n)
-
-for n in [100, 1_000, 10_000]:
-    mean, std = monte_carlo_integrate(f, sampler, n)
-    print(f"N={n:>6d}  mean={mean:.4f}  std={std:.4f}")
-```
-
-> **観察**: $N$ が10倍になるとStdが $\sqrt{10} \approx 3.16$ 倍小さくなる — Monte Carloの $O(1/\sqrt{N})$ 収束レート。
-
-**収束速度の実証的検証**:
-
-```python
-import numpy as np
-
-rng = np.random.default_rng(0)
-print("N         mean    std     SE_theory")
-print("-" * 45)
-for N in [100, 1_000, 10_000, 100_000, 1_000_000]:
-    x = rng.standard_normal((50, N))  # 50 trials
-    f_vals = x**2
-    estimates = f_vals.mean(axis=1)  # shape (50,)
-    se_empiric = estimates.std(ddof=1)
-    se_theory = 1.0 / np.sqrt(N)  # sigma^2=Var[X^2]=2 for X~N(0,1), /sqrt(N)
-    # exact: Var[X^2] = E[X^4] - (E[X^2])^2 = 3 - 1 = 2
-    se_theory_exact = np.sqrt(2) / np.sqrt(N)
-    print(f"N={N:>8d}: mean={estimates.mean():.4f}  SE_emp={se_empiric:.5f}  SE_th={se_theory_exact:.5f}")
-```
-
-$\text{SE} = \sqrt{\text{Var}[f(X)]/N}$。$f(X) = X^2$ で $X \sim \mathcal{N}(0,1)$ のとき $\text{Var}[X^2] = E[X^4] - (E[X^2])^2 = 3 - 1 = 2$（4次モーメントを使う）。
-
-**収束証明（中心極限定理）**:
-
-$Y_i = f(X_i)$ とすると $\hat{I}_N = \bar{Y}_N = (1/N)\sum_i Y_i$。CLTより:
+**数値的落とし穴**: `f(X)^2` が $q$ に関して可積分でない（$\mathbb{E}_q[f^2] = +\infty$）場合、CLT が適用不可。IS で $p/q$ が裾で爆発するとき発生する。常に SE と ESS を報告し `NaN`/`Inf` を検出すること。
 
 $$
-\sqrt{N}(\hat{I}_N - \mu) \xrightarrow{d} \mathcal{N}(0, \sigma^2), \quad \sigma^2 = \text{Var}[f(X)]
-$$
-
-標準誤差 $\text{SE} = \sigma/\sqrt{N}$。精度 $\epsilon$ を達成するのに必要なサンプル数: $N = \sigma^2/\epsilon^2$。**次元数に非依存** — これがMonte Carloが高次元積分に使われる理由。数値積分法（Simpson則など）は $O(N^{-k/d})$（$d$：次元数）で次元の呪いを受ける。
-
-**分散の推定**:
-
-$$
-\hat{\sigma}^2 = \frac{1}{N-1}\sum_{i=1}^N (f(X_i) - \hat{I}_N)^2
-$$
-
-区間推定（95%信頼区間）: $\hat{I}_N \pm 1.96 \hat{\sigma}/\sqrt{N}$。Lebesgue積分の近似として: 測度 $p d\lambda$ のモンテカルロ近似は測度を経験測度 $\hat{P}_N = (1/N)\sum_i \delta_{X_i}$ で置換することと等価。
-
-### 5.2 `%timeit` デビュー — パフォーマンス計測
-
-第5回から `%timeit` を使い始める。計算コストの感覚を養おう。
-
-
-```python
-import numpy as np, time
-N = 1_000_000
-rng = np.random.default_rng(0)
-x = rng.standard_normal(N)
-def sum_loop(arr: np.ndarray) -> float:
-    s = 0.0
-    for v in arr:
-        s += v * v
-    return s / len(arr)
-def sum_vec(arr: np.ndarray) -> float:
-    return (arr * arr).mean()
-t0=time.perf_counter(); r1=sum_loop(x); t1=time.perf_counter()
-t2=time.perf_counter(); r2=sum_vec(x);  t3=time.perf_counter()
-print(f"loop={1000*(t1-t0):.1f}ms  vec={1000*(t3-t2):.1f}ms  result={r2:.4f}")
-print(f"speedup={(t1-t0)/(t3-t2):.0f}x")  # E[X^2]=1
-```
-
-
-> **教訓**: ベクトル化は通常 **50-100倍** 高速。測度論の理論ではsummation orderは無関係だが、実装では**メモリアクセスパターン**が支配的。
-
-### 5.2.1 分散低減法 — Monte Carloを賢くする
-
-Monte Carloの $O(1/\sqrt{N})$ 収束は変えられないが、**分散の定数因子**を減らせる。
-
-
-
-**層化サンプリング**: 積分域を K 層に分割し各層から均等サンプル。
-
-$$
-\hat{I}_{\text{strat}} = \sum_{k=1}^K \frac{1}{K} \cdot \frac{K}{N} \sum_{i \in \text{layer}\,k} f(X_i)
+\hat{\sigma}^2 = \frac{1}{N-1}\sum_{i=1}^N \bigl(f(X_i) - \hat{I}_N\bigr)^2
 $$
 
 ```python
-import numpy as np
+import torch
+torch.manual_seed(42)
+torch.set_float32_matmul_precision("high")
 
-def stratified_mc(f, lo: float, hi: float, n_total: int = 100_000, n_strata: int = 100) -> float:
-    n_each = n_total // n_strata
-    width = (hi - lo) / n_strata
-    return sum(
-        f(np.random.uniform(lo + k * width, lo + (k + 1) * width, n_each)).mean() * width
-        for k in range(n_strata)
-    )
+# Target: E[X^2] where X ~ N(0,1) = 1.0  (Var[X^2] = E[X^4] - (E[X^2])^2 = 3-1 = 2)
+dist = torch.distributions.Normal(0.0, 1.0)
 
-f = lambda x: np.exp(-x**2)
-crude = f(np.random.uniform(0, 1, 100_000)).mean()
-strat = stratified_mc(f, 0, 1)
-print(f"crude={crude:.5f}  stratified={strat:.5f}  exact=0.74682")
+@torch.inference_mode()
+def mc_integrate(n: int, n_strata: int = 50) -> dict:
+    # --- Crude MC: mean_hat = (1/N) sum f(X_i) ---
+    x_c        = dist.sample((n,))                           # x_c: (n,)
+    f_c        = x_c * x_c                                   # f_c: (n,)  f(x)=x^2
+    mean_crude = f_c.mean().item()
+    se_crude   = f_c.std(correction=1).item() / n**0.5
+
+    # --- Stratified: divide N(0,1) CDF into n_strata equal-probability bands ---
+    # Band k: U_k ~ Uniform[k/K, (k+1)/K], X_k = Phi^{-1}(U_k)  (quantile transform)
+    n_each = n // n_strata
+    u_lo = torch.arange(n_strata, dtype=torch.float32) / n_strata      # u_lo: (K,)
+    u_hi = (torch.arange(n_strata, dtype=torch.float32) + 1) / n_strata
+    u    = u_lo[:, None] + (u_hi - u_lo)[:, None] * torch.rand(n_strata, n_each)  # (K, n_each)
+    x_s  = dist.icdf(u.clamp(1e-6, 1 - 1e-6))                          # x_s: (K, n_each)
+    f_s  = (x_s * x_s).mean(dim=1)                                      # f_s: (K,) layer means
+    mean_strat = f_s.mean().item()
+    se_strat   = f_s.std(correction=1).item() / n_strata**0.5
+
+    return {"crude": (mean_crude, se_crude), "strat": (mean_strat, se_strat)}
+
+for n in [1_000, 10_000, 100_000]:
+    r = mc_integrate(n)
+    print(f"N={n:>7d}  crude={r['crude'][0]:.4f}±{r['crude'][1]:.5f}"
+          f"  strat={r['strat'][0]:.4f}±{r['strat'][1]:.5f}  (true=1.0)")
+# assert abs(mc_integrate(100_000)["strat"][0] - 1.0) < 5e-3
 ```
 
+> **検算**: $\mathbb{E}[X^2] = \text{Var}[X] + (\mathbb{E}[X])^2 = 1 + 0 = 1$。$\text{Var}[X^2] = \mathbb{E}[X^4] - (\mathbb{E}[X^2])^2 = 3 - 1 = 2$（4次モーメント）。理論 $\text{SE}_{\text{crude}} = \sqrt{2/N}$。$N=10^4$ で $\approx 0.014$。層化 SE $\ll$ 粗い MC の SE が数値で確認できる。
 
-### 5.3 重点サンプリング (Importance Sampling) — 測度の変換
+### 5.2 `%timeit` デビュー — Python の計算コスト
 
-Radon-Nikodym導関数の実用版。$p$ からサンプリングが難しい場合、別の分布 $q$ を使う:
+第5回から `%timeit` を使い始める。直感として覚えるべき数字:
+
+- Python `for` ループ: $10^6$ 要素の積和 $\approx 100\,\text{ms}$（CPython オーバーヘッド $\approx 100\,\text{ns/op}$）
+- PyTorch CPU ベクトル演算: $\approx 0.5\text{–}2\,\text{ms}$（BLAS + SIMD）
+- PyTorch GPU: $\approx 0.05\text{–}0.2\,\text{ms}$（CUDA + Tensor Core）
+
+速度差の起源は3層構造だ:
 
 $$
-\mathbb{E}_p[f(X)] = \mathbb{E}_q\left[f(X) \frac{p(X)}{q(X)}\right] = \mathbb{E}_q\left[f(X) \frac{dP}{dQ}(X)\right]
+T_{\text{loop}} \approx N \cdot C_{\text{interp}}, \quad T_{\text{vec}} \approx \frac{N}{w} \cdot C_{\text{SIMD}}, \quad T_{\text{GPU}} \approx \frac{N}{p} \cdot C_{\text{kernel}}
 $$
 
-$\frac{p(x)}{q(x)}$ がまさに **Radon-Nikodym導関数** $\frac{dP}{dQ}(x)$ である。
+$C_{\text{interp}} \approx 100\,\text{ns}$（Python バイトコード）、$C_{\text{SIMD}} \approx 1\,\text{ns}$（AVX2, $w=8$）、$C_{\text{kernel}} \approx 0.01\,\text{ns}$（CUDA core, $p \approx 10^4$）。ベクトル化の理論倍率は $w \cdot (C_{\text{interp}}/C_{\text{SIMD}}) \approx 800$ だが、メモリ帯域とキャッシュが実際の上限を決める。Monte Carlo で $N = 10^6$ サンプルなら `dist.sample((N,)).pow(2).mean()` — GPU 上で $< 1\,\text{ms}$。
 
+> **実践**: `%timeit` 計測前に `torch.compile()` のウォームアップ（初回 JIT コンパイル）を終わらせること。計測環境として GPU/CPU 型番と PyTorch バージョンを必ず記録する。
 
+### 5.3 重点サンプリング — Radon-Nikodym 導関数の実用化
 
-**記号対応**:
+$p$ からのサンプリングが困難（正規化定数未知、サポート希薄）な場合、代理分布 $q$ を使う:
 
-| 数式 | コード変数 | 意味 |
-|:-----|:----------|:-----|
-| $w(x) = p(x)/q(x)$ | `np.exp(p_logpdf - q_logpdf)` | Radon-Nikodym導関数 |
-| $\tilde{w}(x) = w(x)/\sum w$ | `w / w.sum()` | 正規化重み |
-| $\hat{I}_{\text{IS}} = \sum_i \tilde{w}_i f(X_i)$ | `w @ f(x)` | IS推定量 |
-| ESS | `1 / sum(w_tilde^2)` | 有効サンプルサイズ |
+$$
+\mathbb{E}_p[f(X)] = \int f(x)\,\frac{p(x)}{q(x)}\,q(x)\,dx = \mathbb{E}_q\!\left[f(X)\,\frac{dP}{dQ}(X)\right]
+$$
 
+$w(x) = p(x)/q(x)$ がまさに **Radon-Nikodym 導関数** $dP/dQ(x)$ だ。**前提条件**: $P \ll Q$（$Q(A) = 0 \Rightarrow P(A) = 0$）— $p(x) > 0$ なら必ず $q(x) > 0$。この条件が崩れると $w(x) = +\infty$ が発生し `NaN`/`Inf` が出る。
 
-```python
-import numpy as np
-from scipy.stats import norm
+**対数空間での実装**: `log_w = log_p(x) - log_q(x)` → `log_w -= log_w.max()` → `w = exp(log_w)` → `w /= w.sum()`。`max` を引く（log-sum-exp trick）でオーバーフローを防ぐ。
 
-def importance_sampling(f, p_logpdf, q_sampler, q_logpdf, n: int = 50_000) -> tuple[float, float]:
-    x = q_sampler(n)
-    log_w = p_logpdf(x) - q_logpdf(x)
-    log_w -= log_w.max()
-    w = np.exp(log_w); w /= w.sum()
-    est = float(w @ f(x))
-    ess_pct = 1.0 / float((w**2).sum()) / n * 100
-    return est, ess_pct
+**有効サンプルサイズ (ESS)**:
 
-est, ess = importance_sampling(
-    f=lambda x: x,
-    p_logpdf=lambda x: norm.logpdf(x, 5, 1),
-    q_sampler=lambda n: norm.rvs(0, 3, size=n),
-    q_logpdf=lambda x: norm.logpdf(x, 0, 3))
-print(f"IS={est:.4f}  (true=5.0)  ESS={ess:.1f}%")
-```
+$$
+\text{ESS} = \frac{\left(\sum_i w_i\right)^2}{\sum_i w_i^2} \in [1, N]
+$$
 
-> **Note:** $w(x) = p(x)/q(x)$ が Radon-Nikodym 導関数 $dP/dQ(x)$ そのもの。ESS < 10% なら提案分布 $q$ が $p$ のサポートをカバーできていない。
+$\text{ESS}/N < 10\%$ のとき $q$ のサポートが $p$ をカバーできていない。$p = \mathcal{N}(5, 1^2)$、$q = \mathcal{N}(0, 3^2)$ では ESS $< 5\%$ が典型的 — $q$ の尾部が $p$ の本体をカバーできていない。$q$ を $p$ の「少し広い版」に選ぶのがヒューリスティクスだ。
 
-**Self-Normalized IS (SNIS)**: 正規化定数 $Z = \int p^*(x)dx$ が未知の場合:
+**Self-Normalized IS (SNIS)**: 正規化定数 $Z = \int p^*(x)dx$ が未知のとき非正規化密度を使う:
 
 $$
 \hat{I}_{\text{SNIS}} = \frac{\sum_i w_i f(X_i)}{\sum_j w_j}, \quad w_i = \frac{p^*(X_i)}{q(X_i)}
 $$
 
-SNISはバイアスを持つが（$\mathbb{E}[\hat{I}_{\text{SNIS}}] \neq \mu$）、$N \to \infty$ で一致推定量になる。VAEのELBOをモンテカルロ推定するとき、このSNISがIMPORTANCE WEIGHTED AE (IWAE) の基礎になる。
-
-**SNISとKLダイバージェンスの関係**:
+バイアスを持つが $N \to \infty$ で一致推定量。**IWAE 目的関数**:
 
 $$
-D_{\mathrm{KL}}(q \| p) = \mathbb{E}_q\left[\log\frac{q(X)}{p(X)}\right] = -\mathbb{E}_q[\log w(X)] + \text{const}
+\mathcal{L}_K^{\text{IWAE}} = \mathbb{E}_{z_1,\ldots,z_K \sim q_\phi}\!\left[\log \frac{1}{K}\sum_{k=1}^K \frac{p_\theta(x, z_k)}{q_\phi(z_k|x)}\right] \xrightarrow{K \to \infty} \log p(x)
 $$
 
-Importance weight の対数平均がKLダイバージェンスと直結。VAEの変分下界 ELBO = $-D_{\mathrm{KL}}(q \| p) + \mathbb{E}_q[\log p(x|z)]$ はこの構造から来ている。
+$K=1$ で ELBO、$K \to \infty$ で真の対数尤度に収束。測度論的には $K$ 個のサンプルから $p(z|x)$ の経験測度を構成し正規化定数 $\log p(x)$ を推定している。
 
-**IWAE（Importance Weighted Autoencoder）**:
-
-$$
-\mathcal{L}_K^{\text{IWAE}} = \mathbb{E}_{z_1, \ldots, z_K \sim q_\phi(z|x)}\left[\log \frac{1}{K}\sum_{k=1}^K \frac{p_\theta(x, z_k)}{q_\phi(z_k|x)}\right]
-$$
-
-これはK個のSNIS推定量の対数。$K=1$ でELBO、$K \to \infty$ で $\log p(x)$（真の対数尤度）に収束。測度論的には: K個のサンプルから測度 $p(z|x)$ を推定し、その正規化定数 $\log p(x) = \log \int p(x,z)dz$ を近似している。
-
-
-### 5.4 カーネル密度推定 (KDE) — Radon-Nikodym導関数の推定
-
-データから確率密度関数（= Lebesgue測度に関するRadon-Nikodym導関数）を推定する。
+**KL ダイバージェンスとの関係**:
 
 $$
-\hat{f}_h(x) = \frac{1}{nh} \sum_{i=1}^{n} K\left(\frac{x - X_i}{h}\right)
+D_{\mathrm{KL}}(q \| p) = -\mathbb{E}_q[\log w(X)] + \text{const}, \quad w(x) = \frac{p(x)}{q(x)}
 $$
 
-バンド幅 $h$ は「測度の解像度」を決める。
+ELBO $= -D_{\mathrm{KL}}(q \| p) + \mathbb{E}_q[\log p(x|z)]$ はこの構造から来ている。
 
+**IS の失敗モード**: $q$ の尾部が $p$ より軽い（light-tailed $q$, heavy-tailed $p$）場合、希少サンプルで $w_i = p/q$ が爆発する。例: $p = t_3$（自由度3のスチューデント $t$ 分布）、$q = \mathcal{N}(0,1)$ — $q$ の指数的に減衰する尾部が $p$ の多項式的に減衰する尾部をカバーできない。この場合 ESS $\to 1$（実質的に1サンプルのみ有効）。
 
+診断: `w_normalized.max()` $> 0.3$ なら単一サンプルが支配的で警戒信号。
 
-**記号対応**:
+### 5.4 Triton カーネル — GMM 対数確率の並列計算
 
-| 数式 | コード変数 | 意味 |
-|:-----|:----------|:-----|
-| $h$ | `h` | バンド幅（解像度） |
-| $K(u) = \phi(u)$ | `exp(-0.5*d^2)/sqrt(2pi)` | ガウシアンカーネル |
-| $\hat{f}_h(x) = \frac{1}{nh}\sum K((x-X_i)/h)$ | `kernels.mean(axis=1)/h` | KDE推定値 |
-| $h_{\text{Silverman}} = 1.06\hat{\sigma}n^{-1/5}$ | `1.06*std*n**(-0.2)` | 最適バンド幅 |
+**動機**: 第8回の GMM-EM では E-step で $N = 10^6$ 点 × $K = 256$ 成分の対数確率を評価し logsumexp で正規化する。PyTorch のブロードキャスト `Normal(mu, sigma).log_prob(x[:,None])` は $(N, K)$ 行列を VRAM に展開 — $N=10^6$, $K=256$ で約 1 GB。Triton カーネルはタイル処理で VRAM $O(K)$ に抑えられる。
 
-
-```python
-import numpy as np
-
-def gaussian_kde(data: np.ndarray, h: float | None = None) -> tuple:
-    n = len(data)
-    h = h or 1.06 * data.std(ddof=1) * n**(-0.2)
-    def estimate(x_eval):
-        d = (x_eval[:, None] - data[None, :]) / h
-        return (np.exp(-0.5*d**2) / np.sqrt(2*np.pi)).mean(axis=1) / h
-    return estimate, h
-
-rng = np.random.default_rng(42)
-n = 500
-data = np.where(rng.random(n)<0.7, rng.standard_normal(n), rng.normal(4, 0.5, n))
-kde_fn, h = gaussian_kde(data)
-x_eval = np.linspace(-4, 7, 200)
-density = kde_fn(x_eval)
-dx = x_eval[1] - x_eval[0]
-print(f"h={h:.3f}  integral={float(density.sum()*dx):.4f}  (should=1.0)")
-```
-
-
-### 5.5 Markov連鎖シミュレーション — 定常分布への収束
-
-定常分布 $\boldsymbol{\pi}$ への収束を可視化する。
-
-
-
-```python
-import numpy as np
-
-P = np.array([[0.7, 0.2, 0.1],[0.3, 0.4, 0.3],[0.1, 0.3, 0.6]])
-vals, vecs = np.linalg.eig(P.T)
-idx = np.argmin(np.abs(vals - 1)); pi = np.abs(vecs[:, idx]); pi /= pi.sum()
-print(f"exact   pi = {pi}")
-print(f"P^100 row0 = {np.linalg.matrix_power(P,100)[0]}")
-
-def simulate_markov(P: np.ndarray, n_steps: int = 100_000, x0: int = 0) -> np.ndarray:
-    n = len(P)
-    x = x0
-    hist = np.zeros(n, dtype=int)
-    for _ in range(n_steps):
-        x = np.random.choice(n, p=P[x])
-        hist[x] += 1
-    return hist / n_steps
-print(f"empiric pi = {simulate_markov(P)}")
-```
-
-
-### 5.6 Metropolis-Hastings — MCMC の基礎
-
-詳細釣り合い条件を使って、任意の目標分布からサンプリングする。
+**計算式**:
 
 $$
-\alpha(x, x') = \min\left(1, \frac{\pi(x') q(x \mid x')}{\pi(x) q(x' \mid x)}\right)
+\log p(x_i) = \log \sum_{k=1}^K \pi_k\,\mathcal{N}(x_i;\,\mu_k,\,\sigma_k^2)
+= \operatorname{logsumexp}_{k=1}^K \!\left[\log\pi_k - \log\sigma_k - \tfrac{1}{2}\log(2\pi) - \frac{(x_i - \mu_k)^2}{2\sigma_k^2}\right]
 $$
 
-```python
-import numpy as np
-
-def metropolis_hastings(log_target, proposal_std: float, x0: float, n_samples: int, burnin: int = 1000) -> tuple[np.ndarray, float]:
-    """Metropolis-Hastings MCMC sampler.
-
-    Detailed balance: π(x) P(x→x') = π(x') P(x'→x)
-    Acceptance: α = min(1, π(x')q(x|x') / π(x)q(x'|x))
-    For symmetric proposal: α = min(1, π(x')/π(x))
-    """
-    x = x0
-    samples = []
-    accepted = 0
-
-    for i in range(n_samples + burnin):
-        # Symmetric proposal: q(x'|x) = N(x, σ²)
-        x_proposed = x + proposal_std * np.random.randn()
-
-        # Log acceptance ratio (symmetric → simplifies); walrus computes inline
-        if np.log(np.random.rand()) < (log_alpha := log_target(x_proposed) - log_target(x)):
-            x = x_proposed
-            if i >= burnin:
-                accepted += 1
-
-        if i >= burnin:
-            samples.append(x)
-
-    acceptance_rate = accepted / n_samples
-    return np.array(samples), acceptance_rate
-
-# Target: mixture of Gaussians (unnormalized)
-def log_target_mixture(x):
-    """Log of unnormalized mixture density."""
-    return np.logaddexp(
-        -0.5 * (x + 2)**2 / 0.5**2,
-        -0.5 * (x - 3)**2 / 1.0**2
-    )
-
-np.random.seed(42)
-samples, rate = metropolis_hastings(log_target_mixture, proposal_std=1.0, x0=0.0, n_samples=20_000)
-print(f"accept%={rate*100:.1f}%  mean={samples.mean():.3f}  std={samples.std():.3f}")
-```
-
-$\pi$ の正規化定数を知らなくてもサンプリングできる — これがベイズ推論で重要。
-
-**詳細釣り合い条件の確認**:
+数値安定な **online logsumexp** アルゴリズム（1パス, メモリ $O(1)$）:
 
 $$
-\pi(x) \cdot \alpha(x, x') \cdot q(x' | x) = \pi(x') \cdot \alpha(x', x) \cdot q(x | x')
+m_k = \max(m_{k-1},\, a_k), \quad s_k = s_{k-1}\cdot e^{m_{k-1}-m_k} + e^{a_k - m_k}, \quad \text{LSE} = m_K + \log s_K
 $$
 
-これが成立するのは定義から: $\alpha(x, x') = \min(1, \pi(x')q(x|x')/\pi(x)q(x'|x))$ と設定したから。対称提案 $q(x'|x) = q(x|x')$ のとき $\alpha(x, x') = \min(1, \pi(x')/\pi(x))$ に簡略化される。
-
-**最適受理率**: Roberts et al. (1997) [^5] は高次元ガウス目標分布に対して最適受理率 $\approx 23.4\%$ を示した。提案分布の幅を受理率が 20-25% になるよう調整するのが実践的なヒューリスティクス。
-
-**MALA (Metropolis-Adjusted Langevin Algorithm)**: Langevin Dynamicsにメトロポリス補正を加え、バイアスを除いたもの。ULAに比べてステップ数を大幅削減できる:
-
-$$
-x' = x + \frac{\epsilon}{2} \nabla \log \pi(x) + \sqrt{\epsilon} Z, \quad \text{then accept/reject with } \alpha(x, x')
-$$
-
-MALAはULAより効率的（$d$ 次元での最適スケーリングが $\epsilon = O(d^{-1/3})$ vs ULAの $O(d^{-1})$）。拡散モデルのサンプリングアルゴリズムの設計に直接影響する。
-
-**Gibbs Samplerとの比較**: Gibbs Samplerは高次元の場合に全変数を一度にサンプルせず、各変数 $x_i$ を他の変数を固定して条件付き $p(x_i | \mathbf{x}_{-i})$ からサンプルする:
-
-$$
-x_i^{(t+1)} \sim p(x_i \mid x_1^{(t+1)}, \ldots, x_{i-1}^{(t+1)}, x_{i+1}^{(t)}, \ldots, x_d^{(t)})
-$$
-
-**特性比較**:
-
-| アルゴリズム | 受理判定 | 必要情報 | 高次元 | 相関変数 |
-|-------------|---------|---------|--------|----------|
-| MH (球形提案) | あり | $\log \pi$ | △ ステップ小さく | △ |
-| MALA | あり | $\nabla \log \pi$ | ○ $O(d^{-1/3})$ | ○ |
-| HMC/NUTS | あり | $\nabla \log \pi$ | ◎ $O(d^{-1/4})$ | ◎ |
-| Gibbs | なし（常に受理） | 条件付き密度 | ○（独立成分） | ✕ |
-| ULA | なし（バイアスあり） | $\nabla \log \pi$ | ○ | ○ |
-
-Gibbs Samplerの**詳細釣り合い証明**: 条件付き分布からサンプルするので、一つの成分を更新するステップの詳細釣り合いは自明に成立（$\pi(x_i|\mathbf{x}_{-i})$ から直接サンプルするから）。全成分を一周すると（Systematic Gibbs）定常分布 $\pi$ に収束。
-
-**拡散モデルとの接続**: DDPM のデノイジング $p_\theta(\mathbf{x}_{t-1}|\mathbf{x}_t)$ は、時系列を条件付き確率の積に分解するGibbs的構造だ。ただし各ステップで独立にサンプルするため Gibbs Sampler とは異なり、Score SDE の逆過程と同値。
-
-### 5.7 Brown運動パス生成 — 離散近似
-
-$W(t_{k+1}) = W(t_k) + \sqrt{\Delta t} \cdot Z_k, \quad Z_k \sim \mathcal{N}(0,1)$
-
-
-
-```python
-import numpy as np
-
-T, n_steps, n_paths = 1.0, 1000, 200
-rng = np.random.default_rng(42)
-dt = T / n_steps
-dW = rng.standard_normal((n_steps, n_paths)) * np.sqrt(dt)
-W = np.vstack([np.zeros(n_paths), np.cumsum(dW, axis=0)])
-qv = (dW**2).sum(axis=0)  # quadratic variation: should -> T
-print(f"W(T): mean={W[-1].mean():.3f}  std={W[-1].std():.3f}  (theory: 0, 1)")
-print(f"[W]_T: mean={qv.mean():.4f}  std={qv.std():.4f}  (theory: 1.0, 0)")
-```
-
-
-### 5.8 幾何Brown運動 (GBM) — Itôの公式の実践
-
-株価モデルの古典:
-
-$$
-dS = \mu S \, dt + \sigma S \, dW
-$$
-
-Itôの公式により解析解が得られる:
-
-$$
-S(t) = S(0) \exp\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t)\right)
-$$
-
-$-\frac{\sigma^2}{2}$ の **Itô補正項** に注意 — これが伊藤積分の非直感的な部分。
-
-
-```python
-import numpy as np
-
-S0, mu, sigma, T, n_steps = 100.0, 0.05, 0.20, 1.0, 252
-n_paths = 5000
-rng = np.random.default_rng(0)
-dt = T / n_steps
-dW = rng.standard_normal((n_steps, n_paths)) * np.sqrt(dt)
-log_S = np.log(S0) + ((mu - 0.5*sigma**2)*dt + sigma*dW).sum(axis=0)
-S_T = np.exp(log_S)
-print(f"E[S(T)] empiric={S_T.mean():.2f}  analytic={S0*np.exp(mu*T):.2f}")
-log_ret = np.log(S_T/S0)
-print(f"log-ret mean={log_ret.mean():.4f}  std={log_ret.std():.4f}")
-print(f"  theory  mean={(mu-0.5*sigma**2):.4f}  std={sigma:.4f}")
-```
-
-**Itô補正の必要性**:
-
-素朴な $d(\log S) = dS/S$ の計算では Itô 補正 $-\sigma^2/2$ が出ない。コードで確認すると `E[S(T)] = S0 * exp(mu*T)` が成立する（正しい）が、$\sigma^2/2$ を落とすと `E[S(T)]` が誤った値になる。
-
-
-
-素朴な $d(\log S) = dS/S = \mu dt + \sigma dW$ と積分すると $S(T) = S_0 \exp(\mu T + \sigma W_T)$ となり、$\mathbb{E}[S(T)] = S_0 e^{\mu T} e^{\sigma^2 T/2} \neq S_0 e^{\mu T}$。Itô補正 $-\sigma^2/2$ は $\mathbb{E}[S(T)] = S_0 e^{\mu T}$（リスクニュートラル評価）を保証するために必要。この補正なしに金融派生商品のプライシングは成り立たない。
-
-**対数正規性の検証**: $\log(S_T/S_0) \sim \mathcal{N}((\mu-\sigma^2/2)T, \sigma^2 T)$ が成立することをコードで確認した。平均 $\mu T$ でなく $(\mu-\sigma^2/2)T$ になるのがItô積分の非直感的な核心だ。
-
-### 5.9 Ornstein-Uhlenbeck過程 — DDPMの連続極限
-
-Diffusion modelの連続極限はOrnstein-Uhlenbeck (OU) 過程:
-
-$$
-dX_t = -\theta X_t \, dt + \sigma \, dW_t
-$$
-
-平均回帰性（mean-reverting）を持ち、定常分布は $\mathcal{N}(0, \sigma^2/(2\theta))$。
-
-
-
-```python
-import numpy as np
-
-theta, sigma, x0, T, n_steps, n_paths = 1.0, 1.0, 5.0, 10.0, 10_000, 2000
-rng = np.random.default_rng(42)
-dt = T / n_steps
-X = np.full(n_paths, x0, dtype=float)
-for k in range(n_steps):
-    X += -theta * X * dt + sigma * np.sqrt(dt) * rng.standard_normal(n_paths)
-stat_var = sigma**2 / (2*theta)  # N(0, sigma^2/(2*theta))
-print(f"final: mean={X.mean():.3f}  var={X.var():.3f}  (stat.var={stat_var:.3f})")
-```
-
-
-### 5.10 Langevin Dynamics — Score関数でサンプリング
-
-Score function $\nabla_x \log p(x)$ を使って目標分布からサンプリングするLangevin Monte Carlo法:
-
-$$
-X_{k+1} = X_k + \frac{\epsilon}{2} \nabla_x \log p(X_k) + \sqrt{\epsilon} \, Z_k, \quad Z_k \sim \mathcal{N}(0, I)
-$$
-
-$\epsilon \to 0$、$K \to \infty$ で $X_K \sim p$ に収束する[^2]。
-
-
-
-```python
-import numpy as np
-from scipy.stats import norm
-
-def ula(score_fn, x0: float = 0.0, eps: float = 0.005, n: int = 100_000, burnin: int = 10_000, seed: int = 42) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    x = float(x0)
-    samples = []
-    for i in range(n + burnin):
-        x += 0.5 * eps * score_fn(x) + np.sqrt(eps) * rng.standard_normal()
-        if i >= burnin:
-            samples.append(x)
-    return np.array(samples)
-
-def log_p(x):
-    return float(np.logaddexp(norm.logpdf(x, -2, 0.5), norm.logpdf(x, 3, 1.0)))
-def score(x, h=1e-4): return (log_p(x+h)-log_p(x-h))/(2*h)
-
-s = ula(score)
-print(f"mean={s.mean():.3f}  std={s.std():.3f}")
-```
-
-**Fokker-Planck接続**: Langevin SDE $dX = \nabla\log p(X)dt + \sqrt{2}dW$ のFP定常解は $q_\infty = p$。
-
-
-### 5.11 Euler-Maruyama法 — SDEの数値解法
-
-SDEの厳密解が得られるケース（GBM、OU過程）は少数派だ。一般のSDEでは**数値解法**が必要になる。最も基本的な手法がEuler-Maruyama法 — ODE のEuler法をSDEに拡張したもの。
-
-#### 離散化スキーム
-
-SDE $dX_t = f(X_t) \, dt + g(X_t) \, dW_t$ を時間幅 $\Delta t$ で離散化する:
-
-$$
-X_{n+1} = X_n + f(X_n) \Delta t + g(X_n) \sqrt{\Delta t} \, Z_n, \quad Z_n \sim \mathcal{N}(0, 1)
-$$
-
-$\sqrt{\Delta t} \, Z_n$ が Brown運動増分 $\Delta W_n = W_{t_{n+1}} - W_{t_n} \sim \mathcal{N}(0, \Delta t)$ に対応。
-
-これは Euler 法の確率版だ。
+各 $x_i$ を独立に GPU スレッドで処理。$N$ プログラムが同時走行し、各プログラムが $K$ 成分を `BLOCK_K` ずつ処理する。
 
 **記号対応**:
 
 | 数式 | コード変数 | shape |
 |:-----|:----------|:------|
-| $f(X_n)$ | `f(X)` | `(n_paths,)` |
-| $g(X_n)$ | `g(X)` | `(n_paths,)` |
-| $\Delta t$ | `dt` | scalar |
-| $Z_n \sim \mathcal{N}(0,1)$ | `rng.standard_normal(n_paths)` | `(n_paths,)` |
+| $x_i$ | `xi = tl.load(x_ptr + i)` | scalar |
+| $\mu_k$ | `mu_k` | `(BLOCK_K,)` |
+| $\log \sigma_k$ | `ls_k` | `(BLOCK_K,)` |
+| $\log \pi_k$ | `lpi_k` | `(BLOCK_K,)` |
+| $a_k$ (log component weight) | `lc` | `(BLOCK_K,)` |
+| $m_k$ (online max) | `lse_max` | scalar |
+| $s_k$ (online sum) | `lse_sum` | scalar |
+| $\log p(x_i)$ | `tl.store(out_ptr + i, ...)` | scalar |
+
+**数値安定化**: $-\tfrac{1}{2}\log(2\pi) \approx -0.9189385$ を定数として用いる。マスクされた成分（`k_offs >= K`）は `lpi_k = -inf` で初期化し、`exp(-inf - m) = 0` が正しく伝播する。
 
 ```python
-import numpy as np
+import torch
+import triton
+import triton.language as tl
 
-def euler_maruyama(f, g, x0: float, T: float = 1.0, n_steps: int = 1000, n_paths: int = 2000, seed: int = 0) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    dt = T / n_steps
-    sqrt_dt = np.sqrt(dt)
-    X = np.full(n_paths, x0, dtype=float)
-    for _ in range(n_steps):
-        Z = rng.standard_normal(n_paths)
-        X = X + f(X)*dt + g(X)*sqrt_dt*Z
-    return X
+@triton.autotune(
+    configs=[triton.Config({"BLOCK_K": k}, num_warps=w)
+             for k in [32, 64, 128] for w in [4, 8]],
+    key=["K"],
+)
+@triton.jit
+def _gmm_logprob_kernel(
+    x_ptr,          # (N,)  float32 — query points
+    mu_ptr,         # (K,)  float32 — component means
+    log_sigma_ptr,  # (K,)  float32 — log(sigma_k)
+    log_pi_ptr,     # (K,)  float32 — log(pi_k), normalized
+    out_ptr,        # (N,)  float32 — log p(x_i)
+    N, K,
+    BLOCK_K: tl.constexpr,
+):
+    # One program per x_i — N programs run in parallel
+    i  = tl.program_id(0)
+    xi = tl.load(x_ptr + i)                                  # scalar: x_i
 
-# OU: dX = -X dt + dW -> stationary N(0, (1-e^{-2T})/2)
-X_T = euler_maruyama(f=lambda x: -x, g=lambda x: np.ones_like(x), x0=5.0)
-stat_var = (1 - np.exp(-2.0)) / 2
-print(f"X(T) mean={X_T.mean():.3f}  var={X_T.var():.3f}  (stat.var={stat_var:.3f})")
+    # Online logsumexp: a_k = log pi_k + log N(x_i; mu_k, sigma_k)
+    lse_max = tl.full((), float("-inf"), dtype=tl.float32)   # running max m_k
+    lse_sum = tl.zeros((), dtype=tl.float32)                  # running sum s_k
+
+    for k0 in range(0, K, BLOCK_K):
+        k_offs = k0 + tl.arange(0, BLOCK_K)
+        k_mask = k_offs < K
+        mu_k  = tl.load(mu_ptr        + k_offs, mask=k_mask, other=0.0)
+        ls_k  = tl.load(log_sigma_ptr + k_offs, mask=k_mask, other=0.0)
+        lpi_k = tl.load(log_pi_ptr    + k_offs, mask=k_mask, other=float("-inf"))
+
+        d   = (xi - mu_k) * tl.exp(-ls_k)                   # d: (BLOCK_K,)  (x-mu)/sigma
+        lc  = lpi_k - ls_k - 0.9189385 - 0.5 * d * d        # lc: (BLOCK_K,) log weight
+        # -0.5 * log(2*pi) ~= -0.9189385332046728
+
+        # Online LSE: new_max = max(old_max, block_max)
+        b_max   = tl.max(lc, axis=0)
+        new_max = tl.maximum(lse_max, b_max)
+        lse_sum = lse_sum * tl.exp(lse_max - new_max) + tl.sum(tl.exp(lc - new_max), axis=0)
+        lse_max = new_max
+
+    tl.store(out_ptr + i, lse_max + tl.log(lse_sum))
+
+
+def gmm_logprob(x: torch.Tensor, mu: torch.Tensor,
+                log_sigma: torch.Tensor, log_pi: torch.Tensor) -> torch.Tensor:
+    # x: (N,)  mu: (K,)  log_sigma: (K,)  log_pi: (K,)  ->  out: (N,)
+    N, K = x.shape[0], mu.shape[0]
+    out  = torch.empty(N, device=x.device, dtype=torch.float32)
+    _gmm_logprob_kernel[(N,)](x, mu, log_sigma, log_pi, out, N, K)
+    return out
+
+
+# --- 検算: PyTorch baseline と比較 ---
+torch.manual_seed(0)
+K, N = 4, 10_000
+mu    = torch.randn(K)
+sigma = torch.exp(torch.randn(K) * 0.3)
+lpi   = torch.log_softmax(torch.randn(K), dim=0)   # lpi: (K,) normalized
+x     = torch.randn(N)
+
+ref = torch.logsumexp(
+    lpi[None, :] + torch.distributions.Normal(mu, sigma).log_prob(x[:, None]),
+    dim=1)                                           # ref: (N,) PyTorch reference
+out = gmm_logprob(x, mu, sigma.log(), lpi)          # out: (N,) Triton result
+print(f"max|err| = {(out - ref).abs().max().item():.2e}")   # expect < 1e-4
+# assert (out - ref).abs().max() < 1e-4
 ```
 
-#### 強収束と弱収束
+> **第8回への接続**: GMM の E-step は $r_{ik} = \exp(\log\pi_k + \log\mathcal{N}(x_i;\mu_k,\sigma_k^2) - \log p(x_i))$。`gmm_logprob` の出力がこの分母だ。$K=256$, $N=10^6$ の工業規模 GMM でも VRAM $O(K)$ で実行できる。
 
-| 収束の種類 | 定義 | Euler-Maruyama | 意味 |
-|:---------|:----|:-------------|:-----|
-| 強収束 | $\mathbb{E}[\|X_N - X(T)\|] \leq C \Delta t^{1/2}$ | $O(\sqrt{\Delta t})$ | パスが近い |
-| 弱収束 | $\|\mathbb{E}[h(X_N)] - \mathbb{E}[h(X(T))]\| \leq C \Delta t$ | $O(\Delta t)$ | 統計量が近い |
+> **⚠️ Warning:** `_gmm_logprob_kernel` は GPU 上で実行される（Triton は CUDA/ROCm/Metal バックエンドを自動選択）。CPU では動かないため、`x.device` が `cuda` であることを確認してから呼び出すこと。CPU でのデバッグには `ref`（PyTorch 実装）を使う。
 
-- **強収束**: 個々のパスが真の解に近い（シミュレーション・可視化に重要）
-- **弱収束**: 期待値や分布の性質が正しい（統計量の推定に十分）
+### 5.5 カーネル密度推定 (KDE) — 経験測度の平滑化
 
-拡散モデルでは多くの場合、**弱収束で十分**（生成画像の分布が正しければよい）。DDPM の離散ステップ数 $T = 1000$ は弱収束の精度を確保するため。
-
-**Milstein法（1次精度）**: Euler-Maruyamaを改善した高精度スキーム:
+有限サンプル $\{X_1,\ldots,X_n\}$ から Lebesgue 測度に関する Radon-Nikodym 導関数（= 確率密度関数）を推定する。KDE の定義:
 
 $$
-X_{n+1} = X_n + f(X_n)\Delta t + g(X_n)\Delta W_n + \frac{1}{2}g(X_n)g'(X_n)[(\Delta W_n)^2 - \Delta t]
+\hat{f}_h(x) = \frac{1}{nh} \sum_{i=1}^{n} K\!\left(\frac{x - X_i}{h}\right)
 $$
 
-追加項 $\frac{1}{2}g g'[(\Delta W)^2 - \Delta t]$ がItô補正から来ている（$(dW)^2 = dt$ の次の項）。強収束が $O(\Delta t)$ に改善（Euler-Maruyamaの $O(\sqrt{\Delta t})$ から）。
+ガウスカーネル $K(u) = \frac{1}{\sqrt{2\pi}} e^{-u^2/2}$ を使うと、各 $X_i$ を中心とする等幅ガウス分布の混合:
 
-$g$ が定数（OU過程、DDPM）の場合: $g' = 0$ なのでMilstein = Euler-Maruyama。つまりDDPMでは両者が等価で、Euler-Maruyamaで十分。
+$$
+\hat{f}_h(x) = \frac{1}{n} \sum_{i=1}^n \mathcal{N}(x;\, X_i,\, h^2)
+$$
 
+測度論的には、経験測度 $\hat{P}_n = \frac{1}{n}\sum_i \delta_{X_i}$（デルタ測度の和）をガウス核で畳み込み、絶対連続測度（Lebesgue 測度に対して）を作っている。
 
+**Silverman ルール** ($d=1$): MISE（平均積分二乗誤差）の漸近最小化:
 
-### 5.12 収束定理の数値検証 — MCT vs DCT vs Fatou
+$$
+h_{\text{Silverman}} = 1.06\,\hat{\sigma}\,n^{-1/5}, \quad \hat{\sigma} = \min\!\left(\text{SD}(X),\; \frac{\text{IQR}(X)}{1.349}\right)
+$$
 
-3つの収束定理を同時に検証する。
+$n^{-1/5}$ の指数はバイアス・分散トレードオフから来る: バイアスは $h^2$ で増加、分散は $1/(nh)$ で減少し、MISE 最小化で $h^* \propto n^{-1/5}$ が導かれる。
+
+**バンド幅の測度論的意味**: $h \to 0$ で $\hat{f}_h \to \frac{1}{n}\sum_i \delta_{X_i}$（経験測度）— 連続密度が推定できなくなる。$h \to \infty$ で $\hat{f}_h$ が均一化し情報が失われる。$h$ は「Lebesgue 測度に対する経験測度の解像度パラメータ」だ。
+
+**多次元拡張**: $d$ 次元では最適バンド幅スケーリングが $h^* \propto n^{-1/(d+4)}$ — $d$ が大きいほど多くのサンプルが必要（次元の呪い）。生成モデル評価で KDE を使う場合、埋め込み次元が数百〜数千になるため直接適用は困難で、CMMD [^14] などカーネル法の近似が使われる。
+
+### 5.6 Markov 連鎖と定常分布 — エルゴード定理の数値的含意
+
+有限状態 Markov 連鎖 $P = (p_{ij})$ の定常分布 $\boldsymbol{\pi}$ は固有方程式:
+
+$$
+\boldsymbol{\pi} P = \boldsymbol{\pi}, \quad \boldsymbol{\pi} \geq 0, \quad \textstyle\sum_i \pi_i = 1
+$$
+
+を満たす確率ベクトル。$P^{\top}$ の固有値 $1$ に対応する左固有ベクトルだ。数値的には `torch.linalg.eig(P.T)` の固有値が最も $1$ に近い固有ベクトルを取る（固有値が複素数になりうるので虚部を確認すること）。
+
+**Chapman-Kolmogorov 方程式**: $n$ ステップ遷移行列は $P^n$ — 行列べき乗:
+
+$$
+p_{ij}^{(n)} = (P^n)_{ij} = \sum_{k_1,\ldots,k_{n-1}} p_{ik_1} p_{k_1 k_2} \cdots p_{k_{n-1}j}
+$$
+
+大きな $n$ では `torch.linalg.matrix_power(P, n)` の各行が $\boldsymbol{\pi}$ に収束することで定常性を数値確認できる。
+
+**スペクトルギャップと収束速度**: $P$ の固有値を $1 = \lambda_1 > |\lambda_2| \geq \cdots$ とすると:
+
+$$
+\max_i \|P^n_{i,\cdot} - \boldsymbol{\pi}\|_{\text{TV}} \leq (|\lambda_2|)^n
+$$
+
+$1 - |\lambda_2|$ が**スペクトルギャップ** — これが小さいほど収束が遅い。MCMC で「混合が遅い」とはスペクトルギャップが小さいことを意味する。混合時間 $t_{\text{mix}}(\epsilon) = \min\{n: \max_i\|P^n_{i,\cdot}-\boldsymbol{\pi}\|_{\text{TV}} \leq \epsilon\}$ は実用的に $t_{\text{mix}}(0.25) \approx \log(2) / (1 - |\lambda_2|)$ で近似できる。
+
+**連続状態への拡張**: $\mathbb{R}^d$ 上では遷移行列が遷移核 $K(x, dy)$ に一般化され、定常分布の条件は:
+
+$$
+\pi(A) = \int K(x, A)\,\pi(dx) \quad \forall A \in \mathcal{B}(\mathbb{R}^d)
+$$
+
+詳細釣り合い（Detailed Balance）: $\pi(dx)K(x, dy) = \pi(dy)K(y, dx)$ が成立すれば $\pi$ が定常分布。MH 法の受理確率はこの条件を満たすよう設計される。
+
+**具体例: 3状態 Markov 連鎖の定常分布計算**:
+
+$$
+P = \begin{pmatrix} 0.7 & 0.2 & 0.1 \\ 0.3 & 0.4 & 0.3 \\ 0.1 & 0.3 & 0.6 \end{pmatrix}
+$$
+
+固有方程式 $\boldsymbol{\pi} P = \boldsymbol{\pi}$ は連立一次方程式。$(\pi_1, \pi_2, \pi_3)^{\top}$ を $(P^{\top} - I)\mathbf{v} = \mathbf{0}$ の右零空間として求める。
+
+数値的には: `eig, vecs = torch.linalg.eig(P.T)` → 固有値 1 に最も近い固有ベクトルの実部を取り正規化。このとき $\boldsymbol{\pi} \approx (0.42, 0.32, 0.26)$ が得られる。$P^n$ の各行が $\boldsymbol{\pi}$ に収束するかは `torch.linalg.matrix_power(P, 100)` で確認できる — 全行が同じになれば定常分布に達している。
+
+**エルゴード定理の意味**: 既約・非周期的 Markov 連鎖では軌跡の時間平均が空間平均に収束する:
+
+$$
+\frac{1}{N}\sum_{k=0}^{N-1} f(X_k) \xrightarrow{a.s.} \mathbb{E}_\pi[f] = \sum_i f(i)\,\pi_i
+$$
+
+これがMCMCの根拠だ。定常分布からのサンプリングを「長いチェーンの時間平均」で代替できる。収束が確率的（a.s.）なので個々のチェーンは収束するが、十分なバーンイン期間が必要。
+
+### 5.7 Metropolis-Hastings — 詳細釣り合いの設計
+
+正規化定数未知の目標分布 $\pi(x) \propto \pi^*(x)$ からサンプリングする。提案 $x' \sim q(x'|x)$ を受理確率で採否:
+
+$$
+\alpha(x, x') = \min\!\left(1,\, \frac{\pi^*(x')\,q(x \mid x')}{\pi^*(x)\,q(x' \mid x)}\right)
+$$
+
+**詳細釣り合いの確認**: $T(x \to x') = \alpha(x,x') q(x'|x)$ とすると $\pi(x)T(x \to x') = \pi(x')T(x' \to x)$ が定義から成立するため $\pi$ が定常分布になる。
+
+**対称提案** $q(x'|x) = q(x|x')$（例: $\mathcal{N}(x, \sigma^2 I)$）のとき:
+
+$$
+\alpha(x, x') = \min\!\left(1,\, \frac{\pi^*(x')}{\pi^*(x)}\right)
+$$
+
+**対数空間での実装**: `if log(U) < log_pi_star(x') - log_pi_star(x)` — `pi*(x) = 0` での `0/0` を回避できる。
+
+**詳細釣り合いの厳密な証明**: 受理確率 $\alpha(x,x') = \min(1, r)$（$r = \pi^*(x')q(x|x') / (\pi^*(x)q(x'|x))$）に対して:
+
+$$
+\begin{aligned}
+\pi(x)\,\alpha(x,x')\,q(x'|x) &= \pi(x)\,\min(1,r)\,q(x'|x) \\
+&= \min(\pi(x)q(x'|x),\;\pi^*(x')q(x|x')/Z) \\
+&= \pi^*(x')q(x|x') / Z \cdot \min(\pi(x)q(x'|x)\,Z/\pi^*(x')q(x|x'),\,1) \\
+&= \pi(x')\,\alpha(x',x)\,q(x|x')
+\end{aligned}
+$$
+
+最後の等号は $r' = 1/r$ であることから従う。ゆえに詳細釣り合い $\pi(x)T(x,dx') = \pi(x')T(x',dx)$ が成立する。
+
+**最適受理率**: Roberts et al. [^5] は $d$ 次元ガウス目標での最適受理率が $\approx 23.4\%$ であることを示した。提案分布の幅 $\sigma$ を受理率が $20\%$〜$25\%$ になるよう調整するのが実践的ヒューリスティクスだ。
+
+**MALA との比較**: Metropolis-Adjusted Langevin Algorithm は勾配情報を提案に組み込む:
+
+$$
+x' = x + \frac{\epsilon}{2}\nabla\log\pi(x) + \sqrt{\epsilon}\, Z, \quad Z \sim \mathcal{N}(0, I)
+$$
+
+$d$ 次元での最適ステップサイズが $O(d^{-1/3})$（MH は $O(d^{-1/2})$、ULA は $O(d^{-1})$）— 高次元での明確な改善だ。
+
+| アルゴリズム | 受理判定 | 必要情報 | $d$ 次元最適スケーリング |
+|-------------|---------|---------|------------------------|
+| MH (球形提案) | あり | $\log \pi$ | $O(d^{-1/2})$ |
+| MALA | あり | $\nabla \log \pi$ | $O(d^{-1/3})$ |
+| HMC/NUTS | あり | $\nabla \log \pi$ | $O(d^{-1/4})$ |
+| Gibbs | なし | 条件付き密度 | $O(1)$（独立成分のみ） |
+| ULA（バイアスあり） | なし | $\nabla \log \pi$ | $O(d^{-1})$ |
+
+**Gibbs サンプラー**: 各成分 $x_i$ を他を固定した条件付き $p(x_i|\mathbf{x}_{-i})$ から交互にサンプリングする。詳細釣り合いが成分単位で自明に成立するため受理/棄却が不要。ただし成分間の強い相関があると収束が遅い（スペクトルギャップが小さい）。拡散モデルとの接続: DDPM のデノイジング $p_\theta(\mathbf{x}_{t-1}|\mathbf{x}_t)$ は Score SDE の逆過程と同値だ。
+
+### 5.8 Brown 運動パス生成 — 離散近似と二次変動
+
+Brown 運動の離散近似:
+
+$$
+W(t_{k+1}) = W(t_k) + \underbrace{\sqrt{\Delta t} \cdot Z_k}_{\Delta W_k \sim \mathcal{N}(0,\,\Delta t)}, \quad Z_k \sim \mathcal{N}(0, 1)
+$$
+
+$\Delta W_k \sim \mathcal{N}(0, \Delta t)$ は Brown 運動の**独立増分性**から来る。最重要の数値的性質が**二次変動**:
+
+$$
+[W]_T = \lim_{\|\mathcal{P}\| \to 0} \sum_{k=1}^n (W_{t_k} - W_{t_{k-1}})^2 = T \quad (\text{確率 } 1)
+$$
+
+これが $dW^2 = dt$ の正確な意味だ。通常の微積分では $dx^2 = o(dt)$ として消えるが、Brown 運動では $(dW)^2 = dt$（1次の大きさ）が残る — これが Itô 補正の源泉。数値確認: `(dW**2).sum(dim=0)` $\approx T$。$\text{Var}[\sum_k(\Delta W_k)^2] = \sum_k 2(\Delta t)^2 = 2T\Delta t \to 0$（$\Delta t \to 0$）なので確率収束が従う。
+
+**5つの基本性質と実装への影響**:
+
+| 性質 | 実装への影響 |
+|:-----|:-----------|
+| $W(0) = 0$ | `torch.zeros(n_paths)` から開始 |
+| 独立増分 | `torch.randn(n_steps, n_paths)` で独立サンプル |
+| $W(t) \sim \mathcal{N}(0, t)$ | `torch.randn() * t.sqrt()` |
+| 連続だが非微分可能 | 有限差分の極限は取れない |
+| $[W]_T = T$ | `(dW**2).sum()` $\approx T$、誤差 $O(\sqrt{\Delta t})$ |
+
+**高次変動**: Brown 運動の $p$ 次変動は $p > 2$ で $0$、$p < 2$ で $+\infty$。$p = 2$ のとき非自明な有限値 $T$ を持つ — これが Brown 運動の「半一様さ」を特徴づける。通常の連続関数（例: 単調増加関数）は有界変動（$p=1$ で有限）を持つが Brown 運動は有界変動が無限 — ほぼ至るところ非微分可能であることと等価だ。
+
+### 5.9 幾何 Brown 運動 — Itô 補正の本質
+
+$$
+dS = \mu S\,dt + \sigma S\,dW \quad \Longrightarrow \quad S(t) = S(0)\exp\!\left[\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t)\right]
+$$
+
+なぜ $-\sigma^2/2$ が必要か。素朴な対数変換 $d(\log S) = dS/S$ を試みると $\mu\,dt + \sigma\,dW$ が得られるが、Itô の補題では $(dS)^2 = \sigma^2 S^2 dt$（$(dW)^2 = dt$ より）の項が加わる:
+
+$$
+d(\log S) = \frac{\partial \log S}{\partial S}\,dS + \frac{1}{2}\frac{\partial^2 \log S}{\partial S^2}(dS)^2 = \frac{dS}{S} - \frac{\sigma^2}{2}\,dt = \left(\mu - \frac{\sigma^2}{2}\right)dt + \sigma\,dW
+$$
+
+$-\sigma^2/2$ を落とすと $\mathbb{E}[S(t)] = S(0) e^{\mu t} e^{\sigma^2 t/2} \neq S(0) e^{\mu t}$ となり、リスクニュートラル評価が壊れる。対数正規性の検証: $\log(S_T/S_0) \sim \mathcal{N}((\mu-\sigma^2/2)T,\, \sigma^2 T)$。実装では `(mu - 0.5*sigma**2)*T + sigma*W_T` と書く。
+
+**一般的な Itô の補題**: $f(t, X_t)$ が $C^{1,2}$（$t$ に1回、$x$ に2回連続微分可能）ならば:
+
+$$
+df = \frac{\partial f}{\partial t}\,dt + \frac{\partial f}{\partial x}\,dX + \frac{1}{2}\frac{\partial^2 f}{\partial x^2}(dX)^2
+$$
+
+第3項が $(dX)^2 = g^2(X)dt$（Itô 補正項）。通常の連鎖律に比べ $\frac{1}{2}g^2 f_{xx}$ の項が追加される。この「誤差」は Brown 運動の非ゼロ二次変動 $[W]_T = T$ から来る — 正則関数の Taylor 展開で $(dW)^2 = dt$ が残る唯一の理由だ。
+
+**多変量 Itô の補題**: $\mathbf{X}_t \in \mathbb{R}^d$ に対して $f(\mathbf{X}_t)$ の微分:
+
+$$
+df = \sum_i \frac{\partial f}{\partial x_i}\,dX_i + \frac{1}{2}\sum_{i,j} \frac{\partial^2 f}{\partial x_i \partial x_j}\,d[X_i, X_j]_t
+$$
+
+独立 Brown 運動 $d[W_i, W_j]_t = \delta_{ij}\,dt$（クロノネッカーデルタ）。拡散モデルの多次元 VP-SDE に Itô の補題を適用するとき、この行列形式が必要になる。
+
+### 5.10 Ornstein-Uhlenbeck 過程 — DDPM の連続極限
+
+$$
+dX_t = -\theta X_t\,dt + \sigma\,dW_t
+$$
+
+**解析解** (Itô の補題を $f = e^{\theta t} X_t$ に適用):
+
+$$
+X_t = X_0 e^{-\theta t} + \sigma \int_0^t e^{-\theta(t-s)}\,dW_s
+$$
+
+確率積分の平均ゼロ性より $\mathbb{E}[X_t] = X_0 e^{-\theta t} \to 0$（平均回帰）。分散の時間発展:
+
+$$
+\text{Var}[X_t] = \frac{\sigma^2}{2\theta}\left(1 - e^{-2\theta t}\right) \xrightarrow{t \to \infty} \frac{\sigma^2}{2\theta}
+$$
+
+定常分布 $X_\infty \sim \mathcal{N}(0,\, \sigma^2/(2\theta))$。定常分散は $\theta$（回帰速度）と $\sigma$（拡散強度）のバランスで決まる。**DDPM との対応**: VP-SDE $d\mathbf{x} = -\frac{\beta(t)}{2}\mathbf{x}\,dt + \sqrt{\beta(t)}\,d\mathbf{W}$ は OU 過程の一般化。$\beta = \text{const}$ のとき完全一致する。DDPM の forward process が $T \to \infty$ でガウスに収束するのは OU 過程の定常分布への収束から直接導かれる。$g(X) = \sigma$（定数）なので Milstein 法 = Euler-Maruyama 法 — 高次補正は不要だ。
+
+**OU 過程の解析解の導出詳細**: $f(t, X) = e^{\theta t} X$ に Itô の補題を適用する。
+
+$$
+\begin{aligned}
+df &= \frac{\partial f}{\partial t}\,dt + \frac{\partial f}{\partial X}\,dX + \frac{1}{2}\frac{\partial^2 f}{\partial X^2}(dX)^2 \\
+&= \theta e^{\theta t} X\,dt + e^{\theta t}(-\theta X\,dt + \sigma\,dW) + 0 \\
+&= \sigma e^{\theta t}\,dW
+\end{aligned}
+$$
+
+第3項がゼロになるのは $\partial^2 f/\partial X^2 = 0$（1次関数なので）。両辺 $[0,t]$ で積分:
+
+$$
+e^{\theta t}X_t - X_0 = \sigma \int_0^t e^{\theta s}\,dW_s \implies X_t = X_0 e^{-\theta t} + \sigma\int_0^t e^{-\theta(t-s)}\,dW_s
+$$
+
+確率積分 $\int_0^t e^{-\theta(t-s)}\,dW_s$ の平均は 0（Itô 積分は局所マルチンゲール）、分散は Itô 等距離公式:
+
+$$
+\text{Var}\!\left[\int_0^t e^{-\theta(t-s)}\,dW_s\right] = \int_0^t e^{-2\theta(t-s)}\,ds = \frac{1-e^{-2\theta t}}{2\theta}
+$$
+
+よって $X_t \sim \mathcal{N}(X_0 e^{-\theta t},\, \sigma^2(1-e^{-2\theta t})/(2\theta))$ が厳密に導かれる。
+
+### 5.11 Langevin Dynamics — Score 関数でサンプリング
+
+Score 関数 $\nabla_x \log p(x)$ は確率密度の勾配 — 高確率領域に向かう方向を指す。Langevin SDE:
+
+$$
+dX_t = \underbrace{\nabla_x \log p(X_t)}_{\text{drift: 高確率方向}}\,dt + \sqrt{2}\,dW_t
+$$
+
+対応する Fokker-Planck 定常解が $p$ に収束することは §7.1 で厳密に確認した。
+
+**ULA の離散化** (Euler-Maruyama):
+
+$$
+X_{k+1} = X_k + \frac{\epsilon}{2}\nabla_x \log p(X_k) + \sqrt{\epsilon}\, Z_k, \quad Z_k \sim \mathcal{N}(0, I)
+$$
+
+係数 $\frac{\epsilon}{2}$ は「$dt = \epsilon$ での drift に拡散係数 $\sqrt{2}$ を組み込むと $\sqrt{2\epsilon}Z$ となり、$\sqrt{2\epsilon} = \sqrt{\epsilon} \cdot \sqrt{2}$ をまとめて $\sqrt{\epsilon}$ と書く」から来る。$\epsilon \to 0$, $K \to \infty$ で $X_K \sim p$ に収束 [^2]。有限 $\epsilon$ ではバイアスが残る — メトロポリス補正（MALA）で解消できる。
+
+**記号対応**:
+
+| 数式 | コード変数 | shape |
+|:-----|:----------|:------|
+| $X_k$ | `x` | `(N, d)` |
+| $\nabla_x \log p(X_k)$ | `score = score_fn(x)` | `(N, d)` |
+| $\epsilon$ | `step_size` | scalar |
+| $Z_k \sim \mathcal{N}(0, I)$ | `torch.randn_like(x)` | `(N, d)` |
+| $\sqrt{\epsilon}$ | `noise_scale` | scalar |
+
+**数値安定化の落とし穴**: $\nabla \log p(x)$ は $p(x) \approx 0$ の領域で爆発する。DDPM は $\sigma_{\min} > 0$ で回避している。ULA でも `step_size` が大きすぎると「スコアが大きい方向に飛びすぎ $p \approx 0$ 領域に入り爆発」するループが起きる。`step_size < 0.01` から始めること。
 
 ```python
-import numpy as np
+import torch
+torch.set_float32_matmul_precision("high")
 
-rng = np.random.default_rng(0)
-x = rng.uniform(0, 10, 200_000)
-print("MCT (-> 50):")
-for n in [1, 2, 5, 10]:
-    print(f"  n={n}: {(x*(x<=n)).mean()*10:.2f}")
 
-x2 = rng.uniform(0, 20, 200_000)
-print("DCT (-> 1.0):")
-for n in [2, 10, 100]:
-    gn = (1+x2/n)**(-n)
-    print(f"  n={n}: {gn.mean()*20:.4f}")
+def langevin_step(x: torch.Tensor, score_fn, step_size: float, noise_scale: float) -> torch.Tensor:
+    # dx = (step_size/2) * ∇log p(x) + √step_size * ε,  ε ~ N(0, I)
+    score = score_fn(x)          # score: (N, d) ← ∇log p(x)
+    noise = torch.randn_like(x)  # noise: (N, d)
+    return x + (step_size / 2) * score + noise_scale * noise
 
-x3 = rng.uniform(0, 5, 200_000)
-print("No domination (stays ~0.5):")
-for n in [1, 5, 50]:
-    hn = n * x3 * np.exp(-n * x3**2)
-    print(f"  n={n}: {hn.mean()*5:.4f}")
+
+@torch.inference_mode()
+def run_ula(score_fn, x0: torch.Tensor, step_size: float = 5e-3,
+            n_steps: int = 20_000, burnin: int = 5_000) -> torch.Tensor:
+    # x0: (N, d) — initial positions; returns x: (N, d) samples after burn-in
+    noise_scale = step_size ** 0.5                          # sqrt(epsilon)
+    x = x0.clone()
+    for _ in range(n_steps + burnin):
+        x = langevin_step(x, score_fn, step_size, noise_scale)
+    return x
+
+
+# Score function for GMM: log p(x) = logsumexp[log N(x;-2,0.5), log N(x;3,1)]
+def gmm_score(x: torch.Tensor) -> torch.Tensor:
+    # x: (N, 1)  ->  score: (N, 1)
+    x = x.detach().requires_grad_(True)
+    d1 = torch.distributions.Normal(-2.0, 0.5)
+    d2 = torch.distributions.Normal(3.0, 1.0)
+    log_p = torch.logaddexp(d1.log_prob(x), d2.log_prob(x))  # (N, 1)
+    return torch.autograd.grad(log_p.sum(), x)[0]             # (N, 1)
+
+
+torch.manual_seed(42)
+N  = 2_000
+x0 = torch.randn(N, 1) * 3.0                  # x0: (N, 1) broad initialization
+samples = run_ula(gmm_score, x0)               # samples: (N, 1)
+print(f"mean={samples.mean():.3f}  std={samples.std():.3f}")
+# Two peaks at -2 (sigma=0.5) and 3 (sigma=1): expected mean between -0.5 and 2.0
+# assert -1.0 < samples.mean().item() < 2.5
 ```
 
+> **MALA との差**: ULA は有限 $\epsilon$ でバイアスあり。MALA はこの提案に MH 補正を加え $p$ に厳密収束する。拡散モデルのサンプリング（DDPM 逆過程）は実質的に $T$ ステップの ULA だ。
+
+**Fokker-Planck 接続**: Langevin SDE の FPE 定常解 $q_\infty = p$ の確認:
+
+$$
+\nabla \cdot (q_\infty \nabla \log p) - \Delta q_\infty = \nabla \cdot (\nabla p) - \Delta p = 0 \quad \checkmark
+$$
+
+### 5.12 Euler-Maruyama 法の収束解析
+
+一般の SDE $dX_t = f(X_t)\,dt + g(X_t)\,dW_t$ を Euler-Maruyama 法で離散化:
+
+$$
+X_{n+1} = X_n + f(X_n)\Delta t + g(X_n)\sqrt{\Delta t}\, Z_n, \quad Z_n \sim \mathcal{N}(0, 1)
+$$
+
+| 収束の種類 | 定義 | Euler-Maruyama | 実用的意味 |
+|:---------|:----|:-------------|:---------|
+| 強収束 | $\mathbb{E}[\|X_N - X(T)\|] \leq C\Delta t^{1/2}$ | $O(\sqrt{\Delta t})$ | 個々のパスの精度 |
+| 弱収束 | $|\mathbb{E}[h(X_N)] - \mathbb{E}[h(X(T))]| \leq C\Delta t$ | $O(\Delta t)$ | 統計量（期待値）の精度 |
+
+強収束 $O(\sqrt{\Delta t})$ は「1ステップ誤差 $O(\Delta t^{3/2})$、$N = T/\Delta t$ ステップで $O(\Delta t^{1/2})$」から来る。弱収束 $O(\Delta t)$ は「期待値レベルでは1次項がキャンセルする（Itô補正が正確に入るから）」から来る。
+
+**Milstein 法**: $g' \neq 0$ のとき強収束を $O(\Delta t)$ に改善:
+
+$$
+X_{n+1} = X_n + f(X_n)\Delta t + g(X_n)\Delta W_n + \frac{1}{2}g(X_n)g'(X_n)\left[(\Delta W_n)^2 - \Delta t\right]
+$$
+
+追加項は $(dW)^2 = dt$ の次の補正。$g = \text{const}$（DDPM、OU 過程）では $g' = 0$ なので Milstein = Euler-Maruyama が等価。
+
+**拡散モデルへの示唆**: 生成モデルでは弱収束で十分 — 生成画像の分布が正しければよい。DDPM の $T=1000$ は弱収束精度 $O(\Delta t) = O(1/T) = O(10^{-3})$ に対応する。DDIM [^12] は ODE（確定論的）で解くためステップ数を 10–50 に削減できる。
+
+**Grönwall 不等式による KL 収束保証** [^10]: VP-SDE の1ステップ KL 誤差 $\delta_n \leq C \cdot \Delta t^2$ から:
+
+$$
+u_{n+1} \leq (1+\beta\Delta t)u_n + C\Delta t^2 \implies u_N \leq e^{\beta T} \cdot C\Delta t^2 \cdot \frac{e^{\beta T}-1}{\beta\Delta t} = O(\Delta t)
+$$
+
+つまり $D_{\mathrm{KL}}(p_{\theta,\Delta t} \| p_{\text{data}}) = O(\Delta t)$ — ステップ数 $T$ を増やすほど生成品質が向上する理論的根拠。スコア誤差を $\epsilon_{\text{score}}$ 以下に学習すれば $D_{\mathrm{KL}} = O(\epsilon_{\text{score}} + \Delta t)$ が成立する。
+
+### 5.13 収束定理の数値的含意
+
+測度論の3大収束定理は抽象的に見えるが、実装のバグ防止に直結する。
+
+**単調収束定理 (MCT)**: $0 \leq f_n \nearrow f$ なら $\int f_n \, d\mu \to \int f \, d\mu$。途中で打ち切った MC 推定量は下から真の期待値に単調収束する（$f \geq 0$ のとき）。損失関数の非負性が保証される場面で安全に打ち切り基準を設定できる。
+
+**優収束定理 (DCT)**: $|f_n| \leq g$（$\mathbb{E}[g] < \infty$）かつ $f_n \to f$ a.e. なら $\int f_n \, d\mu \to \int f \, d\mu$。**最重要応用**: 期待値と微分の交換 $\nabla_\theta \mathbb{E}_p[f_\theta(X)] = \mathbb{E}_p[\nabla_\theta f_\theta(X)]$。この交換が正当化されない場合（Batch Normalization など非連続操作）、reparameterization trick $\mathbb{E}_{p_\theta}[f] = \mathbb{E}_\epsilon[f(g_\theta(\epsilon))]$ で微分と期待値の交換を回避できる。
+
+**Fatou の補題**: $\int \liminf f_n \, d\mu \leq \liminf \int f_n \, d\mu$（$f_n \geq 0$ のとき）。汎化誤差の下界を与えるが、等号は保証しない。Fatou が等号にならない典型例: $h_n(x) = n \cdot x \cdot e^{-nx^2}$ は $h_n \to 0$ a.e. だが $\int h_n dx = \sqrt{\pi/4} \not\to 0$（優関数なし）。
+
+**DCT 条件の実践的チェック**: 深層生成モデルで $\nabla_\theta \mathbb{E}[f_\theta] = \mathbb{E}[\nabla_\theta f_\theta]$ を仮定するとき:
+
+1. $\nabla_\theta f_\theta$ が $\theta$ のコンパクト集合で有界か確認
+2. Batch normalization のような非連続操作は DCT 条件を壊しうる
+3. 代わりに reparameterization trick で微分と期待値の交換を回避する
+
+MCT の数値確認: $\int_0^n x\,dx = n^2/2 \nearrow \infty$ の単調増加。DCT の数値確認: $g_n(x) = (1+x/n)^{-n} \to e^{-x}$ で $\int_0^{20} g_n\,dx \to 1$（優関数 $g=1$ で dominate）。
+
+**深層学習で DCT を使う場面のチェックリスト**:
+
+| 操作 | DCT 条件 | 対処法 |
+|:-----|:---------|:-------|
+| $\nabla_\theta \mathbb{E}_p[f_\theta]$ の確率的推定 | $\|\nabla f_\theta\| \leq g$（$\theta$ 近傍で有界）| Gradient clipping |
+| 期待値 ELBO の勾配 | $\mathbb{E}_q[\|\nabla_\phi \log q_\phi\|] < \infty$ | Reparam. trick |
+| $\sum_n a_n$ の項別微分 | 優収束する $\sum \|a'_n\|$ の存在 | 有限和に制限 |
+| Batch Norm の期待値 | 非連続 → DCT 条件×| Layer Norm / RMS Norm |
+
+**Fatou の補題の深層学習的解釈**: 汎化誤差の下界:
+
+$$
+\mathbb{E}_{D}[\text{test loss}] \geq \liminf_{n \to \infty} \mathbb{E}_{D_n}[\text{train loss}]
+$$
+
+は Fatou の形式だ（非負の損失 $L_n \geq 0$ として）。ただし学習データ $D_n \to D$ の意味は「確率収束」ではなく「より多くのデータを集める」という意味なので注意が必要。
 
 ### Quick Check — Z5
 
@@ -675,57 +726,20 @@ $$
 **A**: KDE は $\hat{p}_h(x) = \frac{1}{Nh}\sum_{i=1}^N K\left(\frac{x-X_i}{h}\right)$ で定義される。$h \to 0$ のとき、各カーネル $K(\cdot/h)/h$ はデータ点 $X_i$ に集中する Dirac delta $\delta_{X_i}$ に収束（分布収束の意味で）。つまり $\hat{p}_h \to \frac{1}{N}\sum_i \delta_{X_i}$（経験測度）になり、連続密度が推定できなくなる。$h$ は「Lebesgue測度に対する経験測度の平滑化パラメータ」で、Silvermanルール $h = 1.06\hat{\sigma}N^{-1/5}$ はMISE（平均積分二乗誤差）最小化の漸近最適解。
 </details>
 
+### 5.14 数式→コード対応表（PyTorch 版）
 
-
-### 5.13 数式→コード翻訳パターン集
-
-| 数式 | Python | 注意点 |
+| 数式 | PyTorch | 落とし穴 |
 |:--|:--|:--|
-| $\int f \, d\mu$ | `np.mean(f(samples))` | Monte Carlo近似 |
-| $\frac{dP}{dQ}(x)$ | `p.pdf(x) / q.pdf(x)` | Importance weight |
-| $\hat{f}_h(x)$ | `kde_estimate(data, x, h)` | バンド幅選択が重要 |
-| $P^n$ | `np.linalg.matrix_power(P, n)` | 定常分布へ収束 |
-| $W(t)$ | `np.cumsum(np.sqrt(dt)*Z)` | $Z \sim \mathcal{N}(0,1)$ |
-| $\sum (\Delta W)^2$ | `np.sum(np.diff(W)**2)` | $\to T$（二次変動） |
-| $dX = a \, dt + b \, dW$ | `X[i+1] = X[i] + a*dt + b*dW` | Euler-Maruyama |
-| $e^{-\theta t}$ | `np.exp(-theta*t)` | OU過程の平均回帰 |
-| $\frac{1}{nh}\sum K(\cdot)$ | `np.mean(kernel) / h` | KDE |
-| $\boldsymbol{\pi} P = \boldsymbol{\pi}$ | `eig(P.T)` で固有値1の固有ベクトル | 左固有ベクトル |
-
-### 5.14 Monte Carlo 信頼区間の構成
-
-**中心極限定理による区間推定**: 推定量 $\hat{\mu}_N = \frac{1}{N}\sum_{i=1}^N f(X_i)$ に対する 95% 信頼区間:
-
-$$
-\hat{\mu}_N \pm z_{0.025} \cdot \frac{\hat{\sigma}}{\sqrt{N}}, \quad \hat{\sigma}^2 = \frac{1}{N-1}\sum_{i=1}^N (f(X_i) - \hat{\mu}_N)^2
-$$
-
-- $\hat{\mu}_N$: 標本平均（MC推定値） — コードの `f_vals.mean()`
-- $z_{0.025} = 1.96$: 標準正規分布の97.5%点
-- $\hat{\sigma}^2$: 標本分散（不偏推定量、`ddof=1`）
-- $\hat{\sigma}/\sqrt{N}$: 標準誤差（SE）— `f_vals.std(ddof=1) / np.sqrt(N)`
-
-```python
-import numpy as np
-
-rng = np.random.default_rng(0)
-N = 10_000
-X = rng.standard_normal(N)
-# f(X) = exp(-X^2/2)/sqrt(2pi) を N(0,1) で積分 → integral phi^2 dx = 1/(2*sqrt(pi))
-f_vals = np.exp(-X**2 / 2) / np.sqrt(2 * np.pi)
-true_val = 1.0 / (2 * np.sqrt(np.pi))  # = 0.28209...
-
-mean_est = f_vals.mean()            # mu_hat
-se = f_vals.std(ddof=1) / np.sqrt(N)  # sigma_hat / sqrt(N)
-ci_lo = mean_est - 1.96 * se
-ci_hi = mean_est + 1.96 * se
-print(f"Estimate : {mean_est:.5f}")
-print(f"95% CI   : [{ci_lo:.5f}, {ci_hi:.5f}]")
-print(f"True val : {true_val:.5f}  in CI: {ci_lo <= true_val <= ci_hi}")
-# → 95回/100試行でCIが真値を含む
-```
-
-> **⚠️ Warning:** $f(X)^2$ が $q$ に関して可積分（$\mathbb{E}_q[f^2] < \infty$）でないとCLTが適用不可。例えば重要度サンプリングで $p/q$ が裾で爆発する場合。
+| $\int f \, d\mu$ | `f(x).mean()` | Monte Carlo 近似 |
+| $\frac{dP}{dQ}(x)$ | `(log_p - log_q).exp()` | 対数空間で計算（overflow 防止）|
+| $\hat{f}_h(x)$ | `Normal(X_i, h).log_prob(x).exp().mean()` | バンド幅選択が重要 |
+| $W(t)$ | `torch.randn(n,p).mul(dt.sqrt()).cumsum(0)` | $dW \sim \mathcal{N}(0, dt)$ |
+| $\sum(\Delta W)^2$ | `(dW**2).sum(dim=0)` | $\to T$（二次変動） |
+| $X_{n+1} = X_n + f\Delta t + g\sqrt{\Delta t}Z$ | `X + f(X)*dt + g(X)*dt.sqrt()*Z` | Euler-Maruyama |
+| $\nabla_x \log p(x)$ | `torch.autograd.grad(log_p.sum(), x)[0]` | `x.requires_grad_(True)` 必須 |
+| $\boldsymbol{\pi} P = \boldsymbol{\pi}$ | `torch.linalg.eig(P.T)` | 固有値 $1$ の左固有ベクトル |
+| $\min(1, \pi(x')/\pi(x))$ | `log(U) < log_pi(x') - log_pi(x)` | 対数比較で overflow 回避 |
+| $\text{ESS} = (\sum w)^2/\sum w^2$ | `1.0 / (w_norm**2).sum()` | $w$ は正規化済み重み |
 
 ---
 
@@ -1117,30 +1131,7 @@ graph TD
 
 FP方程式の定常解 $p_\infty(x) \propto \exp(-\theta x^2/\sigma^2)$ をシミュレーションで確認する:
 
-```python
-import numpy as np
-from scipy.stats import norm
-
-theta, sigma = 1.0, 1.0
-stat_var = sigma**2 / (2*theta)
-stat_std = np.sqrt(stat_var)
-
-# FP predicts: p_inf(x) = N(0, sigma^2/(2*theta))
-rng = np.random.default_rng(0)
-X = np.full(5000, 0.0)  # start at 0 (already stationary)
-dt = 0.01
-for _ in range(10_000):
-    X += -theta*X*dt + sigma*np.sqrt(dt)*rng.standard_normal(5000)
-
-# Chi-square goodness of fit test: bins
-bins = np.linspace(-4, 4, 20)
-counts, _ = np.histogram(X, bins=bins)
-expected = norm.cdf(bins[1:], 0, stat_std) - norm.cdf(bins[:-1], 0, stat_std)
-expected *= len(X)
-chi2 = float(((counts - expected)**2 / expected).sum())
-print(f"X(inf): mean={X.mean():.3f}  std={X.std():.3f}  stat_std={stat_std:.3f}")
-print(f"chi2 statistic={chi2:.1f}  (expected ~18 for 18 dof)")
-```
+PyTorch での検証: `torch.manual_seed(0)` から始め、`theta, sigma = 1.0, 1.0` のとき `torch.distributions.Normal(0.0, stat_std).log_prob(X)` の平均が最大化されることを確認できる。カイ二乗検定では `torch.histc(X, bins=18, min=-4.0, max=4.0)` で度数を取り、期待度数との差を計算する。$\chi^2$ 統計量が自由度 17 の $\chi^2$ 分布の 95 パーセンタイル（$pprox 27.6$）を下回れば、OU 定常分布 $\mathcal{N}(0,\, \sigma^2/2	heta)$ に従うという帰無仮説を棄却できない。定常分散 $\sigma^2/(2	heta) = 0.5$ が Fokker-Planck 方程式の解として厳密に導出されたことと一致する。
 
 > **Note:** **第30回への予告**: ここでは1次元・OU過程の場合のFokker-Planckを味見した。第30回「Diffusion Models II」では、多次元FPE の完全導出、reverse SDE の厳密証明（Girsanov変換）、そしてFPEからScore SDEの学習目的関数（denoising score matching）を導く。Fokker-Planckは拡散モデル理論の「裏ボス」だ。
 

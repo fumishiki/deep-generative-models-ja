@@ -20,8 +20,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 #### 4.1.1 統合訓練パイプライン設計
 
 ```rust
-use candle_core::{Tensor, Device};
-use candle_nn::{VarMap, AdamW, Optimizer};
+use tch::{Tensor, Device};
+use tch::nn;
 
 // 統合訓練パイプライン
 struct TrainingPipeline {
@@ -34,9 +34,9 @@ impl TrainingPipeline {
     fn train_epoch(
         &mut self,
         data_loader: &[(Tensor, Tensor)],
-        loss_fn: impl Fn(&Tensor, &Tensor) -> candle_core::Result<Tensor>,
+        loss_fn: impl Fn(&Tensor, &Tensor) -> Tensor,
         epoch: usize,
-    ) -> candle_core::Result<f64> {
+    ) -> anyhow::Result<f64> {
         let mut total_loss = 0.0_f64;
         let mut n_batches = 0usize;
 
@@ -62,7 +62,7 @@ impl TrainingPipeline {
         Ok(avg_loss)
     }
 
-    fn save_checkpoint(&self, epoch: usize, loss: f64) -> candle_core::Result<()> {
+    fn save_checkpoint(&self, epoch: usize, loss: f64) -> anyhow::Result<()> {
         let path = format!("{}/checkpoint_epoch_{}.safetensors", self.checkpoint_dir, epoch);
         println!("チェックポイント保存: {} (loss={:.4})", path, loss);
         Ok(())
@@ -671,8 +671,8 @@ end
 # deploy_e2e.sh
 
 # 1. Rust訓練パイプライン起動
-cd julia_training
-julia --project=. -e 'using TrainingPipeline; train_all_models()' &
+cd rust_training
+cargo run -- -e 'using TrainingPipeline; train_all_models()' &
 
 # 2. Rust推論サーバー起動
 cd ../rust_inference
@@ -936,23 +936,23 @@ graph LR
 #### 5.2.2 Rust統合実装
 
 ```rust
-use candle_core::{Tensor, Device, DType};
+use tch::{Tensor, Device, Kind};
 use uuid::Uuid;
 
-// SmolVLM2-256Mで画像記述生成 (candle-transformers経由)
+// SmolVLM2-256Mで画像記述生成 (ort経由)
 fn generate_image_description(user_query: &str) -> String {
     // SmolVLM2によるテキスト理解・記述生成
     format!("A detailed image of: {user_query}")
 }
 
 // aMUSEd-256で画像生成 (12ステップ, guidance_scale=3.0)
-fn generate_image(prompt: &str, device: &Device) -> candle_core::Result<Tensor> {
+fn generate_image(prompt: &str, device: Device) -> Tensor {
     let num_inference_steps = 12;  // Fast inference
     let guidance_scale = 3.0_f64;
     println!("Generating: steps={num_inference_steps}, guidance={guidance_scale}");
 
-    // candle-coreでaMUSEdの拡散ステップを実行
-    Tensor::zeros((3, 256, 256), DType::F32, device)
+    // tch-rsでaMUSEdの拡散ステップを実行
+    Tensor::zeros(&[3, 256, 256], (tch::Kind::Float, device))
 }
 
 // E2E統合: テキスト → 画像生成
@@ -962,10 +962,10 @@ struct TextToImageResult {
     request_id: Uuid,
 }
 
-fn text_to_image_e2e(user_query: &str, device: &Device) -> candle_core::Result<TextToImageResult> {
+fn text_to_image_e2e(user_query: &str, device: Device) -> anyhow::Result<TextToImageResult> {
     let prompt = generate_image_description(user_query);
     println!("Generated prompt: {prompt}");
-    let image = generate_image(&prompt, device)?;
+    let image = generate_image(&prompt, device);
     Ok(TextToImageResult {
         image,
         prompt,
@@ -974,9 +974,9 @@ fn text_to_image_e2e(user_query: &str, device: &Device) -> candle_core::Result<T
 }
 
 // 使用例
-fn main() -> candle_core::Result<()> {
+fn main() -> anyhow::Result<()> {
     let device = Device::Cpu;
-    let result = text_to_image_e2e("A cat sitting on a laptop", &device)?;
+    let result = text_to_image_e2e("A cat sitting on a laptop", device)?;
     println!("request_id: {}", result.request_id);
     Ok(())
 }
@@ -985,10 +985,10 @@ fn main() -> candle_core::Result<()> {
 #### 5.2.3 RAG拡張版
 
 ```rust
-use candle_core::Device;
+use tch::Device;
 use std::collections::HashMap;
 
-// 埋め込みベクトル生成 (実際はcandle-transformersのembeddingモデルを使用)
+// 埋め込みベクトル生成 (実際はort + tokenizersを使用)
 fn embed(_text: &str) -> Vec<f32> {
     vec![0.0_f32; 384]
 }
@@ -1007,7 +1007,7 @@ fn text_to_image_with_rag(
     user_query: &str,
     knowledge_base: &[&str],
     device: &Device,
-) -> candle_core::Result<HashMap<&'static str, String>> {
+) -> anyhow::Result<HashMap<&'static str, String>> {
     // Step 1: 関連知識をRetrieve
     let query_embedding = embed(user_query);
     let relevant_docs = faiss_search(&query_embedding, knowledge_base, 3);
@@ -1032,7 +1032,7 @@ fn text_to_image_with_rag(
 }
 
 // 使用例
-fn main() -> candle_core::Result<()> {
+fn main() -> anyhow::Result<()> {
     let device = Device::Cpu;
     let knowledge_base = [
         "Cats are domesticated mammals that are popular pets.",
@@ -1486,8 +1486,8 @@ graph TB
 **第19回 (Backprop)** → **第32回 (Production)**までの進化:
 
 ```rust
-use candle_core::{Tensor, Device};
-use candle_nn::{AdamW, Optimizer};
+use tch::{Tensor, Device};
+use tch::nn::{AdamW, Optimizer};
 
 // 第19回: 単純なBackpropagation
 fn backward_simple(y_pred: f64, y: f64) -> f64 {
@@ -1505,7 +1505,7 @@ fn backward_production(
     loss: &Tensor,
     optimizer: &mut AdamW,
     scaler: &mut GradScaler,
-) -> candle_core::Result<()> {
+) -> anyhow::Result<()> {
     // 1. Mixed Precision Forward (AMP): f16で計算済みのlossを受け取る
 
     // 2. Scaled Backward (勾配スケーリング)

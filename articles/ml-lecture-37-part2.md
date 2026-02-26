@@ -1920,12 +1920,12 @@ fn main() {
 - GPU対応（CUDA.jl統合）
 
 **関連パッケージ**:
-- **DiffEqCandle**: Neural ODEの訓練（Universal Differential Equations）
+- **diffeq + tch-rs**: Neural ODEの推論（Universal Differential Equations）
 - **Catalyst.jl**: 化学反応ネットワークのSDE
 - **ModelingToolkit.jl**: 記号的モデリング → 自動的にSDEを生成
 
 **Diffusion Modelとの統合**:
-- Candle（DLフレームワーク）でScore関数 $s_\theta(x, t)$ を訓練
+- PyTorch（訓練）+ tch-rs（推論）でScore関数 $s_\theta(x, t)$ を実装
 - ode_solversでReverse-time SDE/PF-ODEサンプリング
 - Burn（XLAコンパイル）でGPU高速化
 

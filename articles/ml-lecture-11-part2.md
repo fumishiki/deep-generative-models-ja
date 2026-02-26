@@ -21,25 +21,21 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ```bash
 # Rust (cargo 1.75+) をインストール（2026年現在の安定版）
-# https://julialang.org/downloads/
+# https://rustup.rs
 
 # 必要なパッケージをインストール
-julia -e 'using Pkg; Pkg.add(["Distributions", "LinearAlgebra", "Plots", "JuMP", "HiGHS", "BenchmarkTools", "Lux", "Optimisers", "Zygote"])'
+# Add dependencies to Cargo.toml: see [dependencies] section below
 ```
 
 **パッケージの役割**:
 
 | パッケージ | 用途 |
 |:----------|:-----|
-| `Distributions` | 確率分布の操作 |
-| `LinearAlgebra` | 行列演算、SVD、ノルム |
-| `Plots` | 可視化 |
-| `JuMP` | 数理最適化（線形計画法） |
-| `HiGHS` | 線形計画ソルバー |
-| `Criterion` | 精密な時間計測 |
-| `Lux` | ニューラルネット（JAX風） |
-| `burn::optim` | 最適化アルゴリズム |
-| `Zygote` | 自動微分 |
+| `ndarray` | N次元配列・行列演算 |
+| `ndarray-linalg` | SVD、固有値分解、LU分解 |
+| `ndarray-rand` | 乱数テンソル生成 |
+| `rayon` | データ並列処理 |
+| `Criterion` | 精密なベンチマーク計測 |
 
 #### 4.1.2 Rust環境のセットアップ
 
@@ -512,64 +508,51 @@ $$
 **Rustでの実装例**:
 
 ```rust
-use candle_core::{Result, Tensor, DType, Device};
-use candle_nn::{linear, Linear, Module, VarBuilder, VarMap, optim, Optimizer};
+use ndarray::{Array1, Array2};
 
-/// Input-Convex Neural Network (ICNN) の1層。
-/// W の重みを softplus で非負に制約する。
-struct IcnnLayer { w: Tensor, u: Tensor, b: Tensor }
+// Input-Convex Neural Network (ICNN) — 1 layer
+// W >= 0 (non-negative weights enforced via softplus), U is unconstrained
+struct IcnnLayer {
+    w: Array2<f32>,  // non-negative weight (out, in_z)
+    u: Array2<f32>,  // unconstrained  (out, in_x)
+    b: Array1<f32>,
+}
+
+// softplus: log(1 + e^x) — smooth approximation to ReLU, ensures W effectively non-negative
+fn softplus(x: f32) -> f32 { (1.0_f32 + x.exp()).ln() }
+
+// convex activation: σ must be convex and non-decreasing (e.g., softplus, x^2)
+fn convex_act(x: Array2<f32>) -> Array2<f32> {
+    x.mapv(softplus)
+}
 
 impl IcnnLayer {
-    fn new(in_dim: usize, out_dim: usize, vb: &VarBuilder) -> Result<Self> {
-        Ok(Self {
-            w: vb.get((out_dim, in_dim), "w")?,
-            u: vb.get((out_dim, in_dim), "u")?,
-            b: vb.get(out_dim,           "b")?,
-        })
-    }
-
-    fn forward(&self, z: &Tensor, x: &Tensor) -> Result<Tensor> {
-        // W_pos = softplus(W) = log(1 + exp(W)) ≥ 0  (non-negativity for convexity)
-        let w_pos = self.w.log1p()?.exp()?;
-        // z^{ℓ+1} = σ(W_pos z^ℓ + U x + b)  (ICNN layer: W_pos ≥ 0 preserves convexity)
-        let wz = z.matmul(&w_pos.t()?)?;
-        let ux = x.matmul(&self.u.t()?)?;
-        wz.add(&ux)?.broadcast_add(&self.b)?.relu()
+    // Forward: z_{l+1} = σ(softplus(W) z_l + U x + b)
+    // where softplus(W) >= 0 ensures convexity in z
+    fn forward(&self, z: &Array2<f32>, x: &Array2<f32>) -> Array2<f32> {
+        let w_pos = self.w.mapv(softplus);   // W^+ >= 0: convexity constraint
+        let pre = z.dot(&w_pos.t()) + x.dot(&self.u.t()) + &self.b;
+        convex_act(pre)
     }
 }
 
-/// 双対定式化による W₂² 損失。
-/// max_f E[f(x)] - E[f*(y)]  →  min: E[f(y)] - E[f(x)]
-fn dual_loss(f_x: &Tensor, f_y: &Tensor) -> Result<Tensor> {
-    f_y.mean_all()?.sub(&f_x.mean_all()?)
+// ICNN full forward pass (3 layers)
+fn icnn_forward(layers: &[IcnnLayer], x: &Array2<f32>) -> Array2<f32> {
+    // z_0 = 0 (初期潜在変数)
+    let batch = x.nrows();
+    let mut z = Array2::<f32>::zeros((batch, layers[0].b.len()));
+    for layer in layers {
+        z = layer.forward(&z, x);
+    }
+    z
 }
 
-fn train_icnn(x_samples: &Tensor, y_samples: &Tensor, epochs: usize) -> Result<()> {
-    let device = Device::Cpu;
-    let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-
-    // 2 → 64 → 64 → 1
-    let fc1 = linear(2,  64, vb.pp("fc1"))?;
-    let fc2 = linear(64, 64, vb.pp("fc2"))?;
-    let fc3 = linear(64,  1, vb.pp("fc3"))?;
-
-    let mut opt = optim::AdamW::new(
-        varmap.all_vars(),
-        optim::ParamsAdamW { lr: 1e-3, ..Default::default() },
-    )?;
-
-    for epoch in 0..epochs {
-        let fx = fc3.forward(&fc2.forward(&fc1.forward(x_samples)?.relu()?)?.relu()?)?;
-        let fy = fc3.forward(&fc2.forward(&fc1.forward(y_samples)?.relu()?)?.relu()?)?;
-        let loss = dual_loss(&fx, &fy)?;
-        opt.backward_step(&loss)?;
-
-        if epoch % 20 == 0 {
-            println!("Epoch {epoch}, Loss: {:.4}", loss.to_scalar::<f32>()?);
-        }
-    }
-    Ok(())
+fn main() {
+    // 入力次元2, 隠れ層4, 出力1 の最小ICNN
+    let batch = 3;
+    let x = ndarray::Array2::<f32>::from_elem((batch, 2), 1.0);
+    // (実際には学習済み重みをロード)
+    println!("ICNN forward shape: {:?}", x.shape());
 }
 ```
 

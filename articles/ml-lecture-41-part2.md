@@ -60,66 +60,61 @@ fn predictor(D, n_masks) {
 
 ```
 
-```rust
-// EMA update for target encoder: θ_target ← τ·θ_target + (1-τ)·θ_context
-fn update_ema(target: &Tensor, context: &Tensor, tau: f64) -> candle_core::Result<Tensor> {
-    // Exponential moving average — smoothly tracks the online encoder
-    target.affine(tau, 0.)?.add(&context.affine(1.0 - tau, 0.))
-}
-```
+```python
+# EMA update for target encoder: θ_target ← τ·θ_target + (1-τ)·θ_context
+@torch.no_grad()
+def update_ema(target: torch.Tensor, context: torch.Tensor, tau: float) -> torch.Tensor:
+    return tau * target + (1.0 - tau) * context
 
-```rust
-// JEPA訓練ループ
-fn train_jepa(
-    ctx_enc: &mut impl Module,
-    tgt_enc: &impl Module,   // EMA-updated target encoder (no gradient)
-    pred: &mut impl Module,
-    dataloader: &[Tensor],
-    epochs: usize,
-    tau: f64,
-) -> candle_core::Result<()> {
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        let mut n_batches = 0usize;
 
-        for x_batch in dataloader {
-            // Context: 左半分、Target: 右半分（簡易版）
-            let x_context = x_batch.narrow(2, 0, 32)?;   // [:, :, 0:32, :]
-            let x_target  = x_batch.narrow(2, 32, 32)?;  // [:, :, 32:64, :]
+# JEPA訓練ループ
+def train_jepa(
+    ctx_enc: torch.nn.Module,
+    tgt_enc: torch.nn.Module,   # EMA-updated target encoder (no gradient)
+    pred: torch.nn.Module,
+    dataloader: list[torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    tau: float,
+) -> None:
+    for epoch in range(epochs):
+        total_loss = 0.0
+        n_batches = 0
 
-            // Context encoding
-            let z_ctx = ctx_enc.forward(&x_context)?;
+        for x_batch in dataloader:
+            # Context: 左半分、Target: 右半分（簡易版）
+            x_context = x_batch[:, :, :32, :]    # [:, :, 0:32, :]
+            x_target  = x_batch[:, :, 32:64, :]  # [:, :, 32:64, :]
 
-            // Target encoding — stop gradient (EMA encoder, no backprop)
-            let z_tgt = tgt_enc.forward(&x_target)?.detach();
+            # Context encoding
+            z_ctx = ctx_enc(x_context)
 
-            // Predictor: concat context + mask tokens (zeros as placeholder)
-            let b = z_ctx.dim(0)?;
-            let mask_tokens = Tensor::zeros((b, 16), z_ctx.dtype(), z_ctx.device())?;
-            let pred_in = Tensor::cat(&[&z_ctx, &mask_tokens], 1)?;
-            let z_pred = pred.forward(&pred_in)?;
+            # Target encoding — stop gradient (EMA encoder, no backprop)
+            with torch.no_grad():
+                z_tgt = tgt_enc(x_target)
 
-            // L2 loss in latent space: ‖z_pred − z_tgt‖²
-            let loss = z_pred.sub(&z_tgt)?.sqr()?.mean_all()?;
+            # Predictor: concat context + mask tokens (zeros as placeholder)
+            b = z_ctx.shape[0]
+            mask_tokens = torch.zeros(b, 16, device=z_ctx.device, dtype=z_ctx.dtype)
+            pred_in = torch.cat([z_ctx, mask_tokens], dim=1)
+            z_pred = pred(pred_in)
 
-            // Backprop (ctx_enc + pred only; tgt_enc updated via EMA)
-            loss.backward()?;
-            // optimizer.step(); optimizer.zero_grad();
+            # L2 loss in latent space: ‖z_pred − z_tgt‖²
+            loss = (z_pred - z_tgt).pow(2).mean()
 
-            // EMA update: θ_tgt ← τ·θ_tgt + (1-τ)·θ_ctx
-            // for (t, c) in tgt_params.iter_mut().zip(ctx_params.iter()) {
-            //     *t = update_ema(t, c, tau)?;
-            // }
+            # Backprop (ctx_enc + pred only; tgt_enc updated via EMA)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
 
-            total_loss += loss.to_scalar::<f32>()?;
-            n_batches += 1;
-        }
+            # EMA update: θ_tgt ← τ·θ_tgt + (1-τ)·θ_ctx
+            for t_p, c_p in zip(tgt_enc.parameters(), ctx_enc.parameters()):
+                t_p.data = update_ema(t_p.data, c_p.data, tau)
 
-        println!("Epoch {} | Loss: {:.4}", epoch, total_loss / n_batches as f32);
-    }
+            total_loss += loss.item()
+            n_batches += 1
 
-    Ok(())
-}
+        print(f"Epoch {epoch} | Loss: {total_loss / n_batches:.4f}")
 ```
 
 ### 4.3 数式↔コード対応表
@@ -135,39 +130,36 @@ fn train_jepa(
 
 ### 4.4 簡易実験: MNIST JEPAデモ
 
-```rust
-// MNIST データロードとJEPAデモセットアップ
-// (hf-hub + candle を使ったパターン)
-use candle_core::{Tensor, Device, DType};
-use candle_nn::{AdamW, ParamsAdamW};
+```python
+# MNIST データロードとJEPAデモセットアップ
+# (torchvision + PyTorch を使ったパターン)
+import torch
+import torch.nn as nn
+import torchvision.transforms as T
+from torchvision.datasets import MNIST
+from torch.utils.data import DataLoader
 
-// MNISTロード: 28x28 grayscale → f32 tensors
-// train_x: [N, 1, 28, 28], train_y: [N]
-let (train_x, _train_y) = load_mnist(&Device::Cpu)?;
-let train_x = train_x.to_dtype(DType::F32)?
-    .affine(1.0 / 255.0, 0.0)?;  // normalize to [0, 1]
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+transform = T.Compose([T.Pad(18), T.ToTensor()])  # 28x28 → 64x64
+train_ds = MNIST("data", train=True, transform=transform, download=True)
+train_loader = DataLoader(train_ds, batch_size=128, shuffle=True)
 
-// 28x28 -> 64x64 にパディング（中央配置）
-let n = train_x.dim(0)?;
-let mut train_x_padded = Tensor::zeros((n, 1, 64, 64), DType::F32, &Device::Cpu)?;
-// train_x_padded[:, :, 18:46, 18:46] = train_x (0-indexed)
-// candle: pad_with_zeros or narrow + pad
+# モデル初期化
+d = 128
+ctx_enc    = context_encoder(d).to(device)
+tgt_enc    = context_encoder(d).to(device)  # Target Encoder (EMA copy)
+pred_model = predictor(d, 16).to(device)
 
-// モデル初期化
-let d = 128usize;
-let ctx_enc = context_encoder(d)?;
-let mut tgt_enc = context_encoder(d)?;  // Target Encoder (EMA copy)
-let pred_model = predictor(d, 16)?;
+# Target encoderをContext encoderで初期化 (clone weights)
+tgt_enc.load_state_dict(ctx_enc.state_dict())
 
-// Target encoderをContext encoderで初期化 (clone weights)
-// tgt_enc.load_state_dict(ctx_enc.state_dict())?;
+# Optimizers
+opt = torch.optim.AdamW(
+    list(ctx_enc.parameters()) + list(pred_model.parameters()), lr=1e-3
+)
 
-// Optimizers
-let opt_ctx  = AdamW::new(ctx_enc.all_vars(),  ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-let opt_pred = AdamW::new(pred_model.all_vars(), ParamsAdamW { lr: 1e-3, ..Default::default() })?;
-
-// 訓練 (5 epochs)
-train_jepa(&mut ctx_enc, &tgt_enc, &mut pred_model, &train_loader, 5, 0.996)?;
+# 訓練 (5 epochs)
+train_jepa(ctx_enc, tgt_enc, pred_model, train_loader, opt, epochs=5, tau=0.996)
 ```
 
 **出力例**:
@@ -275,7 +267,7 @@ struct MomentumConservingWM {
 }
 
 impl MomentumConservingWM {
-    fn forward(&self, state: &Tensor, dt: f32) -> candle_core::Result<Tensor> {
+    fn forward(&self, state: &Tensor, dt: f32) -> anyhow::Result<Tensor> {
         // state: [N, 6] — N particles, dims = [pos(3) | vel(3)]
         let n = state.dim(0)?;
         let pos = state.narrow(1, 0, 3)?;  // [N, 3]
@@ -304,7 +296,7 @@ impl MomentumConservingWM {
         Tensor::cat(&[&pos_new, &vel_new], 1)
     }
 
-    fn symmetrize_forces(&self, forces: &Tensor, _n: usize) -> candle_core::Result<Tensor> {
+    fn symmetrize_forces(&self, forces: &Tensor, _n: usize) -> anyhow::Result<Tensor> {
         // Placeholder: GNN edge model should enforce antisymmetry F_ij = -F_ji
         Ok(forces.clone())
     }
@@ -388,61 +380,63 @@ Cosmosは**Flow Matching**ベースの世界モデルで、以下の3つのコ�
 
 **Rust実装コンセプト**:
 
-```rust
-// Cosmos World Model: Text + Image + Action → Next Frame
-use candle_core::{Tensor, Result};
-use candle_nn::Module;
+```python
+# Cosmos World Model: Text + Image + Action → Next Frame
+import torch
+import torch.nn as nn
 
-struct CosmosWorldModel {
-    text_encoder:       Box<dyn Module>,  // CLIP ViT-L/14
-    image_encoder:      Box<dyn Module>,  // ResNet-50
-    flow_model:         Box<dyn Module>,  // Flow Matching predictor
-    action_conditioner: Box<dyn Module>,  // MLP
-}
 
-impl CosmosWorldModel {
-    fn forward(&self, x_t: &Tensor, a_t: &Tensor, cond_text: &Tensor) -> Result<Tensor> {
-        // Encode all conditioning signals
-        let c_text   = self.text_encoder.forward(cond_text)?;
-        let c_img    = self.image_encoder.forward(x_t)?;
-        let c_action = self.action_conditioner.forward(a_t)?;
+class CosmosWorldModel(nn.Module):
+    def __init__(self, text_encoder: nn.Module, image_encoder: nn.Module,
+                 flow_model: nn.Module, action_conditioner: nn.Module) -> None:
+        super().__init__()
+        self.text_encoder       = text_encoder
+        self.image_encoder      = image_encoder
+        self.flow_model         = flow_model
+        self.action_conditioner = action_conditioner
 
-        // Concatenate conditioning: [c_text; c_img; c_action]
-        let c = Tensor::cat(&[&c_text, &c_img, &c_action], 1)?;
+    def forward(self, x_t: torch.Tensor, a_t: torch.Tensor,
+                cond_text: torch.Tensor) -> torch.Tensor:
+        # Encode all conditioning signals
+        c_text   = self.text_encoder(cond_text)
+        c_img    = self.image_encoder(x_t)
+        c_action = self.action_conditioner(a_t)
 
-        // Flow matching: predict velocity field v_θ(x_t, c)
-        let v_t = self.flow_model.forward(&Tensor::cat(&[x_t, &c], 1)?)?;
+        # Concatenate conditioning: [c_text; c_img; c_action]
+        c = torch.cat([c_text, c_img, c_action], dim=1)
 
-        // Euler step: x_{t+1} ≈ x_t + v_t
-        x_t.add(&v_t)
-    }
-}
+        # Flow matching: predict velocity field v_θ(x_t, c)
+        v_t = self.flow_model(torch.cat([x_t, c], dim=1))
 
-// Training loop (flow-matching objective)
-fn train_cosmos(model: &CosmosWorldModel, data: &[(Tensor, Tensor, Tensor, Tensor)],
-               epochs: usize) -> Result<()> {
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for (x_t, a_t, x_next, text) in data {
-            // Interpolate between x_t and x_next at random time t ∈ [0,1]
-            let t: f32 = rand::random();
-            let x_interp = x_t.affine(1.0 - t as f64, 0.)?
-                              .add(&x_next.affine(t as f64, 0.)?)?;
-            let v_true = x_next.sub(x_t)?;  // Target velocity: u_t = x_1 − x_0
+        # Euler step: x_{t+1} ≈ x_t + v_t
+        return x_t + v_t
 
-            // Flow matching loss: ‖v_θ(x_t, c) − u_t‖²
-            let v_pred = model.forward(&x_interp, a_t, text)?;
-            let loss = v_pred.sub(&v_true)?.sqr()?.mean_all()?;
 
-            loss.backward()?;
-            // optimizer.step(); optimizer.zero_grad();
+# Training loop (flow-matching objective)
+def train_cosmos(
+    model: CosmosWorldModel,
+    data: list[tuple[torch.Tensor, ...]],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+) -> None:
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for x_t, a_t, x_next, text in data:
+            # Interpolate between x_t and x_next at random time t ∈ [0,1]
+            t = torch.rand(1).item()
+            x_interp = (1.0 - t) * x_t + t * x_next
+            v_true   = x_next - x_t  # Target velocity: u_t = x_1 − x_0
 
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        println!("Epoch {}: Loss = {:.4}", epoch, total_loss / data.len() as f32);
-    }
-    Ok(())
-}
+            # Flow matching loss: ‖v_θ(x_t, c) − u_t‖²
+            v_pred = model(x_interp, a_t, text)
+            loss   = (v_pred - v_true).pow(2).mean()
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        print(f"Epoch {epoch}: Loss = {total_loss / len(data):.4f}")
 ```
 
 #### 6.2.2 DeepMind Genie 3 — インタラクティブ環境生成
@@ -518,54 +512,59 @@ fn train_cosmos(model: &CosmosWorldModel, data: &[(Tensor, Tensor, Tensor, Tenso
 
 **Rust実装コンセプト — Action Discovery**:
 
-```rust
-// Genie Action Discovery: unsupervised latent action extraction from video
-use candle_core::{Tensor, Result};
-use candle_nn::Module;
+```python
+# Genie Action Discovery: unsupervised latent action extraction from video
+import torch
+import torch.nn as nn
 
-struct GenieActionDiscovery {
-    encoder:          Box<dyn Module>,  // z_t = Enc(x_t)
-    action_quantizer: Box<dyn Module>,  // VQ-VAE: continuous → discrete actions
-    dynamics:         Box<dyn Module>,  // z_{t+1} = f(z_t, a_t)
-}
 
-impl GenieActionDiscovery {
-    fn forward(&self, x_t: &Tensor, x_next: &Tensor) -> Result<(Tensor, Tensor)> {
-        // Encode consecutive frames
-        let z_t    = self.encoder.forward(x_t)?;
-        let z_next = self.encoder.forward(x_next)?;
+class GenieActionDiscovery(nn.Module):
+    def __init__(self, encoder: nn.Module, action_quantizer: nn.Module,
+                 dynamics: nn.Module) -> None:
+        super().__init__()
+        self.encoder          = encoder           # z_t = Enc(x_t)
+        self.action_quantizer = action_quantizer  # VQ-VAE: continuous → discrete actions
+        self.dynamics         = dynamics          # z_{t+1} = f(z_t, a_t)
 
-        // Extract latent action from state transition: Δz = z_{t+1} − z_t
-        let dz = z_next.sub(&z_t)?;
-        let a_continuous = self.action_quantizer.forward(&dz)?;
+    def forward(self, x_t: torch.Tensor,
+                x_next: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Encode consecutive frames
+        z_t    = self.encoder(x_t)
+        z_next = self.encoder(x_next)
 
-        // Quantize to discrete action index
-        let a_discrete = a_continuous.argmax(1)?;  // [Batch] → action index
+        # Extract latent action from state transition: Δz = z_{t+1} − z_t
+        dz           = z_next - z_t
+        a_continuous = self.action_quantizer(dz)
 
-        // Predict next latent: z_{t+1} = f(z_t, a_t)
-        let z_pred = self.dynamics.forward(&Tensor::cat(&[&z_t, &a_continuous], 1)?)?;
+        # Quantize to discrete action index
+        a_discrete = a_continuous.argmax(dim=1)  # [Batch] → action index
 
-        Ok((z_pred, a_discrete))
-    }
-}
+        # Predict next latent: z_{t+1} = f(z_t, a_t)
+        z_pred = self.dynamics(torch.cat([z_t, a_continuous], dim=1))
 
-// Training: prediction loss + entropy regularization (encourage diverse actions)
-fn train_action_discovery(model: &GenieActionDiscovery, video_data: &[(Tensor, Tensor)],
-                          epochs: usize) -> Result<()> {
-    for epoch in 0..epochs {
-        for (x_t, x_next) in video_data {
-            let (z_pred, _) = model.forward(x_t, x_next)?;
-            let z_true = model.encoder.forward(x_next)?.detach();
+        return z_pred, a_discrete
 
-            // ‖z_pred − z_true‖² (+ entropy term β·H[a] to maximize action diversity)
-            let loss = z_pred.sub(&z_true)?.sqr()?.mean_all()?;
-            loss.backward()?;
-            // optimizer.step(); optimizer.zero_grad();
-        }
-        println!("Epoch {} completed", epoch);
-    }
-    Ok(())
-}
+
+# Training: prediction loss + entropy regularization (encourage diverse actions)
+def train_action_discovery(
+    model: GenieActionDiscovery,
+    video_data: list[tuple[torch.Tensor, torch.Tensor]],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+) -> None:
+    for epoch in range(epochs):
+        for x_t, x_next in video_data:
+            z_pred, _ = model(x_t, x_next)
+            with torch.no_grad():
+                z_true = model.encoder(x_next)
+
+            # ‖z_pred − z_true‖² (+ entropy term β·H[a] to maximize action diversity)
+            loss = (z_pred - z_true).pow(2).mean()
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch {epoch} completed")
 ```
 
 #### 6.2.3 Physics-Informed World Models (2025)
@@ -607,8 +606,8 @@ Update: v_i^{new} = v_i + Σ_j F_{ij} / m_i
 
 ```rust
 // Physics-Informed GNN: pairwise force computation with Newton's 3rd law
-use candle_core::{Tensor, DType, Device, Result};
-use candle_nn::Module;
+use anyhow::Result;
+use tch::{Tensor, Device, Kind, nn};
 
 struct PhysicsInformedGNN {
     edge_mlp: Box<dyn Module>,  // Computes pairwise force F_ij
@@ -698,68 +697,71 @@ $$
 
 **Rust実装**:
 
-```rust
-// Hamiltonian Neural Network: energy-conserving dynamics via H(q,p) = MLP([q;p])
-use candle_core::{Tensor, Result};
-use candle_nn::Module;
+```python
+# Hamiltonian Neural Network: energy-conserving dynamics via H(q,p) = MLP([q;p])
+import torch
+import torch.nn as nn
 
-struct HamiltonianNN {
-    mlp: Box<dyn Module>,  // Learns H(q, p) — scalar total energy
-}
 
-impl HamiltonianNN {
-    // Compute Hamiltonian H(q, p) and its gradients via autograd
-    fn hamiltonian(&self, qp: &Tensor) -> Result<Tensor> {
-        self.mlp.forward(qp)  // → [B, 1] scalar energy
-    }
+class HamiltonianNN(nn.Module):
+    def __init__(self, mlp: nn.Module) -> None:
+        super().__init__()
+        self.mlp = mlp  # Learns H(q, p) — scalar total energy
 
-    // Hamiltonian dynamics: dq/dt = ∂H/∂p, dp/dt = −∂H/∂q
-    fn dynamics(&self, qp: &Tensor) -> Result<Tensor> {
-        let h = self.hamiltonian(qp)?;
-        // ∇H w.r.t. [q; p] via autograd
-        let grad_h = h.sum_all()?.backward()?;  // candle backprop
-        let dh_dqp = qp.grad().unwrap();         // ∂H/∂[q;p]
+    def hamiltonian(self, qp: torch.Tensor) -> torch.Tensor:
+        return self.mlp(qp)  # → [B, 1] scalar energy
 
-        let d = qp.dim(1)? / 2;
-        let dq = dh_dqp.narrow(1, d, d)?;    //  ∂H/∂p
-        let dp = dh_dqp.narrow(1, 0, d)?.neg()?; // -∂H/∂q
+    # Hamiltonian dynamics: dq/dt = ∂H/∂p, dp/dt = −∂H/∂q
+    def dynamics(self, qp: torch.Tensor) -> torch.Tensor:
+        qp = qp.requires_grad_(True)
+        h  = self.hamiltonian(qp).sum()
+        # ∇H w.r.t. [q; p] via autograd
+        grad_h = torch.autograd.grad(h, qp, create_graph=True)[0]  # ∂H/∂[q;p]
 
-        Tensor::cat(&[&dq, &dp], 1)  // [dq; dp]
-    }
-}
+        d  = qp.shape[1] // 2
+        dq = grad_h[:, d:]   #  ∂H/∂p
+        dp = -grad_h[:, :d]  # -∂H/∂q
 
-// Simulate Hamiltonian trajectory with Euler integration (use Verlet for accuracy)
-fn simulate_hamiltonian(model: &HamiltonianNN, qp0: &Tensor, steps: usize, dt: f32) -> Result<Vec<Tensor>> {
-    let mut qp = qp0.clone();
-    let mut trajectory = vec![qp.clone()];
-    for _ in 0..steps {
-        let dqp = model.dynamics(&qp)?;
-        qp = qp.add(&dqp.affine(dt as f64, 0.)?)?;
-        trajectory.push(qp.clone());
-    }
-    Ok(trajectory)
-}
+        return torch.cat([dq, dp], dim=1)  # [dq; dp]
 
-// Training: minimize trajectory prediction error
-fn train_hnn(model: &HamiltonianNN, data: &[(Tensor, Tensor, f32)], epochs: usize) -> Result<()> {
-    // data: [(qp_0, qp_1, Δt), ...]
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for (qp0, qp1, dt) in data {
-            // Predict one step
-            let traj = simulate_hamiltonian(model, qp0, 1, *dt)?;
-            let qp_pred = &traj[1];
 
-            // Loss: ‖qp_pred − qp_true‖²
-            let loss = qp_pred.sub(qp1)?.sqr()?.mean_all()?;
-            loss.backward()?;
-            // optimizer.step(); optimizer.zero_grad();
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        println!("Epoch {}: Loss = {:.4}", epoch, total_loss / data.len() as f32);
-    }
-    Ok(())
-}
+# Simulate Hamiltonian trajectory with Euler integration (use Verlet for accuracy)
+def simulate_hamiltonian(
+    model: HamiltonianNN, qp0: torch.Tensor, steps: int, dt: float
+) -> list[torch.Tensor]:
+    qp = qp0.clone()
+    trajectory = [qp.clone()]
+    for _ in range(steps):
+        with torch.no_grad():
+            dqp = model.dynamics(qp)
+        qp = qp + dt * dqp
+        trajectory.append(qp.clone())
+    return trajectory
+
+
+# Training: minimize trajectory prediction error
+def train_hnn(
+    model: HamiltonianNN,
+    data: list[tuple[torch.Tensor, torch.Tensor, float]],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+) -> None:
+    # data: [(qp_0, qp_1, Δt), ...]
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for qp0, qp1, dt in data:
+            # Predict one step
+            traj    = simulate_hamiltonian(model, qp0, 1, dt)
+            qp_pred = traj[1]
+
+            # Loss: ‖qp_pred − qp_true‖²
+            loss = (qp_pred - qp1).pow(2).mean()
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch}: Loss = {total_loss / len(data):.4f}")
 ```
 
 **手法3: PINNs (Physics-Informed Neural Networks) — 微分方程式制約**
@@ -794,8 +796,8 @@ $$
 
 ```rust
 // Physics-Informed Neural Network: u(x,t) = MLP([x;t]) with PDE constraint
-use candle_core::{Tensor, Result};
-use candle_nn::Module;
+use anyhow::Result;
+use tch::{Tensor, nn};
 
 struct PINN {
     net: Box<dyn Module>,  // u(x, t) approximator
@@ -832,14 +834,14 @@ fn train_pinn(model: &PINN, data_pts: &[(Tensor, Tensor, Tensor)],
               colloc_pts: &[(Tensor, Tensor)], epochs: usize, lambda: f64) -> Result<()> {
     for epoch in 0..epochs {
         // Data loss: (u_pred − u_true)²
-        let mut loss_data = Tensor::zeros((), candle_core::DType::F32, &candle_core::Device::Cpu)?;
+        let mut loss_data = Tensor::zeros((), tch::Kind::Float, &tch::Device::Cpu)?;
         for (x, t, u_true) in data_pts {
             let u_pred = model.forward(x, t)?;
             loss_data = loss_data.add(&u_pred.sub(u_true)?.sqr()?)?;
         }
 
         // PDE loss: residual at collocation points
-        let mut loss_pde = Tensor::zeros((), candle_core::DType::F32, &candle_core::Device::Cpu)?;
+        let mut loss_pde = Tensor::zeros((), tch::Kind::Float, &tch::Device::Cpu)?;
         for (x, t) in colloc_pts {
             let res = model.pde_residual(x, t)?;
             loss_pde = loss_pde.add(&res.sqr()?)?;
@@ -1005,7 +1007,7 @@ let loss = loss_data + lambda * loss_pde;
 ```rust
 // ✅ Symplectic integrator (Störmer-Verlet): preserves energy better than Euler
 fn verlet_step(q: &Tensor, p: &Tensor, h_theta: &impl Module, dt: f32)
-    -> candle_core::Result<(Tensor, Tensor)>
+    -> anyhow::Result<(Tensor, Tensor)>
 {
     // Half step momentum: p_{1/2} = p - (dt/2)·∂H/∂q
     let qp = Tensor::cat(&[q, p], 0)?;
@@ -1065,7 +1067,7 @@ fn enforce_newtons_third_law(forces: &mut Vec<Vec<[f32; 3]>>) {
 **対策**:
 ```rust
 // ✅ Dynamic λ: 両方のlossを同じスケールに (stop gradient prevents λ collapse)
-fn balance_losses(loss_text: &Tensor, loss_image: &Tensor) -> candle_core::Result<Tensor> {
+fn balance_losses(loss_text: &Tensor, loss_image: &Tensor) -> anyhow::Result<Tensor> {
     let scale_text  = loss_text.detach();   // 勾配停止
     let scale_image = loss_image.detach();
     let lambda_dynamic = scale_text.div(&scale_image.affine(1.0, 1e-8)?)?;
@@ -1087,12 +1089,12 @@ struct TransfusionWithModalityPE {
 }
 
 fn add_modality_pe(embeddings: &Tensor, modality: &str, model: &TransfusionWithModalityPE)
-    -> candle_core::Result<Tensor>
+    -> anyhow::Result<Tensor>
 {
     match modality {
         "text"  => embeddings.add(&model.text_pos_embed)?.add(&model.modality_token),
         "image" => embeddings.add(&model.image_pos_embed)?.sub(&model.modality_token),
-        _ => Err(candle_core::Error::Msg("Unknown modality".into()))
+        _ => Err(anyhow::anyhow!("Unknown modality".into()))
     }
 }
 ```
@@ -1108,8 +1110,8 @@ fn add_modality_pe(embeddings: &Tensor, modality: &str, model: &TransfusionWithM
 ```rust
 // Gradient checkpointing: recompute activations on backward (save memory)
 fn forward_with_checkpointing(encoder: &impl Module, predictor: &impl Module,
-                               x: &Tensor) -> candle_core::Result<Tensor> {
-    // In candle, use checkpointing via custom backward hooks or segment by segment
+                               x: &Tensor) -> anyhow::Result<Tensor> {
+    // In tch-rs, use tch::no_grad() + manual segment processing
     let h = encoder.forward(x)?;   // Activations NOT cached (recomputed on backward)
     predictor.forward(&h)
 }
@@ -1135,7 +1137,7 @@ loss_scaled.backward()?;
 ```rust
 // ✅ 全フレームを一度に処理せず、時間方向に分割 (avoid OOM for long videos)
 fn chunked_video_encoding(encoder: &impl Module, video: &Tensor, chunk_size: usize)
-    -> candle_core::Result<Tensor>
+    -> anyhow::Result<Tensor>
 {
     let t_total = video.dim(1)?;  // [B, T, C, H, W]
     let mut chunks: Vec<Tensor> = Vec::new();
@@ -1277,8 +1279,8 @@ assert_eq!(mask.iter().filter(|&&v| v).count(), 14*14 - 4*16);  // 196 - 64 = 13
 **課題1.2**: EMA更新関数のテスト
 
 ```rust
-fn test_ema_update() -> candle_core::Result<()> {
-    let dev = &candle_core::Device::Cpu;
+fn test_ema_update() -> anyhow::Result<()> {
+    let dev = &tch::Device::Cpu;
     // Initialize two parameter sets
     let theta_context = Tensor::randn(0f32, 1f32, 100, dev)?;
     let mut theta_target = theta_context.clone();
@@ -1378,35 +1380,48 @@ fn generate_pendulum_data(n_samples: usize, dt: f32, steps: usize) -> Vec<([f32;
 - λバランスパラメータを動的調整
 - 100 epoch訓練後、text perplexityとimage FIDを評価
 
-```rust
-// Skeleton: Transfusionのマルチモーダル訓練 (AR text + Diffusion image)
-fn train_transfusion_multimodal(model: &mut impl Module, text_loader: &[Tensor],
-                                 image_loader: &[Tensor], epochs: usize, lr: f64) -> candle_core::Result<()> {
-    for epoch in 0..epochs {
-        let text_img_pairs = text_loader.iter().zip(image_loader.iter());
-        for (text_batch, image_batch) in text_img_pairs {
-            // ランダムにmodality選択 (50% text, 50% image)
-            let loss = if rand::random::<f32>() < 0.5 {
-                // Text: autoregressive next-token prediction
-                // model.forward(text_batch)?  → cross_entropy loss
-                todo!("text AR loss")
-            } else {
-                // Image: diffusion denoising loss
-                // model.forward(image_batch, t)? → MSE noise prediction
-                todo!("image diffusion loss")
-            };
+```python
+# Skeleton: Transfusionのマルチモーダル訓練 (AR text + Diffusion image)
+import random
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-            loss.backward()?;
-            // optimizer.step(); optimizer.zero_grad();
-        }
 
-        // Evaluate
-        // let text_ppl = evaluate_text_perplexity(model, &text_val)?;
-        // let image_fid = evaluate_image_fid(model, &image_val)?;
-        println!("Epoch {}: evaluation pending", epoch);
-    }
-    Ok(())
-}
+def train_transfusion_multimodal(
+    model: nn.Module,
+    text_loader: list[torch.Tensor],
+    image_loader: list[torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    lr: float,
+) -> None:
+    for epoch in range(epochs):
+        for text_batch, image_batch in zip(text_loader, image_loader):
+            # ランダムにmodality選択 (50% text, 50% image)
+            if random.random() < 0.5:
+                # Text: autoregressive next-token prediction
+                logits = model(text_batch)           # → [B, T, vocab_size]
+                t = logits.shape[1]
+                loss = F.cross_entropy(
+                    logits[:, :t-1].reshape(-1, logits.shape[-1]),
+                    text_batch[:, 1:t].reshape(-1),
+                )
+            else:
+                # Image: diffusion denoising loss
+                t_val  = torch.rand(image_batch.shape[0], device=image_batch.device)
+                noise  = torch.randn_like(image_batch)
+                x_t    = (1 - t_val[:, None, None, None]) * image_batch + t_val[:, None, None, None] * noise
+                loss   = (model(x_t, t_val) - noise).pow(2).mean()
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        # Evaluate
+        # text_ppl = evaluate_text_perplexity(model, text_val)
+        # image_fid = evaluate_image_fid(model, image_val)
+        print(f"Epoch {epoch}: evaluation pending")
 ```
 
 **課題3.2**: Physics-Informed World Model で2体問題
@@ -1430,7 +1445,7 @@ struct TwoBodyGNN {
 
 impl TwoBodyGNN {
     fn forward(&self, r1: &Tensor, r2: &Tensor, v1: &Tensor, v2: &Tensor,
-               m1: f32, m2: f32, dt: f32) -> candle_core::Result<(Tensor, Tensor, Tensor, Tensor)> {
+               m1: f32, m2: f32, dt: f32) -> anyhow::Result<(Tensor, Tensor, Tensor, Tensor)> {
         // Compute gravitational force: F_12 = −G·m1·m2 / |r12|³ · r12
         let r12 = r1.sub(r2)?;
         let dist = r12.sqr()?.sum_all()?.sqrt()?

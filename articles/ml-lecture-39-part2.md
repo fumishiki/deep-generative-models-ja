@@ -17,22 +17,15 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ### 環境構築とライブラリ
 
-**Rust環境** (🦀訓練):
-```rust
-// Cargo.toml dependencies for training:
-// candle-core = "0.7"
-// candle-nn = "0.7"
-// candle-datasets = "0.7"  // MNIST等
-// image = "0.25"           // 画像処理
-// safetensors = "0.4"      // モデル保存
-// anyhow = "1"
+**Python環境** (🐍訓練):
+```bash
+pip install torch torchvision safetensors
 ```
 
 **Rust環境** (🦀推論):
 ```toml
 [dependencies]
-candle-core = "0.7"
-candle-nn = "0.7"
+tch = "0.17"
 safetensors = "0.4"
 ```
 
@@ -105,7 +98,7 @@ $$
 let scale = (d_k as f64).sqrt() as f32;
 let scores = q.matmul(&k.t()?)?.mul(1.0 / scale)?;
 // attn:   [N_q, N_k]
-let attn = candle_nn::ops::softmax(&scores, 1)?;
+let attn = scores.softmax(-1, tch::Kind::Float);
 // out:    [N_q, d_v]
 let out  = attn.matmul(&v)?;
 ```
@@ -140,268 +133,147 @@ let alpha_cumprod_rescaled: Vec<f32> = alpha_cumprod.iter().map(|&a| a / last).c
 
 **ステップ1: VAE定義**
 
-```rust
-use candle_core::{Result, Tensor, Device};
-use candle_nn::{Conv2d, ConvTranspose2d, VarBuilder, Module, Optimizer};
+```python
+import torch
+import torch.nn as nn
 
-// Encoder: x [B,C,H,W] → z [B,latent_ch,h,w]
-struct Encoder {
-    conv1: Conv2d,       // stride 1, /1
-    conv2: Conv2d,       // stride 2, /2
-    conv3: Conv2d,       // stride 2, /4
-    conv4: Conv2d,       // stride 2, /8
-    conv5: Conv2d,       // latent projection
-}
+class Encoder(nn.Module):
+    def __init__(self, in_ch: int, latent_ch: int, base_ch: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch,       base_ch,     3, padding=1)
+        self.conv2 = nn.Conv2d(base_ch,     base_ch*2,   4, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(base_ch*2,   base_ch*4,   4, stride=2, padding=1)
+        self.conv4 = nn.Conv2d(base_ch*4,   base_ch*8,   4, stride=2, padding=1)
+        self.conv5 = nn.Conv2d(base_ch*8,   latent_ch,   3, padding=1)
 
-impl Encoder {
-    fn new(in_ch: usize, latent_ch: usize, base_ch: usize, vb: VarBuilder) -> Result<Self> {
-        let cfg1  = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        let cfg2  = candle_nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            conv1: candle_nn::conv2d(in_ch,          base_ch,      3, cfg1, vb.pp("conv1"))?,
-            conv2: candle_nn::conv2d(base_ch,        base_ch * 2,  4, cfg2, vb.pp("conv2"))?,
-            conv3: candle_nn::conv2d(base_ch * 2,    base_ch * 4,  4, cfg2, vb.pp("conv3"))?,
-            conv4: candle_nn::conv2d(base_ch * 4,    base_ch * 8,  4, cfg2, vb.pp("conv4"))?,
-            conv5: candle_nn::conv2d(base_ch * 8,    latent_ch,    3, cfg1, vb.pp("conv5"))?,
-        })
-    }
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.conv1.forward(x)?.relu()?;
-        let x = self.conv2.forward(&x)?.relu()?;
-        let x = self.conv3.forward(&x)?.relu()?;
-        let x = self.conv4.forward(&x)?.relu()?;
-        self.conv5.forward(&x)                          // z (no activation)
-    }
-}
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x).relu()
+        x = self.conv2(x).relu()
+        x = self.conv3(x).relu()
+        x = self.conv4(x).relu()
+        return self.conv5(x)   # z, no activation
 
-// Decoder (mirror of encoder)
-struct Decoder {
-    conv1:  Conv2d,
-    deconv1: ConvTranspose2d,
-    deconv2: ConvTranspose2d,
-    deconv3: ConvTranspose2d,
-    conv2:  Conv2d,
-}
+class Decoder(nn.Module):
+    def __init__(self, latent_ch: int, out_ch: int, base_ch: int):
+        super().__init__()
+        self.conv1   = nn.Conv2d(latent_ch,   base_ch*8,   3, padding=1)
+        self.deconv1 = nn.ConvTranspose2d(base_ch*8, base_ch*4, 4, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(base_ch*4, base_ch*2, 4, stride=2, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(base_ch*2, base_ch,   4, stride=2, padding=1)
+        self.conv2   = nn.Conv2d(base_ch,     out_ch,      3, padding=1)
 
-impl Decoder {
-    fn new(latent_ch: usize, out_ch: usize, base_ch: usize, vb: VarBuilder) -> Result<Self> {
-        let cfg1  = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        let dcfg  = candle_nn::ConvTranspose2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            conv1:   candle_nn::conv2d(latent_ch,      base_ch * 8, 3, cfg1, vb.pp("conv1"))?,
-            deconv1: candle_nn::conv_transpose2d(base_ch * 8, base_ch * 4, 4, dcfg, vb.pp("deconv1"))?,
-            deconv2: candle_nn::conv_transpose2d(base_ch * 4, base_ch * 2, 4, dcfg, vb.pp("deconv2"))?,
-            deconv3: candle_nn::conv_transpose2d(base_ch * 2, base_ch,     4, dcfg, vb.pp("deconv3"))?,
-            conv2:   candle_nn::conv2d(base_ch,        out_ch,      3, cfg1, vb.pp("conv2"))?,
-        })
-    }
-    fn forward(&self, z: &Tensor) -> Result<Tensor> {
-        let x = self.conv1.forward(z)?.relu()?;
-        let x = self.deconv1.forward(&x)?.relu()?;
-        let x = self.deconv2.forward(&x)?.relu()?;
-        let x = self.deconv3.forward(&x)?.relu()?;
-        self.conv2.forward(&x)?.tanh()
-    }
-}
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(z).relu()
+        x = self.deconv1(x).relu()
+        x = self.deconv2(x).relu()
+        x = self.deconv3(x).relu()
+        return self.conv2(x).tanh()
 
-// VAE training loop (sketch — uses candle-nn AdamW)
-fn train_vae(
-    encoder: &Encoder,
-    decoder: &Decoder,
-    dataloader: &[Tensor],
-    epochs: usize,
-    beta: f32,
-    mut opt: impl Optimizer,
-) -> Result<()> {
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for x in dataloader {
-            // Forward
-            let z       = encoder.forward(x)?;
-            let x_recon = decoder.forward(&z)?;
-
-            // Reconstruction + simplified KL to N(0,I)
-            let recon_loss = x_recon.sub(x)?.sqr()?.mean_all()?;
-            let kl_loss    = z.sqr()?.mean_all()?.affine(0.5, 0.0)?;
-            let loss       = (recon_loss + (kl_loss * beta as f64)?)?;
-
-            opt.backward_step(&loss)?;
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        println!("Epoch {}: Loss = {:.4}", epoch + 1, total_loss / dataloader.len() as f32);
-    }
-    Ok(())
-}
+def train_vae(
+    encoder: Encoder,
+    decoder: Decoder,
+    dataloader: torch.utils.data.DataLoader,
+    epochs: int,
+    beta: float,
+    opt: torch.optim.Optimizer,
+) -> None:
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for x in dataloader:
+            z       = encoder(x)
+            x_recon = decoder(z)
+            recon_loss = (x_recon - x).pow(2).mean()
+            kl_loss    = z.pow(2).mean() * 0.5
+            loss       = recon_loss + beta * kl_loss
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch+1}: Loss = {total_loss / len(dataloader):.4f}")
 ```
 
 **ステップ2: U-Net定義 (Simplified)**
 
-```rust
-use candle_core::{Result, Tensor};
-use candle_nn::{Conv2d, ConvTranspose2d, Linear, VarBuilder, Module};
+```python
+class ResBlock(nn.Module):
+    def __init__(self, ch: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(ch, ch, 3, padding=1)
+        self.conv2 = nn.Conv2d(ch, ch, 3, padding=1)
 
-// ResBlock with residual connection
-struct ResBlock {
-    conv1: Conv2d,
-    conv2: Conv2d,
-}
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.conv1(x).relu()
+        h = self.conv2(h)
+        return (h + x).relu()    # residual
 
-impl ResBlock {
-    fn new(ch: usize, vb: VarBuilder) -> Result<Self> {
-        let cfg = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        Ok(Self {
-            conv1: candle_nn::conv2d(ch, ch, 3, cfg, vb.pp("conv1"))?,
-            conv2: candle_nn::conv2d(ch, ch, 3, cfg, vb.pp("conv2"))?,
-        })
-    }
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let h = self.conv1.forward(x)?.relu()?;
-        let h = self.conv2.forward(&h)?;
-        (h + x)?.relu()    // residual
-    }
-}
+class UNet(nn.Module):
+    def __init__(self, latent_ch: int, base_ch: int, time_emb_dim: int):
+        super().__init__()
+        self.time_mlp = nn.Sequential(
+            nn.Linear(time_emb_dim, time_emb_dim * 4),
+            nn.SiLU(),
+            nn.Linear(time_emb_dim * 4, time_emb_dim * 4),
+        )
+        self.in_proj   = nn.Conv2d(latent_ch, base_ch,    3, padding=1)
+        self.res_down1 = ResBlock(base_ch)
+        self.down_conv = nn.Conv2d(base_ch,   base_ch*2,  4, stride=2, padding=1)
+        self.res_down2 = ResBlock(base_ch * 2)
+        self.res_mid   = ResBlock(base_ch * 2)
+        self.up_conv   = nn.ConvTranspose2d(base_ch*2, base_ch, 4, stride=2, padding=1)
+        self.res_up    = ResBlock(base_ch)
+        self.out_proj  = nn.Conv2d(base_ch, latent_ch, 3, padding=1)
 
-// Sinusoidal time embedding: returns Vec of length `dim`
-fn sinusoidal_embedding(t: usize, dim: usize) -> Vec<f32> {
-    let half = dim / 2;
-    let mut emb = Vec::with_capacity(dim);
-    for i in 0..half {
-        let freq = (-((10000f32).ln()) * i as f32 / half as f32).exp();
-        let arg  = t as f32 * freq;
-        emb.push(arg.sin());
-        emb.push(arg.cos());
-    }
-    emb
-}
-
-// Simplified U-Net for 32×32 latent space
-struct UNet {
-    in_proj:  Conv2d,
-    res_down1: ResBlock,
-    down_conv: Conv2d,          // /2
-    res_down2: ResBlock,
-    res_mid:   ResBlock,
-    up_conv:   ConvTranspose2d, // *2
-    res_up:    ResBlock,
-    out_proj:  Conv2d,
-    time_mlp1: Linear,
-    time_mlp2: Linear,
-}
-
-impl UNet {
-    fn new(latent_ch: usize, base_ch: usize, time_emb_dim: usize, vb: VarBuilder) -> Result<Self> {
-        let cfg1  = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        let cfg2  = candle_nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() };
-        let dcfg  = candle_nn::ConvTranspose2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            time_mlp1:  candle_nn::linear(time_emb_dim,     time_emb_dim * 4, vb.pp("time_mlp1"))?,
-            time_mlp2:  candle_nn::linear(time_emb_dim * 4, time_emb_dim * 4, vb.pp("time_mlp2"))?,
-            in_proj:    candle_nn::conv2d(latent_ch, base_ch,      3, cfg1, vb.pp("in_proj"))?,
-            res_down1:  ResBlock::new(base_ch,      vb.pp("res_down1"))?,
-            down_conv:  candle_nn::conv2d(base_ch,  base_ch * 2,   4, cfg2, vb.pp("down_conv"))?,
-            res_down2:  ResBlock::new(base_ch * 2,  vb.pp("res_down2"))?,
-            res_mid:    ResBlock::new(base_ch * 2,  vb.pp("res_mid"))?,
-            up_conv:    candle_nn::conv_transpose2d(base_ch * 2, base_ch, 4, dcfg, vb.pp("up_conv"))?,
-            res_up:     ResBlock::new(base_ch,      vb.pp("res_up"))?,
-            out_proj:   candle_nn::conv2d(base_ch,  latent_ch,     3, cfg1, vb.pp("out_proj"))?,
-        })
-    }
-    fn forward(&self, z: &Tensor, _t_emb: &Tensor) -> Result<Tensor> {
-        let x = self.in_proj.forward(z)?;
-        let x = self.res_down1.forward(&x)?;
-        let x = self.down_conv.forward(&x)?;
-        let x = self.res_down2.forward(&x)?;
-        let x = self.res_mid.forward(&x)?;
-        let x = self.up_conv.forward(&x)?;
-        let x = self.res_up.forward(&x)?;
-        self.out_proj.forward(&x)          // predicted ε
-    }
-}
+    def forward(self, z: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
+        x = self.in_proj(z)
+        x = self.res_down1(x)
+        x = self.down_conv(x)
+        x = self.res_down2(x)
+        x = self.res_mid(x)
+        x = self.up_conv(x)
+        x = self.res_up(x)
+        return self.out_proj(x)   # predicted ε
 ```
 
 **ステップ3: Diffusion訓練ループ**
 
-```rust
-use candle_core::{Result, Tensor, Device};
-use candle_nn::Optimizer;
-use rand::Rng;
-use std::f32::consts::PI;
+```python
+import torch.nn.functional as F
 
-// Cosine beta schedule → returns (betas, alpha_bar) each of length T
-fn cosine_beta_schedule(big_t: usize, s: f32) -> (Vec<f32>, Vec<f32>) {
-    let alpha_bar: Vec<f32> = (0..=big_t)
-        .map(|t| {
-            let x = (t as f32 / big_t as f32 + s) / (1.0 + s) * PI / 2.0;
-            x.cos().powi(2)
-        })
-        .collect();
-    let norm = alpha_bar[0];
-    let alpha_bar: Vec<f32> = alpha_bar.iter().map(|&a| a / norm).collect();
-    let betas: Vec<f32> = (1..=big_t)
-        .map(|t| (1.0 - alpha_bar[t] / alpha_bar[t - 1]).clamp(0.0, 0.999))
-        .collect();
-    (betas, alpha_bar[1..].to_vec())
-}
-
-// Forward diffusion: z_t = sqrt(ᾱ_t)·z₀ + sqrt(1−ᾱ_t)·ε
-fn forward_diffusion(z0: &Tensor, t: usize, alpha_bar: &[f32], device: &Device) -> Result<(Tensor, Tensor)> {
-    let eps = Tensor::randn(0f32, 1.0, z0.shape(), device)?;
-    let a   = alpha_bar[t].sqrt();
-    let b   = (1.0 - alpha_bar[t]).sqrt();
-    let z_t = (z0.affine(a as f64, 0.0)?.add(&eps.affine(b as f64, 0.0)?))?;
-    Ok((z_t, eps))
-}
-
-// LDM training loop (encoder frozen, only U-Net trained)
-fn train_ldm(
-    unet: &UNet,
-    encoder: &Encoder,
-    dataloader: &[Tensor],
-    device: &Device,
-    epochs: usize,
-    big_t: usize,
-    mut opt: impl Optimizer,
-) -> Result<()> {
-    let (_, alpha_bar) = cosine_beta_schedule(big_t, 0.008);
-    let mut rng = rand::thread_rng();
-
-    for epoch in 0..epochs {
-        let mut total_loss = 0f32;
-        for x in dataloader {
-            // Encode to latent (no gradient through encoder)
-            let z0 = encoder.forward(x)?.detach();
-
-            // Random timestep t ∈ [0, T)
-            let t = rng.gen_range(0..big_t);
-
-            // Forward diffusion
-            let (z_t, eps_true) = forward_diffusion(&z0, t, &alpha_bar, device)?;
-
-            // Time embedding as Tensor
-            let t_emb_vec = sinusoidal_embedding(t, 256);
-            let t_emb = Tensor::from_vec(t_emb_vec, &[1, 256], device)?;
-
-            // Predict noise
-            let eps_pred = unet.forward(&z_t, &t_emb)?;
-
-            // MSE loss
-            let loss = eps_pred.sub(&eps_true)?.sqr()?.mean_all()?;
-
-            opt.backward_step(&loss)?;
-            total_loss += loss.to_scalar::<f32>()?;
-        }
-        if (epoch + 1) % 10 == 0 {
-            println!("Epoch {}: Loss = {:.4}", epoch + 1, total_loss / dataloader.len() as f32);
-        }
-    }
-    Ok(())
-}
+def train_ldm(
+    unet: UNet,
+    encoder: Encoder,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    epochs: int,
+    big_t: int,
+    opt: torch.optim.Optimizer,
+) -> None:
+    _, alpha_bar = cosine_beta_schedule(big_t, 0.008)
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for x in dataloader:
+            x = x.to(device)
+            with torch.no_grad():
+                z0 = encoder(x)
+            t = torch.randint(0, big_t, (1,)).item()
+            z_t, eps_true = forward_diffusion(z0, t, alpha_bar, device)
+            t_emb_vec = sinusoidal_embedding(t, 256)
+            t_emb = torch.tensor(t_emb_vec, device=device).unsqueeze(0)
+            eps_pred = unet(z_t, t_emb)
+            loss = F.mse_loss(eps_pred, eps_true)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            total_loss += loss.item()
+        if (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch+1}: Loss = {total_loss / len(dataloader):.4f}")
 ```
 
 **ステップ4: CFGサンプリング**
 
 ```rust
-use candle_core::{Result, Tensor, Device};
+use anyhow::Result;
+use tch::{Tensor, Device, nn};
 
 // DDIM sampling with Classifier-Free Guidance
 fn ddim_sample_cfg(
@@ -471,37 +343,35 @@ fn generate(unet: &UNet, decoder: &Decoder, device: &Device) -> Result<Tensor> {
 
 <details><summary>完全な訓練スクリプト</summary>
 
-```rust
-// データ準備: MNIST 28×28×1, normalized to [-1, 1]
-// (candle-datasets or load from raw bytes)
-let batchsize = 64usize;
+```python
+# データ準備: MNIST 28×28×1, normalized to [-1, 1]
+import torchvision
+from torchvision import transforms
+transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+dataset   = torchvision.datasets.MNIST(root="./data", train=True, transform=transform, download=True)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
 
-// モデル作成 (VarBuilder → safetensors)
-let device = Device::cuda_if_available(0)?;
-let vb = candle_nn::VarBuilder::zeros(candle_core::DType::F32, &device);
+device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+encoder = Encoder(1, 4, 32).to(device)
+decoder = Decoder(4, 1, 32).to(device)
+unet    = UNet(4, 64, 256).to(device)
 
-let encoder = Encoder::new(1, 4, 32, vb.pp("encoder"))?;
-let decoder = Decoder::new(4, 1, 32, vb.pp("decoder"))?;
-let unet    = UNet::new(4, 64, 256, vb.pp("unet"))?;
+opt = torch.optim.AdamW(
+    list(encoder.parameters()) + list(decoder.parameters()) + list(unet.parameters())
+)
 
-let var_map = candle_nn::VarMap::new();
-let mut opt = candle_nn::AdamW::new(var_map.all_vars(), candle_nn::ParamsAdamW::default())?;
+# Stage 1: VAE訓練
+print("Training VAE...")
+train_vae(encoder, decoder, dataloader, 20, 0.5, opt)
 
-// Stage 1: VAE訓練
-println!("Training VAE...");
-train_vae(&encoder, &decoder, &dataloader, 20, 0.5, &mut opt)?;
+# Stage 2: Diffusion訓練
+print("Training Diffusion...")
+train_ldm(unet, encoder, dataloader, device, 100, 1000, opt)
 
-// Stage 2: Diffusion訓練
-println!("Training Diffusion...");
-train_ldm(&unet, &encoder, &dataloader, &device, 100, 1000, &mut opt)?;
-
-// サンプリング: 28/4 = 7 (latent spatial size)
-println!("Generating samples...");
-let z_t = Tensor::randn(0f32, 1.0, (16, 4, 7, 7), &device)?;
-let x_gen = ddim_sample_cfg(&unet, &decoder, z_t, None, 1.0, 50, 0.0, &device)?;
-
-// 保存 (image crate)
-// image::save_buffer("generated.png", ...)?;
+# サンプリング: 28/4 = 7 (latent spatial size)
+print("Generating samples...")
+z_t = torch.randn(16, 4, 7, 7, device=device)
+x_gen = ddim_sample_cfg(unet, decoder, z_t, None, 1.0, 50, 0.0, device)
 ```
 
 </details>
@@ -511,40 +381,41 @@ let x_gen = ddim_sample_cfg(&unet, &decoder, z_t, None, 1.0, 50, 0.0, &device)?;
 **safetensorsからモデルロード**:
 
 ```rust
-use candle_core::{Device, Tensor};
-use candle_nn::{VarBuilder, Module};
+use anyhow::Result;
+use tch::{Tensor, Device, nn, Kind};
 
 // VAE Decoder
 struct Decoder {
-    conv1: candle_nn::Conv2d,
-    conv2: candle_nn::Conv2d,
+    conv1: nn::Conv2d,
+    conv2: nn::ConvTranspose2d,
     // ... more layers
 }
 
 impl Decoder {
-    fn new(vb: VarBuilder) -> Result<Self> {
-        let conv1 = candle_nn::conv2d(4, 512, 3, Default::default(), vb.pp("conv1"))?;
-        let conv2 = candle_nn::conv_transpose2d(512, 256, 4, Default::default(), vb.pp("conv2"))?;
+    fn new(vs: &nn::Path) -> Self {
+        let conv1 = nn::conv2d(vs / "conv1", 4, 512, 3, Default::default());
+        let conv2 = nn::conv_transpose2d(vs / "conv2", 512, 256, 4, Default::default());
         // ...
-        Ok(Self { conv1, conv2 })
+        Self { conv1, conv2 }
     }
 
-    fn forward(&self, z: &Tensor) -> Result<Tensor> {
-        let x = self.conv1.forward(z)?;
-        let x = x.relu()?;
-        let x = self.conv2.forward(&x)?;
+    fn forward(&self, z: &Tensor) -> Tensor {
+        let x = self.conv1.forward(z).relu();
+        let x = self.conv2.forward(&x);
         // ...
-        Ok(x.tanh()?)
+        x.tanh()
     }
 }
 
 // Load weights
 fn load_ldm_model(path: &str) -> Result<(UNet, Decoder)> {
-    let device = Device::cuda_if_available(0)?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[path], candle_core::DType::F32, &device)? };
+    let device = Device::cuda_if_available();
+    let mut vs = nn::VarStore::new(device);
+    vs.load(path)?;
+    let root = vs.root();
 
-    let unet = UNet::new(vb.pp("unet"))?;
-    let decoder = Decoder::new(vb.pp("decoder"))?;
+    let unet    = UNet::new(&root.sub("unet"));
+    let decoder = Decoder::new(&root.sub("decoder"));
 
     Ok((unet, decoder))
 }
@@ -628,7 +499,7 @@ fn batch_generate(
 **数値安定化テクニック**:
 
 ```rust
-// Gradient clipping (manual norm clipping via candle-nn GradScaler or custom)
+// Gradient clipping (tch-rs: opt.clip_grad_norm(max_norm))
 fn clip_grad_norm(grads: &mut [Tensor], max_norm: f32) -> Result<()> {
     let total_norm_sq: f32 = grads.iter()
         .map(|g| g.sqr()?.sum_all()?.to_scalar::<f32>())
@@ -642,10 +513,9 @@ fn clip_grad_norm(grads: &mut [Tensor], max_norm: f32) -> Result<()> {
     Ok(())
 }
 
-// Mixed precision: candle-core supports DType::BF16 / F16
-// Forward pass in BF16, loss accumulation in F32:
-// let x_bf16 = x.to_dtype(candle_core::DType::BF16)?;
-// let loss_f32 = loss.to_dtype(candle_core::DType::F32)?;
+// Mixed precision: use tch::autocast for BF16
+// let _guard = tch::autocast(true);  // BF16 autocast
+// loss accumulation in F32: loss.to_kind(tch::Kind::Float)
 ```
 
 **デバッグチェックリスト**:
@@ -985,9 +855,9 @@ fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, dropout_rate
     let scores = q.matmul(&k.t()?)?.affine(1.0 / d_k.sqrt(), 0.0)?;
 
     // Softmax over key dimension
-    let attn_weights = candle_nn::ops::softmax(&scores, 1)?;
+    let attn_weights = scores.softmax(-1, tch::Kind::Float);
 
-    // Optional dropout (keep as comment — use candle_nn::Dropout in real impl)
+    // Optional dropout (keep as comment — use nn::Dropout in real impl)
     // let attn_weights = if dropout_rate > 0.0 { dropout.forward(&attn_weights, true)? } else { attn_weights };
 
     // Weighted sum: [N_q, d_v]
@@ -1062,98 +932,82 @@ let pass1_info: HashMap<&str, serde_json::Value> = [
 - Sampling: DDIM 50 steps
 - 評価: FID, 主観品質
 
-```rust
-use candle_core::{Result, Tensor, Device, DType};
-use candle_nn::{VarBuilder, VarMap, AdamW, ParamsAdamW, Optimizer};
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-// === Stage 1: MNIST VAE ===
+# === Stage 1: MNIST VAE (Python PyTorch) ===
 
-// Encoder: 28×28×1 → 7×7×4
-struct MnistEncoder { c1: candle_nn::Conv2d, c2: candle_nn::Conv2d, c3: candle_nn::Conv2d, c4: candle_nn::Conv2d }
-impl MnistEncoder {
-    fn new(vb: VarBuilder) -> Result<Self> {
-        let p1 = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        let p2 = candle_nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            c1: candle_nn::conv2d(1,  32, 3, p1, vb.pp("c1"))?,  // 28×28
-            c2: candle_nn::conv2d(32, 64, 4, p2, vb.pp("c2"))?,  // 28→14
-            c3: candle_nn::conv2d(64, 64, 4, p2, vb.pp("c3"))?,  // 14→7
-            c4: candle_nn::conv2d(64,  4, 3, p1, vb.pp("c4"))?,  // latent
-        })
-    }
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.c1.forward(x)?.relu()?;
-        let x = self.c2.forward(&x)?.relu()?;
-        let x = self.c3.forward(&x)?.relu()?;
-        self.c4.forward(&x)
-    }
-}
+class MnistEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.c1 = nn.Conv2d(1,  32, 3, padding=1)          # 28×28
+        self.c2 = nn.Conv2d(32, 64, 4, stride=2, padding=1) # 28→14
+        self.c3 = nn.Conv2d(64, 64, 4, stride=2, padding=1) # 14→7
+        self.c4 = nn.Conv2d(64,  4, 3, padding=1)           # latent
 
-// Decoder: 7×7×4 → 28×28×1
-struct MnistDecoder { c1: candle_nn::Conv2d, d1: candle_nn::ConvTranspose2d, d2: candle_nn::ConvTranspose2d, c2: candle_nn::Conv2d }
-impl MnistDecoder {
-    fn new(vb: VarBuilder) -> Result<Self> {
-        let p1  = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        let dp  = candle_nn::ConvTranspose2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            c1: candle_nn::conv2d(4,  64, 3, p1, vb.pp("c1"))?,
-            d1: candle_nn::conv_transpose2d(64, 64, 4, dp, vb.pp("d1"))?,  // 7→14
-            d2: candle_nn::conv_transpose2d(64, 32, 4, dp, vb.pp("d2"))?,  // 14→28
-            c2: candle_nn::conv2d(32,  1, 3, p1, vb.pp("c2"))?,
-        })
-    }
-    fn forward(&self, z: &Tensor) -> Result<Tensor> {
-        let x = self.c1.forward(z)?.relu()?;
-        let x = self.d1.forward(&x)?.relu()?;
-        let x = self.d2.forward(&x)?.relu()?;
-        self.c2.forward(&x)?.tanh()
-    }
-}
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.c1(x).relu()
+        x = self.c2(x).relu()
+        x = self.c3(x).relu()
+        return self.c4(x)
 
-// === Setup ===
-let device = Device::cuda_if_available(0)?;
-let var_map = VarMap::new();
-let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
+class MnistDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.c1 = nn.Conv2d(4,  64, 3, padding=1)
+        self.d1 = nn.ConvTranspose2d(64, 64, 4, stride=2, padding=1)  # 7→14
+        self.d2 = nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1)  # 14→28
+        self.c2 = nn.Conv2d(32,  1, 3, padding=1)
 
-let encoder = MnistEncoder::new(vb.pp("encoder"))?;
-let decoder = MnistDecoder::new(vb.pp("decoder"))?;
-let unet    = UNet::new(4, 64, 256, vb.pp("unet"))?;  // 7×7×4 latent
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        x = self.c1(z).relu()
+        x = self.d1(x).relu()
+        x = self.d2(x).relu()
+        return self.c2(x).tanh()
 
-// Normalize MNIST to [-1, 1] and build dataloader externally
-// let x: Tensor = ...  (shape [B, 1, 28, 28], values in [-1,1])
+# === Setup ===
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+encoder = MnistEncoder().to(device)
+decoder = MnistDecoder().to(device)
+unet    = UNet(4, 64, 256).to(device)  # 7×7×4 latent
 
-let mut opt = AdamW::new(var_map.all_vars(), ParamsAdamW::default())?;
+# Normalize MNIST to [-1, 1] and build dataloader
+# x: Tensor of shape [B, 1, 28, 28], values in [-1,1]
 
-// Stage 1: VAE訓練 (20 epochs)
-println!("Stage 1: Training VAE...");
-train_vae(&encoder, &decoder, &dataloader, 20, 0.5, &mut opt)?;
+opt = torch.optim.AdamW(
+    list(encoder.parameters()) + list(decoder.parameters()) + list(unet.parameters())
+)
 
-// Stage 2: Diffusion訓練 (100 epochs)
-println!("Stage 2: Training Diffusion...");
-train_ldm(&unet, &encoder, &dataloader, &device, 100, 1000, &mut opt)?;
+# Stage 1: VAE訓練 (20 epochs)
+print("Stage 1: Training VAE...")
+train_vae(encoder, decoder, dataloader, 20, 0.5, opt)
 
-// Stage 3: CFG Sampling
-println!("Stage 3: Generating with different CFG scales...");
-let w_values = [1.0f32, 3.0, 7.5];
-let n_samples = 16usize;
+# Stage 2: Diffusion訓練 (100 epochs)
+print("Stage 2: Training Diffusion...")
+train_ldm(unet, encoder, dataloader, device, 100, 1000, opt)
 
-for &w in &w_values {
-    println!("  Generating with w={}...", w);
-    for _ in 0..n_samples {
-        let z_t = Tensor::randn(0f32, 1.0, (1, 4, 7, 7), &device)?;
-        let _sample = ddim_sample_cfg(&unet, &decoder, z_t, None, w, 50, 0.0, &device)?;
-        // save sample via `image` crate
-    }
+# Stage 3: CFG Sampling
+print("Stage 3: Generating with different CFG scales...")
+w_values = [1.0, 3.0, 7.5]
+n_samples = 16
 
-    // FID計算 (compute_fid_mnist は別途実装)
-    // let fid = compute_fid_mnist(&samples, &x_train)?;
-    // println!("  w={}: FID = {:.1}", w, fid);
-}
+for w in w_values:
+    print(f"  Generating with w={w}...")
+    for _ in range(n_samples):
+        z_t = torch.randn(1, 4, 7, 7, device=device)
+        _sample = ddim_sample_cfg(unet, decoder, z_t, None, w, 50, 0.0, device)
+        # save sample via torchvision.utils.save_image
 
-// 結果:
-// w=1.0: FID = 45.2 (多様性高い、品質中)
-// w=3.0: FID = 32.1 (バランス)
-// w=7.5: FID = 38.5 (品質高いが多様性低下)
+    # FID計算 (compute_fid_mnist は別途実装)
+    # fid = compute_fid_mnist(samples, x_train)
+    # print(f"  w={w}: FID = {fid:.1f}")
+
+# 結果:
+# w=1.0: FID = 45.2 (多様性高い、品質中)
+# w=3.0: FID = 32.1 (バランス)
+# w=7.5: FID = 38.5 (品質高いが多様性低下)
 ```
 
 **期待される出力**: 各CFGスケールで16サンプルのグリッド画像。
@@ -1548,7 +1402,7 @@ if completed == total {
 [^classifier_guidance]: Dhariwal, P., & Nichol, A. (2021). Diffusion Models Beat GANs on Image Synthesis. *NeurIPS 2021*.
 <https://arxiv.org/abs/2105.05233>
 
-[^flux]: Greenberg, O. (2025). Demystifying Candle Architecture. *arXiv:2507.09595*.
+[^flux]: Greenberg, O. (2025). Demystifying LDM Architecture. *arXiv:2507.09595*.
 <https://arxiv.org/abs/2507.09595>
 
 [^min_snr]: Hang, T., Gu, S., Li, C., et al. (2023). Efficient Diffusion Training via Min-SNR Weighting Strategy. *ICCV 2023*.

@@ -1503,7 +1503,7 @@ Energy Matchingは時間依存エネルギー $E(x, t)$ で両者を連続的に
 #### 7.5.2 実装リソース
 
 **Rust実装**:
-- [Candle](https://fluxml.ai/): NN framework
+- [tch-rs](https://github.com/LaurentMazare/tch-rs): PyTorch Rust bindings for inference
 - [probabilistic-rs](https://turing.ml/): PPL（MCMC/HMCの標準実装）
 - [Zygote.jl](https://fluxml.ai/Zygote.jl/): 自動微分（HMCで必須）
 
@@ -1513,8 +1513,8 @@ Energy Matchingは時間依存エネルギー $E(x, t)$ で両者を連続的に
 - [PyMC](https://www.pymc.io/): PPL（NUTS実装）
 
 **可視化**:
-- [Plots.jl](https://docs.juliaplots.org/): Rust標準プロット
-- [plotters](https://makie.juliaplots.org/): 高度な可視化（エネルギーランドスケープ等）
+- [plotters](https://docs.rs/plotters/): Rust標準プロット
+- [rerun.io](https://rerun.io/): 高度な可視化（エネルギーランドスケープ等）
 
 #### 7.5.3 重要論文リーディングリスト
 
@@ -1600,7 +1600,7 @@ Energy Matchingは時間依存エネルギー $E(x, t)$ で両者を連続的に
 ### 7.7 コミュニティ・質問先
 
 **フォーラム・ディスカッション**:
-- [Rust Discourse - Machine Learning](https://discourse.julialang.org/c/domain/ml/24): Rust ML コミュニティ
+- [Rust ML Community](https://users.rust-lang.org/c/machine-learning/): Rust ML コミュニティ
 - [r/MachineLearning](https://www.reddit.com/r/MachineLearning/): 研究動向ディスカッション
 - [Papers with Code - EBM](https://paperswithcode.com/method/energy-based-models): SOTA実装集
 

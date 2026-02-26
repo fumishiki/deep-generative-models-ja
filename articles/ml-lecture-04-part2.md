@@ -19,12 +19,13 @@ keywords: ["確率分布実装", "MLE実装", "ベイズ推論", "SciPy", "統�
 
 この実装編を修了すると、以下ができるようになります:
 
-- [ ] NumPy/SciPyで主要確率分布をサンプリングできる
-- [ ] MLEをスクラッチ実装し、最適パラメータを推定できる
-- [ ] ベイズ推論のグリッド近似を実装できる
-- [ ] 多変量正規分布の条件付き分布を計算できる
-- [ ] 自己回帰モデルの尤度を実装・評価できる
-- [ ] Production-readyな統計的推定コードを書ける
+- [ ] PyTorch `torch.distributions` で `log_prob`・`entropy`・`kl_divergence` を使いこなせる
+- [ ] Gaussian MLE を `D.Normal(mu, sigma).log_prob(x).sum()` で実装・検証できる
+- [ ] 自己回帰尤度 $\log p(\mathbf{x}) = \sum_t \log p(x_t \mid x_{<t})$ を PyTorch で数値安定に計算できる
+- [ ] `torch.logsumexp` の数値安定性の根拠を式から説明できる
+- [ ] Triton カーネルで各データ点並列の対数尤度計算を実装できる
+- [ ] 多変量正規分布の条件付き分布（Schur 補行列）の導出と Cholesky 安定化の必要性を説明できる
+- [ ] KL ダイバージェンス・Fisher 情報量・Cramér-Rao 下界の関係を導出から示せる
 
 ---
 
@@ -42,31 +43,64 @@ $$
 f(x; \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\!\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
 $$
 
-- shape: `x` は `(N,)` スカラー列、`mu` と `sigma` はスカラー
-- `sigma` の符号: 分母は `sigma`（標準偏差）、`sigma^2` は分散。混同しやすい
-- 数値安定化: 大きな `(x-mu)^2/sigma^2` で `exp(-...)` がアンダーフロー → 対数空間で計算する
+- shape: `data: (N,)` → `log_prob(data): (N,)` → `.sum()` でスカラー対数尤度
+- `D.Normal(mu, sigma)` の第2引数は**標準偏差** $\sigma$（分散 $\sigma^2$ ではない）。混同すると尤度が全て間違う
+- 数値安定化: `.log_prob()` は内部で $\log$ 空間計算を行い `exp(-...)` のアンダーフローを回避する
+
+記号 ↔ 変数対応:
+- $\mu, \sigma$ ↔ `mu_mle`, `sigma_mle`（スカラーテンソル）
+- $\ell(\mu,\sigma) = \sum_i \log \mathcal{N}(x^{(i)}\mid\mu,\sigma)$ ↔ `D.Normal(mu_mle, sigma_mle).log_prob(data).sum()`
+- $\mathcal{H}(\boldsymbol{\pi}) = -\sum_k \pi_k \log \pi_k$ ↔ `D.Categorical(probs=pi).entropy()`
+- $D_{\mathrm{KL}}(p \| q)$ ↔ `D.kl_divergence(p, q)`（登録済みペアに対して閉形式）
+
+検算: (i) MLE が対数尤度を最大化すること（摂動後の尤度が下がる）、(ii) 一様分布のエントロピー $= \log K$、(iii) $D_{\mathrm{KL}}(p\|p) = 0$、の3点でそれぞれ assert する。
+
+$$
+\ell(\mu, \sigma) = \sum_{i=1}^{N} \log \mathcal{N}(x^{(i)} \mid \mu, \sigma)
+= -\frac{N}{2}\log(2\pi\sigma^2) - \frac{1}{2\sigma^2}\sum_{i=1}^{N}(x^{(i)}-\mu)^2
+$$
 
 ```python
-import numpy as np
-from scipy import stats
+import torch
+import torch.distributions as D
 
-rng = np.random.default_rng(42)
+torch.manual_seed(42)
 
-# MLE for Gaussian: closed-form
-data = rng.normal(loc=2.0, scale=1.5, size=500)
-mu_mle = data.mean()            # E[X] = mu
-sigma_mle = data.std(ddof=0)    # sqrt(E[(X-mu)^2]) = sigma (biased MLE)
-# ddof=1 は不偏推定量だが MLE は ddof=0
+# --- Block 1 / 3: torch.distributions — Normal, Categorical, MultivariateNormal ---
 
-# verify: log-likelihood at MLE vs perturbed
-def log_lik_normal(x: np.ndarray, mu: float, sigma: float) -> float:
-    return np.sum(stats.norm.logpdf(x, loc=mu, scale=sigma))
+# Gaussian MLE: mu_hat = x.mean(),  sigma_hat = x.std(unbiased=False)
+mu_true, sigma_true = torch.tensor(2.0), torch.tensor(1.5)
+data = D.Normal(mu_true, sigma_true).sample((500,))      # (500,)
 
-ll_mle = log_lik_normal(data, mu_mle, sigma_mle)
-ll_perturbed = log_lik_normal(data, mu_mle + 0.1, sigma_mle)
-assert ll_mle > ll_perturbed, "MLE must maximize log-likelihood"
+mu_mle    = data.mean()                                  # mu
+sigma_mle = data.std(unbiased=False)                     # sigma (biased MLE, ddof=0)
+
+# log p(D) = sum_i log N(x_i | mu, sigma)
+ll_mle       = D.Normal(mu_mle,       sigma_mle).log_prob(data).sum()
+ll_perturbed = D.Normal(mu_mle + 0.1, sigma_mle).log_prob(data).sum()
+assert ll_mle > ll_perturbed                             # MLE is the argmax
+
+# Categorical: H[Uniform(K)] = log K
+pi_uniform = torch.full((5,), 1.0 / 5)
+H_cat = D.Categorical(probs=pi_uniform).entropy()        # scalar
+assert abs(H_cat - torch.log(torch.tensor(5.0))) < 1e-5  # H = log K
+
+# MultivariateNormal: already shown — torch handles Cholesky internally
+mu_mv  = torch.zeros(2)
+cov_mv = torch.tensor([[2.0, 0.8], [0.8, 1.0]])
+dist_mv = D.MultivariateNormal(loc=mu_mv, covariance_matrix=cov_mv)
+x0 = torch.tensor([1.0, -1.0])
+print(f"log N(x0|mu,Sigma) = {dist_mv.log_prob(x0):.6f}")
+
+# KL divergence (closed form for registered pairs)
+p = D.Normal(0.0, 1.0)
+q = D.Normal(1.0, 2.0)
+kl_pq = D.kl_divergence(p, q)                           # KL[N(0,1) || N(1,2)]
+assert kl_pq > 0 and D.kl_divergence(p, p) < 1e-6       # KL >= 0, KL(p||p)=0
+
 print(f"mu_mle={mu_mle:.4f}, sigma_mle={sigma_mle:.4f}")
-print(f"ll(MLE)={ll_mle:.2f} > ll(perturbed)={ll_perturbed:.2f}")  # True
+print(f"H[Uniform(5)]={H_cat:.4f}, log(5)={torch.log(torch.tensor(5.0)):.4f}")
+print(f"KL[N(0,1)||N(1,2)]={kl_pq:.4f}")
 ```
 
 **Bernoulli → Categorical: 離散分布の系譜**
@@ -106,35 +140,34 @@ $$
 - $Z_N$（標準化標本平均）↔ `Z_N: (n_trials,)` → `N(0,1)` に収束
 - $\text{KS}$（Kolmogorov-Smirnov検定量）↔ CLT収束の定量的評価
 
-```python
-import numpy as np
-from scipy import stats
+**収束の速さ — Berry-Esseen 定理**:
 
-rng = np.random.default_rng(42)
+CLT は $Z_N \xrightarrow{d} \mathcal{N}(0,1)$ を保証するが「いつ収束するか」は述べない。Berry-Esseen 定理が定量化する:
 
-# Exponential(lambda=1): mu=1, sigma^2=1
-# 正規分布でない元分布でCLTを確認
-lam = 1.0
-mu_true, sigma2_true = 1.0/lam, 1.0/lam**2  # Exp(1): mu=1, sigma^2=1
+$$
+\sup_x \left| P(Z_N \leq x) - \Phi(x) \right| \leq \frac{C \rho}{\sigma^3 \sqrt{N}}, \quad C \leq 0.4748
+$$
 
-print("N     |LLN: E[|Xbar-mu|]  |CLT: KS p-value")
-for N in [5, 20, 100, 500]:
-    n_trials = 10000
-    X = rng.exponential(scale=1.0/lam, size=(n_trials, N))  # (n_trials, N)
-    Xbar = X.mean(axis=1)                                     # (n_trials,)
+ここで $\rho = \mathbb{E}[|X - \mu|^3]$（三次絶対中心モーメント）。Exponential$(1)$ では $\mu=1$, $\sigma^2=1$, $\rho=\mathbb{E}[|X-1|^3]=2$ なので:
 
-    # LLN: mean deviation from true mu
-    lln_err = float(np.abs(Xbar - mu_true).mean())
+$$
+\text{誤差上界} \leq \frac{0.4748 \times 2}{\sqrt{N}} = \frac{0.9496}{\sqrt{N}}
+$$
 
-    # CLT: standardize and KS test against N(0,1)
-    Z_N = (Xbar - mu_true) / (sigma2_true**0.5 / N**0.5)    # (n_trials,)
-    ks_stat, ks_pval = stats.kstest(Z_N, "norm")
+$N=5$: 誤差 $\leq 0.424$（Exponential の歪度 = 2 が大きいため収束が遅い）。  
+$N=500$: 誤差 $\leq 0.042$（KS 検定で有意差が検出されにくい水準）。
 
-    print(f"N={N:4d}  E|Xbar-mu|={lln_err:.5f}  KS_pval={ks_pval:.4f}")
+**歪度と収束速度**: $\rho/\sigma^3$ は分布の「歪み」を捉える。正規分布自体の歪度は 0 だが、金融収益率や自然言語の単語頻度は Power-law（Zipf の法則）に従い、三次以上のモーメントが無限大になることがある。そのような分布では CLT の収束が保証されず、正規近似は危険だ。
 
-# N=5  : KS p-value 低い (Exponential は非対称なのでCLTがまだ効かない)
-# N=500: KS p-value 大きい (正規分布に近い -> CLT収束)
-```
+LLN の収束速度は Chebyshev 不等式から直接導ける:
+
+$$
+P(|\bar{X}_N - \mu| > \epsilon) \leq \frac{\sigma^2}{N\epsilon^2}
+$$
+
+これは $O(1/N)$ の確率保証だが、標本平均の標準偏差 $\sigma/\sqrt{N}$ を見ると実質的な精度は $O(1/\sqrt{N})$。**データを 100 倍にしても精度は 10 倍にしかならない** — これが大規模データ収集の「限界収益逓減」の数学的根拠だ。
+
+**解釈**: Exponential 分布は右裾が重い（歪度 = 2）が、$N=500$ で標本平均の分布はほぼ正規分布に収束する。LLN 誤差は $N$ が増えるにつれ $O(1/\sqrt{N})$ で減少する。
 
 **解釈**: Exponential分布は右裾が重いが、N=500で標本平均の分布はほぼ正規分布に収束する。LLN誤差はNが増えるにつれ $O(1/\sqrt{N})$ で減少 — Chebyshev不等式の $O(1/N)$ より速い（期待値の収束速度）。
 
@@ -147,52 +180,45 @@ $p_k = \frac{\exp(z_k)}{\sum_j \exp(z_j)}$（Softmax = Categorical の自然パ�
 - $\boldsymbol{\pi} = \text{softmax}(\mathbf{z})$ ↔ `pi: (K,)`, `sum=1`
 - $\mathcal{H}(\boldsymbol{\pi}) = -\sum_k \pi_k \log \pi_k$（エントロピー）↔ `H: float`
 
-```python
-import numpy as np
+**エントロピー最大化の数学 — Lagrange 乗数法**:
 
-def log_softmax(z: np.ndarray) -> np.ndarray:
-    # z: (K,) -> log_p: (K,)  numerically stable
-    c = z.max()                      # log-sum-exp shift
-    log_Z = np.log(np.exp(z - c).sum()) + c
-    return z - log_Z
+「制約のもとでエントロピーを最大化すると一様分布が得られる」を示す。
 
-def entropy_categorical(pi: np.ndarray) -> float:
-    # H(pi) = -sum pi_k log pi_k,  pi: (K,)
-    pi = np.clip(pi, 1e-12, 1.0)    # numerical safety
-    return float(-np.sum(pi * np.log(pi)))
+問題: $\max_{\boldsymbol{\pi}} \mathcal{H}(\boldsymbol{\pi}) = -\sum_{k=1}^{K} \pi_k \log \pi_k$ subject to $\sum_k \pi_k = 1$, $\pi_k \geq 0$
 
-# 確認: uniform dist has max entropy = log K
-K = 5
-z_uniform = np.zeros(K)
-log_p = log_softmax(z_uniform)
-pi = np.exp(log_p)
-H = entropy_categorical(pi)
-assert np.allclose(pi, 1.0/K), f"uniform softmax failed: {pi}"
-assert abs(H - np.log(K)) < 1e-10, f"max entropy should be log(K)={np.log(K):.4f}, got {H:.4f}"
-print(f"uniform K={K}: H={H:.4f}, log(K)={np.log(K):.4f}  checked")
+Lagrangian を構成し停留条件を取る:
 
-# 確認: one-hot has entropy 0
-z_onehot = np.array([100.0, 0.0, 0.0, 0.0, 0.0])
-pi_oh = np.exp(log_softmax(z_onehot))
-H_oh = entropy_categorical(pi_oh)
-assert H_oh < 0.01, f"one-hot entropy should be ~0, got {H_oh}"
-print(f"one-hot: H={H_oh:.6f}  checked")
-```
+$$
+\mathcal{L} = -\sum_k \pi_k \log \pi_k + \lambda\!\left(\sum_k \pi_k - 1\right)
+$$
 
-**最大エントロピーと一様分布の等価性**: 確率分布の集合上でエントロピーを最大化すると一様分布が得られる（Lagrange乗数法で確認可能）。これが「情報が最も少ない分布」だ。
+$$
+\frac{\partial \mathcal{L}}{\partial \pi_k} = -\log \pi_k - 1 + \lambda = 0 \implies \pi_k = e^{\lambda - 1}
+$$
 
-**大数の法則の確認**:
+全 $k$ で同じ値 → 正規化条件 $\sum_k \pi_k = 1$ より $\pi_k = 1/K$。このとき $\mathcal{H} = \log K$。よって:
 
-```python
-# LLN: Bernoulli sample mean -> p
-rng = np.random.default_rng(42)
-p_true = 0.3
-for N in [10, 100, 1000, 10000]:
-    samples = rng.binomial(1, p_true, N)
-    p_hat = samples.mean()
-    print(f"N={N:6d}  p_hat={p_hat:.4f}  |err|={abs(p_hat-p_true):.4f}")
-# |err| -> 0 as N -> inf (LLN)
-```
+$$
+\mathcal{H}(\boldsymbol{\pi}) \leq \log K, \quad \text{等号は } \boldsymbol{\pi} = (1/K, \ldots, 1/K) \text{ のとき}
+$$
+
+**一点への集中で $\mathcal{H} \to 0$**: $\pi_1 \to 1$（one-hot）とすると $-1 \cdot \log 1 - \sum_{k \geq 2} 0 \cdot \log 0 = 0$（$0 \log 0 = 0$ と定義）。これがエントロピー最小。
+
+**数値安定 softmax の核心**:
+
+$$
+\text{softmax}(\mathbf{z})_k = \frac{e^{z_k}}{\sum_j e^{z_j}} = \frac{e^{z_k - c}}{\sum_j e^{z_j - c}}, \quad c = \max_k z_k
+$$
+
+$c$ を引いても比は変わらない（分子・分母に $e^{-c}$ が共通因子）。$c = \max_k z_k$ とすると $e^{z_k - c} \leq 1$ が保証され `exp` がオーバーフローしない。$\log \text{softmax}(\mathbf{z})_k = z_k - c - \log \sum_j e^{z_j - c}$ が `F.log_softmax` の計算式だ。
+
+この $\log \sum_j e^{z_j}$ が `torch.logsumexp(z, dim=-1)` であり、数値安定に $\log Z$ を計算する基本ツールだ。次の identity は常に成立する:
+
+$$
+\log \sum_j e^{z_j} = c + \log \sum_j e^{z_j - c}, \quad c = \max_k z_k
+$$
+
+**大数の法則の直感**: Bernoulli$(p)$ の標準偏差は $\sqrt{p(1-p)}$。$p=0.3$ で $\sigma \approx 0.458$。標本平均の標準誤差は $0.458/\sqrt{N}$。$N=10^4$ で $\approx 0.0046$ — A/B テストで「数千サンプル必要」と言われる根拠だ。精度を2倍にするにはデータが4倍必要という $O(1/\sqrt{N})$ の壁は LLN の本質的な限界だ。
 
 ### 5.2 多変量正規分布 — 完全実装と直感
 
@@ -208,7 +234,7 @@ $$
 
 - shape: `x` は `(d,)`, `mu` は `(d,)`, `Sigma` は `(d,d)` 正定値対称行列
 - Mahalanobis距離 $D_M^2 = (\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})$ は「楕円体の距離」
-- $\boldsymbol{\Sigma}^{-1}$ の直接計算は避ける: `np.linalg.solve(Sigma, x-mu)` を使う
+- $\boldsymbol{\Sigma}^{-1}$ の直接計算は避ける: `torch.linalg.solve(Sigma, x - mu)` か `D.MultivariateNormal` を使う
 
 **条件付き分布** (Schur complement 公式):
 
@@ -248,51 +274,25 @@ $$
 - \frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu})
 $$
 
-記号 ↔ 変数対応:
-- $\boldsymbol{\mu}$ ↔ `mu: (d,)`
-- $\boldsymbol{\Sigma}$ ↔ `Sigma: (d,d)` 正定値対称
-- Cholesky因子 $L$（$\boldsymbol{\Sigma}=LL^\top$）↔ `L = np.linalg.cholesky(Sigma)`
-- Mahalanobis二乗距離 $\|L^{-1}(\mathbf{x}-\boldsymbol{\mu})\|^2$ ↔ `v @ v`
+記号 ↔ 変数対応（PyTorch では Block 1 の `D.MultivariateNormal` が担う）:
+- $\boldsymbol{\mu}$ ↔ `mu_mv: (d,)` テンソル
+- $\boldsymbol{\Sigma}$ ↔ `cov_mv: (d,d)` 正定値対称テンソル
+- $\log |\boldsymbol{\Sigma}| = 2\sum_i \log L_{ii}$（Cholesky 因子の対角積）↔ `dist_mv.log_prob(x)` に内包
+- Mahalanobis 距離 $D_M^2 = (\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu})$ ↔ `v @ v`（`v = L^{-1}(x-mu)`）
 
-shape: `x` `(d,)`, `mu` `(d,)`, `Sigma` `(d,d)`, `v = L^{-1}(x-mu)` `(d,)`
+shape: `x: (d,)`, `mu: (d,)`, `Sigma: (d,d)`, 出力 `log_prob: scalar`
 
-```python
-import numpy as np
-from scipy.stats import multivariate_normal
+**Cholesky 安定化の理由**: $\boldsymbol{\Sigma}^{-1}$ を直接計算すると数値誤差が $O(\kappa^2(\boldsymbol{\Sigma}))$ で増幅される（$\kappa$ = 条件数）。Cholesky 分解 $\boldsymbol{\Sigma} = LL^\top$ を経由すると:
+- $\log|\boldsymbol{\Sigma}| = 2\sum_i \log L_{ii}$（対角成分の対数和）
+- $\boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu}) = L^{-\top}L^{-1}(\mathbf{x}-\boldsymbol{\mu})$（前進代入 + 後退代入）
 
-def mvn_log_prob(x: np.ndarray, mu: np.ndarray, Sigma: np.ndarray) -> float:
-    # x: (d,), mu: (d,), Sigma: (d,d) positive definite
-    d = len(mu)
-    L = np.linalg.cholesky(Sigma)               # Sigma = L L^T
-    v = np.linalg.solve(L, x - mu)             # v = L^{-1}(x-mu), (d,)
-    maha2 = float(v @ v)                        # Mahalanobis^2
-    log_det = 2.0 * np.sum(np.log(np.diag(L))) # log|Sigma|
-    return -0.5 * (d * np.log(2 * np.pi) + log_det + maha2)
+直接逆行列を求めるより数値誤差が $O(\kappa)$ で抑えられる。PyTorch の `D.MultivariateNormal` は内部で Cholesky 因子をキャッシュし、同じ分布で複数の `log_prob` 評価を行う場合に効率的だ。
 
-def mvn_mle(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    # X: (N, d) -> (mu_hat, Sigma_hat)
-    N = len(X)
-    mu_hat = X.mean(axis=0)
-    diff = X - mu_hat
-    Sigma_hat = (diff.T @ diff) / N  # biased MLE
-    return mu_hat, Sigma_hat
+**MLE と正定値制約**: $N$ 個の $d$ 次元サンプルから $\hat{\boldsymbol{\Sigma}} = \frac{1}{N}\sum_i (\mathbf{x}^{(i)}-\hat{\boldsymbol{\mu}})(\mathbf{x}^{(i)}-\hat{\boldsymbol{\mu}})^\top$ を計算する場合、$N < d$ では行列のランクが $N$ になり半正定値（$\hat{\boldsymbol{\Sigma}} \succeq 0$ だが $\hat{\boldsymbol{\Sigma}} \not\succ 0$）。Cholesky 分解が失敗する。
 
-# 数値検証
-rng = np.random.default_rng(42)
-mu_t = np.array([1.0, -2.0])
-S_t  = np.array([[2.0, 0.8], [0.8, 1.0]])
-X = rng.multivariate_normal(mu_t, S_t, 5000)
-mu_h, S_h = mvn_mle(X)
-print(f"mu_hat:   {mu_h.round(3)}")     # ≈ [1.0, -2.0]
-print(f"Sig_hat:\n{S_h.round(3)}")      # ≈ [[2.0,0.8],[0.8,1.0]]
-x0 = np.array([1.0, -1.0])
-ours = mvn_log_prob(x0, mu_t, S_t)
-ref  = multivariate_normal.logpdf(x0, mu_t, S_t)
-assert abs(ours - ref) < 1e-10
-print(f"log p(x0) = {ours:.6f}  [scipy: {ref:.6f}]  checked")
-```
+回避策: $\hat{\boldsymbol{\Sigma}}_\text{reg} = \hat{\boldsymbol{\Sigma}} + \epsilon \mathbf{I}$（$\epsilon \sim 10^{-6}$）で正則化。VAE のエンコーダ出力 $\boldsymbol{\Sigma}_\phi = \text{diag}(\boldsymbol{\sigma}_\phi^2)$ が対角行列に限定されるのも、フルランク共分散の推定困難を回避するためだ。
 
-**落とし穴**: $N < d$ では $\hat{\boldsymbol{\Sigma}}$ が半正定値になりCholesky分解が失敗する。$\hat{\boldsymbol{\Sigma}} + 10^{-6}I$ の正則化で回避。
+**Block 1 での確認**: 上の PyTorch ブロックで `D.MultivariateNormal(mu_mv, cov_mv).log_prob(x0)` が Cholesky 経由で安定に計算されることを示した。`covariance_matrix` に代えて `scale_tril=L`（Cholesky 因子直接渡し）も使える — 既に Cholesky 分解済みの場合は後者が効率的だ。
 
 **条件付き分布**:
 
@@ -306,24 +306,40 @@ $$
 
 $\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}$ は Kalman gain と同型。$\mathbf{x}_2$ を観測すると分散は必ず縮む: $\boldsymbol{\Sigma}_{1|2} \preceq \boldsymbol{\Sigma}_{11}$（半正定値順序）。
 
-```python
-def mvn_conditional(mu: np.ndarray, Sigma: np.ndarray, obs_idx: list[int], obs_val: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    d = len(mu)
-    free = [i for i in range(d) if i not in obs_idx]
-    S11 = Sigma[np.ix_(free, free)]
-    S12 = Sigma[np.ix_(free, obs_idx)]
-    S22 = Sigma[np.ix_(obs_idx, obs_idx)]
-    gain = np.linalg.solve(S22.T, S12.T).T  # S12 @ S22^{-1}
-    mu_c  = mu[free] + gain @ (obs_val - mu[obs_idx])
-    Sig_c = S11 - gain @ S12.T
-    return mu_c, Sig_c
+**Schur 補行列公式の導出**:
 
-mu = np.array([1.0, -2.0]); S = np.array([[2.0, 0.8],[0.8, 1.0]])
-mc, Sc = mvn_conditional(mu, S, obs_idx=[1], obs_val=np.array([-1.0]))
-print(f"mu(x1|x2=-1)  = {mc[0]:.4f}")   # = 1 + 0.8*(1) = 1.8
-print(f"Var(x1|x2=-1) = {Sc[0,0]:.4f}") # = 2 - 0.64 = 1.36
-assert Sc[0,0] < S[0,0]                 # 条件付けで分散減少 checked
-```
+ブロック行列の逆行列を使う。$\boldsymbol{\Sigma} = \begin{pmatrix}\boldsymbol{\Sigma}_{11}&\boldsymbol{\Sigma}_{12}\\\boldsymbol{\Sigma}_{21}&\boldsymbol{\Sigma}_{22}\end{pmatrix}$ の逆行列のブロック $(1,1)$ 成分が $(\boldsymbol{\Sigma}_{11} - \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21})^{-1}$。これが Schur 補行列 $\boldsymbol{\Sigma}_{1|2}^{-1}$ だ。
+
+結合正規分布の定義から条件付き分布を導く:
+
+$$
+\begin{aligned}
+\log p(\mathbf{x}_1, \mathbf{x}_2) &= -\frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu}) + \text{const} \\
+p(\mathbf{x}_1 \mid \mathbf{x}_2) &\propto p(\mathbf{x}_1, \mathbf{x}_2) \quad (\mathbf{x}_2 \text{ 固定})
+\end{aligned}
+$$
+
+$\mathbf{x}_2 = \mathbf{a}$ を固定して $\mathbf{x}_1$ についての二次形式を整理すると:
+
+$$
+-\frac{1}{2}\bigl(\mathbf{x}_1 - \boldsymbol{\mu}_{1|2}\bigr)^\top \boldsymbol{\Sigma}_{1|2}^{-1}\bigl(\mathbf{x}_1 - \boldsymbol{\mu}_{1|2}\bigr) + \text{const}
+$$
+
+これは $\mathcal{N}(\boldsymbol{\mu}_{1|2}, \boldsymbol{\Sigma}_{1|2})$ の対数密度だ。
+
+**分散が縮む理由**: $\boldsymbol{\Sigma}_{1|2} = \boldsymbol{\Sigma}_{11} - \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21}$ において、引かれる項 $\boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21}$ は半正定値（$\mathbf{v}^\top \boldsymbol{\Sigma}_{12}\boldsymbol{\Sigma}_{22}^{-1}\boldsymbol{\Sigma}_{21}\mathbf{v} = \|\boldsymbol{\Sigma}_{22}^{-1/2}\boldsymbol{\Sigma}_{21}\mathbf{v}\|^2 \geq 0$）。よって $\boldsymbol{\Sigma}_{1|2} \preceq \boldsymbol{\Sigma}_{11}$（半正定値順序）— **観測するほど不確実性は必ず減少する**。
+
+具体例: $\boldsymbol{\Sigma} = \begin{pmatrix}2 & 0.8 \\ 0.8 & 1\end{pmatrix}$, $\mathbf{x}_2 = -1$ を観測すると:
+
+$$
+\boldsymbol{\mu}_{1|2} = 1 + 0.8 \cdot 1^{-1} \cdot (-1 - (-2)) = 1 + 0.8 = 1.8
+$$
+
+$$
+\boldsymbol{\Sigma}_{1|2} = 2 - 0.8^2/1 = 2 - 0.64 = 1.36 < 2 = \boldsymbol{\Sigma}_{11}
+$$
+
+正の相関 $\rho = 0.8/\sqrt{2 \cdot 1} \approx 0.566$ があるため、$x_2$ の観測が $x_1$ の予測を上方修正し、不確実性を $2 \to 1.36$（32\%削減）する。この公式は Kalman フィルタの更新式と同型であり、GPGPU 上の状態推定から VAE の事後分布計算まで広く使われる。
 
 ### 5.3 指数型分布族 — 統一的記述
 
@@ -363,70 +379,53 @@ Gaussianなら $T(x) = (x, x^2)$ なので、平均と二乗平均が一致す�
 抽象的に見えるが、Gaussian/Bernoulli/Poissonが同じクラスで書けることを確認する。
 
 記号 ↔ 変数対応:
-- $\boldsymbol{\eta}$（自然パラメータ）↔ `eta: ndarray`
-- $T(x)$（十分統計量）↔ `suff_stat(x)`
-- $A(\boldsymbol{\eta})$（対数分配関数）↔ `log_partition(eta)`
-- MLE条件: $\mathbb{E}[T(x)] = \bar{T}$ ↔ `eta_mle` を数値最適化
+- $\boldsymbol{\eta}$（自然パラメータ）↔ `eta: (k,)` where $k$ = 十分統計量の次元
+- $T(x)$（十分統計量）↔ `suff_stat(x)`: 充分な情報を持つ「データの圧縮表現」
+- $A(\boldsymbol{\eta})$（対数分配関数）↔ `log_partition(eta)`: 正規化定数の対数
+- MLE 条件 $\mathbb{E}[T(x)] = \overline{T}$ ↔ 経験的十分統計量と理論的期待値の一致
 
-shape: `eta` `(k,)` where `k` は十分統計量の次元（Gaussian: k=2, Bernoulli: k=1）
+shape: Gaussian の場合 `eta: (2,)`, `T(x): (2,)` = $(x, x^2)$
 
-```python
-import numpy as np
-from scipy.optimize import minimize
+**対数分配関数 $A(\boldsymbol{\eta})$ の3つの役割**:
 
-class ExpFamilyGaussian:
-    """1次元Gaussianの指数型分布族表現
-    eta = [mu/sigma^2, -1/(2*sigma^2)]
-    T(x) = [x, x^2]
-    """
-    @staticmethod
-    def to_natural(mu: float, sigma2: float):
-        eta1 = mu / sigma2
-        eta2 = -1.0 / (2.0 * sigma2)
-        return np.array([eta1, eta2])
+1. **正規化**: $A(\boldsymbol{\eta})$ は $\int p(x \mid \boldsymbol{\eta}) dx = 1$ を保証する。
 
-    @staticmethod
-    def to_moment(eta: np.ndarray):
-        # eta = [eta1, eta2] -> (mu, sigma^2)
-        sigma2 = -1.0 / (2.0 * eta[1])
-        mu     = eta[0] * sigma2
-        return mu, sigma2
+2. **期待値生成**: $\nabla_{\boldsymbol{\eta}} A(\boldsymbol{\eta}) = \mathbb{E}_{p}[T(x)]$。Gaussian では $\partial_{\eta_1} A = \mu$（期待値）、$\partial_{\eta_2} A = \mu^2 + \sigma^2$（二次モーメント）。
 
-    @staticmethod
-    def suff_stat(x: np.ndarray) -> np.ndarray:
-        # T(x) = [x, x^2], shape: (N, 2)
-        return np.column_stack([x, x ** 2])
+3. **分散・共分散生成**: $\nabla^2_{\boldsymbol{\eta}} A(\boldsymbol{\eta}) = \text{Cov}[T(x)] \succeq 0$。$A$ が凸であることの直接の証明だ。
 
-    @staticmethod
-    def log_partition(eta: np.ndarray) -> float:
-        # A(eta) = -eta1^2/(4*eta2) + 0.5*log(pi/(-eta2))
-        eta1, eta2 = eta
-        return -eta1**2 / (4*eta2) + 0.5 * np.log(np.pi / (-eta2))
+**$A$ の凸性と MLE の大域最適性**:
 
-    @classmethod
-    def mle(cls, x: np.ndarray):
-        # MLE: E[T(x)] = empirical mean of T(x)
-        # For Gaussian this has a closed form, but we verify numerically
-        T_bar = cls.suff_stat(x).mean(axis=0)  # [x_bar, x^2_bar]
-        # closed form: mu = T_bar[0], sigma^2 = T_bar[1] - T_bar[0]^2
-        mu_mle = T_bar[0]
-        sigma2_mle = T_bar[1] - T_bar[0]**2
-        return cls.to_natural(mu_mle, sigma2_mle)
+$A$ が凸 $\implies$ $-\sum_i \log p(x^{(i)} \mid \boldsymbol{\eta}) = \sum_i A(\boldsymbol{\eta}) - \boldsymbol{\eta}^\top T(x^{(i)}) + \text{const}$ も凸（$\boldsymbol{\eta}$ の線形項を引いた凸関数）。よって局所解 = 大域解。これが指数型分布族の「学習しやすさ」の本質だ。
 
-# 数値検証
-rng = np.random.default_rng(0)
-X = rng.normal(loc=3.0, scale=2.0, size=2000)
-eta_hat = ExpFamilyGaussian.mle(X)
-mu_hat, sigma2_hat = ExpFamilyGaussian.to_moment(eta_hat)
-print(f"mu_hat = {mu_hat:.4f}   (true: 3.0)")
-print(f"sigma_hat = {sigma2_hat**0.5:.4f}  (true: 2.0)")
+**Gaussian の具体計算**:
 
-# 十分統計量条件を確認: E[T(x)] = empirical mean of T(x)
-T_bar = ExpFamilyGaussian.suff_stat(X).mean(axis=0)
-E_T_hat = np.array([mu_hat, mu_hat**2 + sigma2_hat])  # E[x], E[x^2] under N(mu,sigma^2)
-assert np.allclose(T_bar, E_T_hat, atol=0.1), f"MLE condition violated: {T_bar} vs {E_T_hat}"
-print(f"E[T(x)] = {E_T_hat.round(3)}, empirical = {T_bar.round(3)}  checked")
-```
+$\boldsymbol{\eta} = (\eta_1, \eta_2) = (\mu/\sigma^2,\; -1/(2\sigma^2))$ から逆変換:
+
+$$
+\sigma^2 = -\frac{1}{2\eta_2}, \quad \mu = \eta_1 \cdot \sigma^2 = -\frac{\eta_1}{2\eta_2}
+$$
+
+対数分配関数:
+
+$$
+A(\boldsymbol{\eta}) = -\frac{\eta_1^2}{4\eta_2} + \frac{1}{2}\log\frac{\pi}{-\eta_2}
+$$
+
+これを $\eta_1$ で微分すると $-\eta_1/(2\eta_2) = \mu = \mathbb{E}[X]$、$\eta_2$ で微分すると $\eta_1^2/(4\eta_2^2) + 1/(2\eta_2) = \mu^2 + \sigma^2 = \mathbb{E}[X^2]$。
+
+MLE 条件「$\mathbb{E}[T(x)] = \frac{1}{N}\sum T(x^{(i)})$」は Gaussian では $(\mathbb{E}[X], \mathbb{E}[X^2]) = (\bar{x}, \overline{x^2})$、つまりサンプル平均と二乗平均が一致する — これが MLE 解 $\hat{\mu} = \bar{x}$, $\hat{\sigma}^2 = \overline{x^2} - \bar{x}^2$ と等価だ。
+
+**自然勾配法 (Natural Gradient) へのプレビュー**:
+
+指数型分布族のパラメータ空間は Fisher 情報行列 $\mathbf{I}(\boldsymbol{\eta})$ が計量を与える「Riemannian 多様体」だ。通常の勾配降下と自然勾配降下の違い:
+
+$$
+\text{通常}: \boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \nabla_{\boldsymbol{\eta}} \mathcal{L}, \quad
+\text{自然勾配}: \boldsymbol{\eta}_{t+1} = \boldsymbol{\eta}_t - \alpha \mathbf{I}^{-1}(\boldsymbol{\eta}_t) \nabla_{\boldsymbol{\eta}} \mathcal{L}
+$$
+
+指数型分布族の特別な性質: 自然パラメータ空間での自然勾配 = 期待値パラメータ空間 $\boldsymbol{\mu} = \mathbb{E}[T(x)]$ での通常勾配。つまり $\mathbf{I}^{-1} \nabla_{\boldsymbol{\eta}} = \nabla_{\boldsymbol{\mu}}$。これが Adam などの適応的最適化の理論的基盤だ（第12回で詳説）。
 
 **なぜ対数分配関数 $A(\boldsymbol{\eta})$ が重要か**: $A$ の一次微分が期待値、二次微分が共分散を与える。
 
@@ -457,96 +456,64 @@ $A$ が凸 → 負の対数尤度も凸 → MLEは大域的最適解。これが
 第8回（EM算法）への橋渡しとして、2成分GMMのフィッティングを実装する。ここではEM算法の前段階として、単一ガウスのMLEを拡張する形で問題の困難さを体感する。
 
 $$
-p(x\\mid \\theta)=\\pi\\,\\mathcal{N}(x\\mid \\mu_1,\\sigma_1^2)+(1-\\pi)\\,\\mathcal{N}(x\\mid \\mu_2,\\sigma_2^2)
-
-\\ell(\\theta)=\\sum_{i=1}^{N}\\log p(x_i\\mid\\theta)
-
-\\mathcal{N}(x\\mid\\mu,\\sigma^2)=\\frac{1}{\\sqrt{2\\pi}\\,\\sigma}\\exp\\left(-\\frac{(x-\\mu)^2}{2\\sigma^2}\\right)
+\begin{aligned}
+p(x \mid \theta) &= \pi\,\mathcal{N}(x \mid \mu_1, \sigma_1^2) + (1-\pi)\,\mathcal{N}(x \mid \mu_2, \sigma_2^2) \\[6pt]
+\ell(\theta) &= \sum_{i=1}^{N} \log p(x_i \mid \theta) \\[6pt]
+\mathcal{N}(x \mid \mu, \sigma^2) &= \frac{1}{\sqrt{2\pi}\,\sigma}\exp\!\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
+\end{aligned}
 $$
 
-```python
-import numpy as np
+**なぜ GMM の MLE は閉じた形で解けないのか**: 対数尤度に**和の対数** $\log[\pi \mathcal{N}_1 + (1-\pi)\mathcal{N}_2]$ が現れ、対数と和の順序を入れ替えられない。微分してもパラメータが互いに絡み合う:
 
-np.random.seed(42)
-N = 1000  # samples
+$$
+\frac{\partial \ell}{\partial \mu_1} = \sum_i \frac{\pi \mathcal{N}(x_i|\mu_1,\sigma_1^2)}{\pi \mathcal{N}(x_i|\mu_1,\sigma_1^2) + (1-\pi)\mathcal{N}(x_i|\mu_2,\sigma_2^2)} \cdot \frac{x_i - \mu_1}{\sigma_1^2} = 0
+$$
 
-# True parameters
-pi_true = 0.4
-mu1_true, sigma1_true = -2.0, 0.8
-mu2_true, sigma2_true = 3.0, 1.2
+右辺の分数 $r_i = P(\text{成分1} \mid x_i, \theta)$ は **責任度（responsibility）** と呼ばれる。$\mu_1$ の式が $r_i$ に依存し、$r_i$ が $\mu_2, \sigma_2, \pi$ に依存する → 全パラメータが連立する。
 
-component = np.random.binomial(1, 1 - pi_true, N)
-data = np.where(component == 0,
-                np.random.normal(mu1_true, sigma1_true, N),
-                np.random.normal(mu2_true, sigma2_true, N))
+これを解く反復アルゴリズムが EM 算法（第8回）だ:
 
-def normal_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
-    z = (x - mu) / sigma
-    return (1.0 / (np.sqrt(2.0 * np.pi) * sigma)) * np.exp(-0.5 * z * z)
+1. **E ステップ**: 現在の $\theta$ で $r_i$ を計算  
+2. **M ステップ**: $r_i$ を固定して各パラメータを個別に更新  
+   - $\hat{\mu}_1 = \sum_i r_i x_i / \sum_i r_i$（責任度で重み付けした標本平均）
 
-mu_single = data.mean()
-sigma_single = data.std()
-
-def gmm_log_likelihood(x: np.ndarray, pi: float, mu1: float, sig1: float, mu2: float, sig2: float) -> float:
-    px = pi * normal_pdf(x, mu1, sig1) + (1.0 - pi) * normal_pdf(x, mu2, sig2)
-    return float(np.sum(np.log(px + 1e-12)))
-
-ll_true = gmm_log_likelihood(data, pi_true, mu1_true, sigma1_true, mu2_true, sigma2_true)
-ll_single = float(np.sum(np.log(normal_pdf(data, mu_single, sigma_single) + 1e-12)))
-
-print(f"single Gaussian MLE: mu={mu_single:.3f}, sigma={sigma_single:.3f}")
-print(f"loglik (true GMM):   {ll_true:.2f}")
-print(f"loglik (single Gauss): {ll_single:.2f}")
-print(f"gap: {ll_true - ll_single:.2f}")
-
-print("note: GMM の MLE は閉形式にならない（第8回の EM につながる）")
-```
+単一 Gaussian との対数尤度の差（gap）が GMM の「モデル表現力の利得」を数値化する。$\text{gap} = \ell_\text{GMM} - \ell_\text{single} > 0$ は混合モデルが必要な証拠だ。大きいほど単峰分布の仮定が誤りだった度合いを示す。
 
 **なぜGMMのMLEは閉じた形で解けないのか**: 対数尤度の中に**和の対数** $\log[\pi \mathcal{N}(x \mid \mu_1, \sigma_1^2) + (1-\pi)\mathcal{N}(x \mid \mu_2, \sigma_2^2)]$ が現れる。対数と和の順序を入れ替えられないため、微分しても各パラメータが互いに絡み合う。この困難が第8回のEM算法の動機だ。
 
 ### 5.5a 実装演習: ベイズ推論のグリッド近似
 
 $$
-\\theta\\sim\\mathrm{Beta}(a,b),\\quad x_i\\sim\\mathrm{Bernoulli}(\\theta)
-
-p(\\theta\\mid\\mathbf{x})\\propto \\theta^{a+h-1}(1-\\theta)^{b+t-1}
-
-\\theta\\mid\\mathbf{x}\\sim\\mathrm{Beta}(a+h,b+t)
+\begin{aligned}
+\theta &\sim \mathrm{Beta}(a,b), \quad x_i \sim \mathrm{Bernoulli}(\theta) \\[4pt]
+p(\theta \mid \mathbf{x}) &\propto \theta^{a+h-1}(1-\theta)^{b+t-1} \\[4pt]
+\theta \mid \mathbf{x} &\sim \mathrm{Beta}(a+h,\; b+t)
+\end{aligned}
 $$
 
-```python
-import numpy as np
+ここで $h = \sum_i x_i$（表の回数）、$t = N - h$（裏の回数）。事前 Beta$(1,1)$（一様）から始め、データを観測するごとに指数 $(a,b)$ が $(a+h, b+t)$ に更新される。尤度関数 $L(\theta) = \theta^h (1-\theta)^t$ が Beta 分布と「同じ形」になっているのが共役性の核心だ。
 
-from math import lgamma
+**グリッド近似が実用的でない理由 — 次元の呪い**:
 
-def log_beta(a: float, b: float) -> float:
-    return lgamma(a) + lgamma(b) - lgamma(a + b)
+$d$ 次元のパラメータに各軸 $M$ 点のグリッドを張ると $M^d$ 点が必要だ:
 
-np.random.seed(42)
+| $d$ | $M=10$ | $M=100$ | メモリ（float64）|
+|:---:|:-------:|:--------:|:----------------:|
+| 2 | $10^2$ | $10^4$ | 80 KB |
+| 5 | $10^5$ | $10^{10}$ | 80 GB |
+| 10 | $10^{10}$ | $10^{20}$ | ≫ 宇宙の原子数 |
 
-theta_true = 0.7
-x = np.random.binomial(1, theta_true, size=20)
-h = int(x.sum())
-t = int(len(x) - h)
+10次元で各軸100点は $10^{20}$ 点 — 物理的に不可能。これが**次元の呪い**だ。
 
-# uniform prior Beta(1,1)
-a, b = 1.0, 1.0
-post_a, post_b = a + h, b + t
+**代替手法の三本柱**:
 
-theta = np.linspace(1e-4, 1 - 1e-4, 4000)
-log_post = (post_a - 1) * np.log(theta) + (post_b - 1) * np.log(1 - theta) - log_beta(post_a, post_b)
-post = np.exp(log_post - log_post.max())  # numerical stability
-post /= np.trapz(post, theta)
+1. **MCMC（Markov Chain Monte Carlo）**: 事後分布から直接サンプリング。Metropolis-Hastings や Hamiltonian Monte Carlo (HMC) が代表例。次元が増えても（ある意味）スケールする — 第5回で詳説。
 
-mean_grid = float(np.trapz(theta * post, theta))
-mean_analytic = post_a / (post_a + post_b)
-mle = h / (h + t)
+2. **変分推論（Variational Inference）**: 事後分布 $p(\theta|\mathbf{x})$ を簡単な族 $q_\phi(\theta)$ で近似し、$D_{\mathrm{KL}}(q_\phi \| p)$ を最小化（= ELBO 最大化）。VAE の核心。
 
-print(f"data: {h}H/{t}T (N={h+t})")
-print(f"posterior: Beta({post_a:.1f}, {post_b:.1f})")
-print(f"mean(grid)={mean_grid:.4f} mean(analytic)={mean_analytic:.4f} mle={mle:.4f}")
-print("note: 高次元だとグリッドは破綻（次元の呪い）")
-```
+3. **Laplace 近似**: 事後分布を最頻値（MAP）周りで二次近似する。MAP 推定 + Hessian でガウス近似を得る。大次元でも計算可能だが、マルチモーダルな事後分布に弱い。
+
+**事後一致性（posterior consistency）**: 正則条件のもとで $N \to \infty$ のとき事後分布は真のパラメータ $\theta^*$ に集中する。事前分布の影響が薄れ、ベイズ推定は MLE に収束する — 「事前分布は正則化の一形態」と割り切れる理由だ。Beta-Bernoulli では $\hat{\theta}_\text{Bayes} = (a+h)/(a+b+N) \to h/N = \hat{\theta}_\text{MLE}$ as $N \to \infty$。
 
 > **Note:** **実装の教訓**: データが増えるほど、事前分布の影響は薄れ、ベイズ推定はMLEに近づく。これは事後分布が「尤度に支配される」ため。逆に、データが少ないときは事前分布が結果を大きく左右する。
 
@@ -568,31 +535,31 @@ $$
 精度（分散の逆数）が加法的に更新される。$N \to \infty$ で $\mu_N \to \bar{x}$（MLE）、$\tau_N^2 \to 0$。
 
 記号 ↔ 変数対応:
-- $\mu_0, \tau_0^2$ ↔ `mu0, tau0_sq`
-- $\sigma^2$ ↔ `sigma_sq`（既知の尤度分散）
-- $\bar{x}, N$ ↔ `x_bar, N`
-- $\mu_N, \tau_N^2$ ↔ `mu_N, tau_N_sq`（事後パラメータ）
+- $\mu_0, \tau_0^2$ ↔ 事前分布の平均・分散（先験的知識）
+- $\sigma^2$ ↔ 尤度の分散（既知と仮定）
+- $\bar{x}, N$ ↔ 標本平均・サンプル数
+- $\mu_N, \tau_N^2$ ↔ 事後分布の平均・分散（観測後の更新された信念）
 
-```python
-import numpy as np
+**精度（precision）の加法性**:
 
-def gaussian_conjugate_update(mu0: float, tau0_sq: float, sigma_sq: float, x_bar: float, N: int) -> tuple[float, float]:
-    prec_N = 1.0/tau0_sq + N/sigma_sq
-    tau_N_sq = 1.0 / prec_N
-    mu_N = tau_N_sq * (mu0/tau0_sq + x_bar * N/sigma_sq)
-    return mu_N, tau_N_sq
+精度 $\lambda = 1/\tau^2$（分散の逆数）で書くと更新式は美しくなる:
 
-rng = np.random.default_rng(42)
-theta_true, sigma_sq = 3.0, 4.0
-print(f"{'N':>4}  {'MLE':>8}  {'post_mu(strong)':>16}  {'post_mu(weak)':>14}")
-for N in [1, 5, 20, 100]:
-    x = rng.normal(theta_true, sigma_sq**0.5, N)
-    xb = x.mean()
-    ms, _ = gaussian_conjugate_update(0.0, 0.5, sigma_sq, xb, N)   # strong prior
-    mw, _ = gaussian_conjugate_update(0.0, 100.0, sigma_sq, xb, N) # weak prior
-    print(f"{N:>4}  {xb:>8.3f}  {ms:>16.3f}  {mw:>14.3f}")
-# N増加 -> strong prior の影響が消え、MLE に収束
-```
+$$
+\lambda_N = \underbrace{\lambda_0}_{\text{事前の精度}} + \underbrace{\frac{N}{\sigma^2}}_{\text{データの精度}}
+$$
+
+精度は**加法的に更新される**。1個のデータが $1/\sigma^2$ の精度を追加する — 精度の積み重ねが信念の強化だ。
+
+$N \to \infty$: $\lambda_N \to \infty$（精度無限大 → 分散0 → 確信に収束）、$\mu_N \to \bar{x}$（MLE に収束）。  
+事前分布 $\tau_0^2 \to \infty$（無情報）: $\mu_N \to \bar{x}$、$\tau_N^2 \to \sigma^2/N$（MLE の標準誤差の二乗）。
+
+**強事前 vs 弱事前の比較**:
+
+$\mu_0 = 0$（事前の信念：平均は0）、真値 $\theta^* = 3$:
+- 強事前（$\tau_0^2 = 0.5$）: $N=1$ では事前に強く引っ張られ $\mu_N \approx 0.5$。$N=100$ で $\mu_N \approx 2.9$（ほぼ収束）
+- 弱事前（$\tau_0^2 = 100$）: 小 $N$ でも MLE に近い値。事前の影響が最初から薄い
+
+これが「L2 正則化 = Gaussian 事前分布」の直感だ。正則化係数 $\lambda$ は事前精度 $\lambda_0 = \lambda \sigma^2$ に対応する。正則化を強くする（$\lambda \uparrow$）= 事前分布を強くする（$\tau_0^2 \downarrow$）= データより事前知識を信じる。
 
 **3推定量の比較**:
 
@@ -623,44 +590,39 @@ D_{\mathrm{KL}}(\mathcal{N}(\mu_1, \sigma_1^2) \| \mathcal{N}(\mu_2, \sigma_2^2)
 $$
 
 記号 ↔ 変数対応:
-- $\mu_1, \sigma_1^2$ ↔ `mu1, var1` (分布 $p$)
-- $\mu_2, \sigma_2^2$ ↔ `mu2, var2` (分布 $q$)
-- $D_{\mathrm{KL}}$ ↔ `kl: float` (非負スカラー)
+- $\mu_1, \sigma_1^2$ ↔ `mu1, var1`（分布 $p$）
+- $\mu_2, \sigma_2^2$ ↔ `mu2, var2`（分布 $q$）
+- $D_{\mathrm{KL}}(p\|q)$ ↔ `kl_pq`（スカラー、非負）
 
-shape: scalar inputs → scalar output
+shape: scalar inputs → scalar output。Block 1 では `D.kl_divergence(p, q)` が閉形式を自動計算する。
 
-```python
-import numpy as np
-from scipy import stats
+**非負性の証明 — Gibbs 不等式**:
 
-def kl_gaussian(mu1, var1, mu2, var2):
-    """KL(N(mu1,var1) || N(mu2,var2)) — closed form
-    = log(sigma2/sigma1) + (var1 + (mu1-mu2)^2)/(2*var2) - 1/2
-    """
-    return (np.log(var2/var1) + (var1 + (mu1-mu2)**2) / (2*var2) - 1) / 2.0
+$\log x \leq x - 1$（$x > 0$、等号は $x=1$ のみ）を使う:
 
-# 数値検証 1: 非負性の確認
-kl_same = kl_gaussian(mu1=2.0, var1=1.0, mu2=2.0, var2=1.0)
-assert abs(kl_same) < 1e-10, f"KL(p||p) must be 0, got {kl_same}"
-print(f"KL(p||p) = {kl_same:.2e}  (should be 0) checked")
+$$
+-D_{\mathrm{KL}}(p \| q) = \mathbb{E}_p\!\left[\log \frac{q(X)}{p(X)}\right] \leq \mathbb{E}_p\!\left[\frac{q(X)}{p(X)} - 1\right] = \int q(x)\,dx - \int p(x)\,dx = 1 - 1 = 0
+$$
 
-# 数値検証 2: 非対称性
-kl_pq = kl_gaussian(mu1=0.0, var1=1.0, mu2=1.0, var2=2.0)
-kl_qp = kl_gaussian(mu1=1.0, var1=2.0, mu2=0.0, var2=1.0)
-print(f"KL(p||q) = {kl_pq:.4f},  KL(q||p) = {kl_qp:.4f}  (asymmetric)")
-assert kl_pq != kl_qp, "KL is asymmetric"
+よって $D_{\mathrm{KL}}(p \| q) \geq 0$、等号は $p = q$ のとき（$\log(q/p) = 0$ a.e.）。
 
-# 数値検証 3: Monte Carloで閉形式と比較
-rng = np.random.default_rng(42)
-mu1, var1, mu2, var2 = 1.0, 1.0, 2.0, 3.0
-x = rng.normal(mu1, var1**0.5, 1000000)  # sample from p
-log_p = stats.norm.logpdf(x, mu1, var1**0.5)
-log_q = stats.norm.logpdf(x, mu2, var2**0.5)
-kl_mc = float(np.mean(log_p - log_q))
-kl_exact = kl_gaussian(mu1, var1, mu2, var2)
-print(f"KL exact={kl_exact:.6f},  MC={kl_mc:.6f}  diff={abs(kl_exact-kl_mc):.6f}")
-assert abs(kl_exact - kl_mc) < 0.01, "KL MC vs exact mismatch"
-```
+**閉形式の導出（Gaussian-Gaussian）**:
+
+$$
+\begin{aligned}
+D_{\mathrm{KL}}(\mathcal{N}_1 \| \mathcal{N}_2) &= \int p_1 \log \frac{p_1}{p_2}\,dx \\
+&= \int p_1 \left[\log \frac{\sigma_2}{\sigma_1} + \frac{(x-\mu_1)^2}{2\sigma_1^2} - \frac{(x-\mu_2)^2}{2\sigma_2^2}\right] dx \\
+&= \log\frac{\sigma_2}{\sigma_1} + \frac{\sigma_1^2}{2\sigma_2^2} + \frac{(\mu_1-\mu_2)^2}{2\sigma_2^2} - \frac{1}{2}
+\end{aligned}
+$$
+
+3行目で $\mathbb{E}_{p_1}[(X-\mu_1)^2] = \sigma_1^2$、$\mathbb{E}_{p_1}[(X-\mu_2)^2] = \sigma_1^2 + (\mu_1-\mu_2)^2$ を使った。
+
+**非対称性の直感**: $D_{\mathrm{KL}}(p \| q)$ は「$p$ でサンプリングしつつ $q$ との違いを測る」。$q$ の裾が軽くて $p$ の裾が重い場合（$q(x) \ll p(x)$ で $p(x) > 0$）、$\log(p/q) \to +\infty$ となり KL が爆発する。逆方向 $D_{\mathrm{KL}}(q \| p)$ は $q$ でサンプリングするため、この爆発は起きない。
+
+VAE の ELBO で $D_{\mathrm{KL}}(q_\phi \| p)$ を使う（$p$ を外側に置く）のは、$q_\phi$ の領域外での爆発を避けるためだ — 「mode-seeking」と呼ばれる性質。
+
+**Block 1 での確認**: `D.kl_divergence(p, p)` が $10^{-6}$ 以下（数値精度の範囲で 0）になることを assert で検証した。
 
 **VAEとの接続**: VAEのELBOには $D_{\mathrm{KL}}(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))$ が登場する。$p(\mathbf{z}) = \mathcal{N}(\mathbf{0}, \mathbf{I})$、$q_\phi = \mathcal{N}(\boldsymbol{\mu}, \text{diag}(\boldsymbol{\sigma}^2))$ なら、次元独立なGaussian KLの閉形式が使える:
 
@@ -687,38 +649,40 @@ $$
 $$
 
 記号 ↔ 変数対応:
-- $\theta$ ↔ `theta: float`
-- スコア関数 $s(x;\theta) = \partial_\theta \log p$ ↔ `score: (N,)`
-- $I(\theta) = \mathbb{E}[s^2]$ ↔ `fisher_info: float`
-- CR下界 $1/(nI)$ ↔ `cr_bound: float`
+- $\theta$ ↔ `theta: float`（推定対象パラメータ）
+- スコア関数 $s(x;\theta) = \partial_\theta \log p(x;\theta)$ ↔ スカラー関数（各データ点で評価）
+- $I(\theta) = \mathbb{E}[s^2]$ ↔ スコアの二乗期待値
+- CR 下界 $1/(nI(\theta))$ ↔ 任意の不偏推定量の分散の下限
 
-```python
-import numpy as np
+shape: `score(x): (N,)`, Fisher info: scalar, CR bound: scalar
 
-def fisher_info_gauss_mean(sigma2: float) -> float:
-    # I(mu) = 1/sigma^2 for X~N(mu, sigma^2)
-    return 1.0 / sigma2
+**Cramér-Rao 下界の導出スケッチ**:
 
-def score_gauss_mean(x, mu, sigma2):
-    # s(x; mu) = d/dmu log N(x|mu,sigma^2) = (x-mu)/sigma^2
-    return (x - mu) / sigma2
+任意の不偏推定量 $\hat{\theta}(X)$（$\mathbb{E}[\hat{\theta}] = \theta$）について:
 
-def cramer_rao(n: int, fisher: float) -> float:
-    return 1.0 / (n * fisher)
+$$
+\frac{\partial}{\partial \theta}\mathbb{E}[\hat{\theta}] = 1 \implies \int \hat{\theta}(x) \frac{\partial}{\partial \theta} p(x;\theta)\,dx = 1
+$$
 
-# 数値検証: 標本平均の分散 vs CR下界
-rng = np.random.default_rng(0)
-mu_true, sigma2_true = 2.0, 4.0
-fi = fisher_info_gauss_mean(sigma2_true)  # = 0.25
-print(f"Fisher info I(mu) = {fi:.4f}  (= 1/sigma^2)")
+$\frac{\partial \log p}{\partial \theta} = \frac{1}{p}\frac{\partial p}{\partial \theta}$ を代入:
 
-for n in [10, 50, 100, 500]:
-    samples = rng.normal(mu_true, sigma2_true**0.5, (5000, n))
-    var_mle = float(samples.mean(axis=1).var())
-    cr = cramer_rao(n, fi)
-    print(f"N={n:4d}  CR_bound={cr:.6f}  Var(mu_hat)={var_mle:.6f}  ratio={var_mle/cr:.4f}")
-# ratio ≈ 1.0: sample mean is an efficient estimator for mu
-```
+$$
+\mathbb{E}[\hat{\theta}(X) \cdot s(X;\theta)] = 1
+$$
+
+スコアの期待値ゼロ（$\mathbb{E}[s] = 0$）から $\text{Cov}(\hat{\theta}, s) = \mathbb{E}[\hat{\theta} \cdot s] = 1$。Cauchy-Schwarz 不等式より:
+
+$$
+1 = \text{Cov}(\hat{\theta}, s)^2 \leq \text{Var}(\hat{\theta}) \cdot \text{Var}(s) = \text{Var}(\hat{\theta}) \cdot I(\theta)
+$$
+
+よって $\text{Var}(\hat{\theta}) \geq 1/I(\theta)$。$n$ 個の i.i.d. サンプルなら Fisher 情報が加法的（$I_n = n I(\theta)$）なので $\text{Var}(\hat{\theta}_n) \geq 1/(n I(\theta))$。
+
+**Gaussian MLE の効率性**: $\hat{\mu} = \bar{X}$ の分散は $\sigma^2/n$。Fisher 情報 $I(\mu) = 1/\sigma^2$ なので CR 下界は $1/(n \cdot 1/\sigma^2) = \sigma^2/n$。比率 = 1.0 — 標本平均は **Fisher 効率的推定量**（CR 下界を達成する）。
+
+**CR 下界が達成されない例**: 分散 $\sigma^2$ の推定では、標本分散 $\hat{\sigma}^2 = \frac{1}{n}\sum(x_i-\bar{x})^2$ の分散は $2\sigma^4/n$、CR 下界は $2\sigma^4/n$（Fisher 情報 $I(\sigma^2) = n/(2\sigma^4)$）— 同じく効率的。しかし、分散の平方根 $\hat{\sigma}$ の推定量は一般に CR 下界を達成しない（デルタ法による変換で下界が変わるため）。
+
+**Fisher 情報行列（多次元）**: $\mathbf{I}(\boldsymbol{\theta})_{ij} = \mathbb{E}[\partial_i \log p \cdot \partial_j \log p]$。これが Riemannian 計量になり、パラメータ空間の「KL 幾何学」を定義する。自然勾配 $\tilde{\nabla} = \mathbf{I}^{-1} \nabla$ はこの幾何学に沿った最急降下だ。
 
 **検証**: 標本平均はCramér-Rao下界を**ぴったり達成**する（Fisher効率的推定量）。比率が全て≈1.0になる。
 
@@ -748,40 +712,48 @@ M_X(t) = \mathbb{E}[e^{tX}] = \int e^{tx} p(x) \, dx
 $$
 
 記号 ↔ 変数対応:
-- $t$ ↔ `t: float`（MGFの引数、ラプラス変数）
-- $M_X^{(k)}(0) = \mathbb{E}[X^k]$ ↔ `np.gradient` k回 または自動微分
-- $\varphi_X(t) = M_X(it)$（実MGFが存在する場合）
+- $t$ ↔ Laplace 変換の変数（実数）
+- $M_X^{(k)}(0) = \mathbb{E}[X^k]$ ↔ $k$ 次微分で $k$ 次モーメントを取り出せる
+- 特性関数 $\varphi_X(t) = M_X(it)$ ↔ $t$ を虚数軸にした MGF の解析接続
 
-```python
-import numpy as np
+**CLT の証明スケッチ（特性関数経由）**:
 
-def mgf_gaussian(t: float, mu: float, sigma2: float) -> float:
-    """M_X(t) = exp(mu*t + sigma^2*t^2/2) for X ~ N(mu, sigma^2)"""
-    return float(np.exp(mu * t + 0.5 * sigma2 * t**2))
+$S_N = \frac{1}{\sqrt{N}}\sum_{i=1}^N (X_i - \mu)/\sigma$ の特性関数を計算する:
 
-def moments_from_mgf(mu: float, sigma2: float, k_max: int = 4) -> dict[int, float]:
-    """k次モーメントを数値微分で確認: M^(k)(0) = E[X^k]"""
-    rng = np.random.default_rng(42)
-    X = rng.normal(mu, sigma2**0.5, 200_000)
-    return {k: float(np.mean(X**k)) for k in range(1, k_max + 1)}
+$$
+\varphi_{S_N}(t) = \left[\varphi_{(X-\mu)/\sigma}\!\!\left(\frac{t}{\sqrt{N}}\right)\right]^N
+$$
 
-# MGF から 4次モーメントまでを確認
-mu, sigma2 = 2.0, 3.0
-moms = moments_from_mgf(mu, sigma2)
-print(f"E[X]   = {moms[1]:.4f}  (true: {mu:.1f})")
-print(f"E[X^2] = {moms[2]:.4f}  (true: {mu**2 + sigma2:.1f})")
-print(f"E[X^3] = {moms[3]:.4f}  (true: {mu**3 + 3*mu*sigma2:.1f})")
-print(f"E[X^4] = {moms[4]:.4f}  (true: {mu**4 + 6*mu**2*sigma2 + 3*sigma2**2:.1f})")
+$(X-\mu)/\sigma$ の特性関数を $u = t/\sqrt{N}$ 周りでテイラー展開（$u \to 0$ として）:
 
-# MGF の独立和性質の確認
-t_val = 0.1
-M_X = mgf_gaussian(t_val, mu=1.0, sigma2=1.0)
-M_Y = mgf_gaussian(t_val, mu=2.0, sigma2=2.0)
-M_XY_product = M_X * M_Y
-M_XY_sum = mgf_gaussian(t_val, mu=3.0, sigma2=3.0)  # (X+Y)~N(3,3)
-assert abs(M_XY_product - M_XY_sum) < 1e-10
-print(f"M_X*M_Y = M_{{X+Y}} : {M_XY_product:.8f} == {M_XY_sum:.8f}  checked")
-```
+$$
+\varphi(u) = 1 + iu\mathbb{E}\left[\frac{X-\mu}{\sigma}\right] - \frac{u^2}{2}\mathbb{E}\left[\frac{(X-\mu)^2}{\sigma^2}\right] + O(u^3) = 1 - \frac{u^2}{2} + O(u^3)
+$$
+
+（$\mathbb{E}[(X-\mu)/\sigma] = 0$、$\mathbb{E}[(X-\mu)^2/\sigma^2] = 1$ を使用。）
+
+$$
+\varphi_{S_N}(t) = \left(1 - \frac{t^2}{2N} + O(N^{-3/2})\right)^N \xrightarrow{N \to \infty} e^{-t^2/2}
+$$
+
+$e^{-t^2/2}$ は $\mathcal{N}(0,1)$ の特性関数だ — CLT の証明完了。
+
+**MGF が存在しない分布**: Cauchy 分布 $p(x) = \frac{1}{\pi(1+x^2)}$ の MGF は収束しない（重裾のため $\mathbb{E}[e^{tX}] = \infty$）。だが特性関数は常に存在する: $\varphi_X(t) = e^{-|t|}$。Cauchy 分布は CLT が適用されない代表例で、$N$ 個の平均は同じ Cauchy 分布に従い「収束しない」。
+
+**Gaussian の MGF と積率**:
+
+$M_X(t) = e^{\mu t + \sigma^2 t^2/2}$ を $t$ で展開するとモーメントが得られる:
+
+$$
+\begin{aligned}
+\mathbb{E}[X] &= \mu \\
+\mathbb{E}[X^2] &= \mu^2 + \sigma^2 \\
+\mathbb{E}[X^3] &= \mu^3 + 3\mu\sigma^2 \\
+\mathbb{E}[X^4] &= \mu^4 + 6\mu^2\sigma^2 + 3\sigma^4
+\end{aligned}
+$$
+
+独立和の性質 $M_{X+Y}(t) = M_X(t) M_Y(t)$ から: $X \sim \mathcal{N}(\mu_1, \sigma_1^2)$, $Y \sim \mathcal{N}(\mu_2, \sigma_2^2)$ が独立なら $X+Y \sim \mathcal{N}(\mu_1+\mu_2, \sigma_1^2+\sigma_2^2)$。これが Gaussian の再生性（reproductive property）だ。
 
 
 
@@ -795,59 +767,161 @@ $$
 
 各ステップが Categorical 分布からのサンプリング + 対数確率の加算。
 
-**記号↔変数対応**:
-- $\mathbf{x} = (x_1,\ldots,x_T)$: シーケンス → `seq: np.ndarray`
-- $p(x_t \mid x_{<t})$: 条件付き確率（モデル出力） → `logits[t]` のsoftmax
-- $\log p(\mathbf{x})$: シーケンス対数尤度 → `log_prob: float`
-- Perplexity: $\exp(-\frac{1}{T}\log p(\mathbf{x}))$ → モデル評価指標
+**記号 ↔ 変数対応（Block 2）**:
+- $\mathbf{x} = (x_1,\ldots,x_T)$: トークン列 → `x: (T,)` int tensor
+- $\mathbf{z}_t = f_\theta(x_{<t})$: モデル出力 logit → `logits: (T, V)` float tensor
+- $\log p(x_t \mid x_{<t}) = \log \text{softmax}(\mathbf{z}_t)_{x_t}$ → `log_probs.gather(-1, x)`
+- $\log p(\mathbf{x}) = \sum_t \log p(x_t \mid x_{<t})$ → `.sum()` over `(T,)` tensor
+- Perplexity $= \exp(-\frac{1}{T}\log p(\mathbf{x}))$ → `torch.exp(-log_prob / T)`
 
-**shape**: `logits`: `(T, V)`, `seq`: `(T,)`, `log_prob`: scalar
+shape: `logits: (T, V)`, `x: (T,)`, `log_p_tokens: (T,)`, `log_prob: scalar`
+
+**数値安定化**: `F.log_softmax(logits, dim=-1)` が `logits - log Z` を計算。`log Z = torch.logsumexp(logits, dim=-1)` が max-shift trick で安定化される:
+
+$$
+\log \sum_j e^{z_j} = c + \log \sum_j e^{z_j - c}, \quad c = \max_k z_k
+$$
+
+**落とし穴**: `logits[:-1]` と `x[1:]` のペアにすること（次トークン予測）。`F.nll_loss` は `log_softmax` 適用済みテンソルを要求する点に注意（内部で再び `log_softmax` をかけない）。
+
+検算: `log_prob <= 0`（確率は [0,1] → 対数は非正）、`perplexity >= 1.0`、`logsumexp` 経由の手動計算と assert で一致を確認する。
 
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
+import torch.distributions as D
 
-def log_prob_sequence(logits: np.ndarray, seq: np.ndarray) -> float:
+torch.manual_seed(0)
+
+# --- Block 2 / 3: MLE + autoregressive log-likelihood ---
+# log p(x) = sum_{t=1}^{T} log p(x_t | x_{<t})
+
+def autoregressive_log_prob(logits: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """
-    logits: (T, V) - raw scores for each position
-    seq:    (T,)   - token indices (0..V-1)
-    returns: log p(x_1,...,x_T) under Categorical softmax model
+    logits: (T, V) — raw scores at each position (teacher-forcing)
+    x:      (T,)   — token ids in {0, ..., V-1}
+    returns: log p(x_1, ..., x_T) as a scalar tensor
     """
-    T, V = logits.shape
-    # numerically stable softmax in log space (log-sum-exp trick)
-    log_z = logits - logits.max(axis=-1, keepdims=True)
-    log_softmax = log_z - np.log(np.exp(log_z).sum(axis=-1, keepdims=True))
-    # gather log probabilities for the actual tokens
-    log_p_tokens = log_softmax[np.arange(T), seq]   # (T,)
-    return float(log_p_tokens.sum())
+    # F.log_softmax = z_k - logsumexp(z)  [numerically stable]
+    log_probs = F.log_softmax(logits, dim=-1)          # (T, V)
+    # gather: pick log p(x_t) for actual token at each position
+    log_p_t = log_probs.gather(dim=-1, index=x.unsqueeze(-1)).squeeze(-1)  # (T,)
+    return log_p_t.sum()                                # scalar: log p(x)
 
-def perplexity(logits: np.ndarray, seq: np.ndarray) -> float:
-    T = len(seq)
-    return float(np.exp(-log_prob_sequence(logits, seq) / T))
+def nll_loss(logits: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Next-token prediction NLL: logits[:-1] predicts x[1:]."""
+    return F.nll_loss(F.log_softmax(logits[:-1], dim=-1), x[1:], reduction='mean')
 
-# minimal verification
-rng = np.random.default_rng(0)
-V, T = 50, 10
-logits = rng.normal(size=(T, V))
-seq = rng.integers(0, V, size=T)
-lp = log_prob_sequence(logits, seq)
-ppl = perplexity(logits, seq)
-assert lp <= 0, "log probability must be <= 0"   # log P in (-inf, 0]
-assert ppl >= 1.0, "perplexity must be >= 1"
-print(f"log_prob={lp:.3f}, perplexity={ppl:.2f}")  # e.g. log_prob=-23.1, perplexity=10.3
+def perplexity(logits: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    T = x.shape[0]
+    return torch.exp(-autoregressive_log_prob(logits, x) / T)
+
+# numerical verification
+V, T = 50, 20
+logits = torch.randn(T, V)
+x = torch.randint(0, V, (T,))
+
+lp  = autoregressive_log_prob(logits, x)
+ppl = perplexity(logits, x)
+nll = nll_loss(logits, x)
+
+assert lp.item() <= 0,          "log probability <= 0"
+assert ppl.item() >= 1.0,       "perplexity >= 1"
+
+# cross-check via logsumexp
+log_z   = torch.logsumexp(logits, dim=-1)              # (T,)  = log Z per position
+ll_manual = (logits[range(T), x] - log_z).sum()
+assert abs(lp.item() - ll_manual.item()) < 1e-5,       "logsumexp cross-check"
+
+print(f"log_prob={lp:.4f}, perplexity={ppl:.2f}, NLL={nll:.4f}")
+# log_prob <= 0,  perplexity >= 1,  NLL >= 0
 ```
 
-**落とし穴**: `logits.max(axis=-1, keepdims=True)` を引かないと、`exp` がオーバーフローする。これが `log-sum-exp` トリックの要。`softmax(x) = softmax(x - c)` が `c` に依存しないことを確認:
+**数値検算**: `softmax` の和 = 1 は `F.softmax(logits, dim=-1).sum(dim=-1)` が全て `≈ 1.0` で確認できる。Perplexity = 1 はモデルが確信を持って正解を予測する場合（実際は語彙サイズ $V = 50$ の一様分布で Perplexity ≈ $e^{\log 50} = 50$ が期待値）。
+
+---
+
+これで確率論の5トピック全ての実装が完了した。次は Triton カーネルで並列化する。
+
+### 5.8 Triton カーネル — 並列対数尤度計算
+
+確率モデルの評価において「全データ点の $\log p(x^{(i)} \mid \theta)$ を計算する」操作は**各データ点が独立**なので、GPU 上で embarrassingly parallel に実行できる。
+
+各スレッドが1データ点の対数尤度を担当するカーネルを実装する。
 
 $$
-\frac{e^{x_k - c}}{\sum_j e^{x_j - c}} = \frac{e^{x_k}}{\sum_j e^{x_j}}
+\ell_i(\mu, \sigma) = \log \mathcal{N}(x^{(i)} \mid \mu, \sigma) = -\frac{1}{2}\left(\frac{x^{(i)}-\mu}{\sigma}\right)^2 - \log\sigma - \frac{1}{2}\log(2\pi)
 $$
 
-### 5.8 理解度チェック — Z5 完了確認
+**記号 ↔ 変数対応（Block 3）**:
+- $x^{(i)}$ ↔ `x[pid * BLOCK + arange(BLOCK)]`（スレッドブロックが担当するデータ）
+- $z_i = (x^{(i)}-\mu)/\sigma$ ↔ `z = (x - mu) / sigma`
+- $\ell_i$ ↔ `log_p` → `out[...]` に書き込む
+- $\frac{1}{2}\log(2\pi) \approx 0.9189385$ ↔ `0.9189385`（定数）
+
+shape: `x_ptr: (N,)`, `out_ptr: (N,)`, 各スレッドブロックが `BLOCK` 点を処理
+
+**数値安定化**: Gaussian log-prob では `exp` は不要 — 対数空間のまま計算できる。`z * z` のオーバーフローは実用的な $\sigma$ の範囲では問題にならない（FP32 の最大値 $\approx 3.4 \times 10^{38}$、$z^2 < 10^{76}$ まで安全）。
+
+検算: Triton カーネルの出力 sum と `torch.distributions.Normal.log_prob(x).sum()` を比較し、誤差 $< 10^{-2}$ を assert する。
+
+```python
+import triton
+import triton.language as tl
+import torch
+import torch.distributions as D
+
+@triton.jit
+def gaussian_log_lik_kernel(
+    x_ptr,              # (N,) data points
+    out_ptr,            # (N,) output log-likelihoods
+    mu,                 # scalar mean
+    sigma,              # scalar std (> 0)
+    N,                  # number of points
+    BLOCK: tl.constexpr,
+):
+    pid  = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)   # (BLOCK,)
+    mask = offs < N
+
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0)   # (BLOCK,)
+
+    # log N(x | mu, sigma) = -0.5*z^2 - log(sigma) - 0.5*log(2*pi)
+    z     = (x - mu) / sigma                           # standardized
+    log_p = -0.5 * z * z - tl.log(sigma) - 0.9189385  # 0.9189385 = 0.5*log(2*pi)
+
+    tl.store(out_ptr + offs, log_p, mask=mask)
+
+
+def gaussian_log_lik(x: torch.Tensor, mu: float, sigma: float) -> torch.Tensor:
+    """Parallel log N(x_i | mu, sigma) for all i."""
+    N   = x.numel()
+    out = torch.empty(N, device=x.device, dtype=x.dtype)
+    BLOCK = 1024
+    grid  = (triton.cdiv(N, BLOCK),)
+    gaussian_log_lik_kernel[grid](x, out, mu, sigma, N, BLOCK=BLOCK)
+    return out
+
+
+# numerical check: Triton sum vs torch.distributions
+torch.manual_seed(0)
+x_test = torch.randn(10_000)
+mu_val, sigma_val = 0.5, 1.2
+
+ll_triton = gaussian_log_lik(x_test, mu_val, sigma_val).sum()
+ll_torch  = D.Normal(mu_val, sigma_val).log_prob(x_test).sum()
+
+assert abs(ll_triton.item() - ll_torch.item()) < 1.0   # float32 accumulation tolerance
+print(f"triton sum={ll_triton:.4f},  torch sum={ll_torch:.4f}")
+print(f"|diff| = {abs(ll_triton - ll_torch):.4f}  (float32 accumulation)")
+```
+
+### 5.9 理解度チェック — Z5 完了確認
 
 <details>
 <summary>Q1: SciPyで多変量正規分布の条件付き分布を計算する際の数値安定性の注意点は？</summary>
 
-**A**: 共分散行列 $\Sigma$ が特異に近い場合、逆行列計算が不安定になる。対策：(1) `scipy.linalg.solve` を使い直接逆行列を避ける、(2) Cholesky分解で正定値性を確認、(3) 正則化項 $\Sigma + \epsilon I$ を追加（$\epsilon \sim 10^{-6}$）、(4) 条件数 $\kappa(\Sigma)$ を確認（$> 10^{10}$ なら危険）。
+**A**: 共分散行列 $\Sigma$ が特異に近い場合、逆行列計算が不安定になる。対策：(1) `torch.linalg.solve` を使い直接逆行列を避ける、(2) Cholesky 分解で正定値性を確認（`torch.linalg.cholesky` が失敗 → 半正定値）、(3) 正則化項 $\Sigma + \epsilon I$ を追加（$\epsilon \sim 10^{-6}$）、(4) 条件数 $\kappa(\Sigma)$ を確認（$> 10^{10}$ なら危険）。`D.MultivariateNormal` は `scale_tril` 引数で Cholesky 因子を直接受け取れる。
 
 </details>
 
@@ -1010,19 +1084,22 @@ flowchart TD
 
 | 数式 | 実装 | セクション |
 |:-----|:-----|:-----------|
-| $f(x;\mu,\sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}}\exp(-\frac{(x-\mu)^2}{2\sigma^2})$ | `stats.norm.logpdf(x, mu, sigma)` | 5.1 |
-| $\hat{\mu} = \bar{x}$, $\hat{\sigma}^2 = \frac{1}{N}\sum(x_i-\bar{x})^2$ | `x.mean()`, `x.std(ddof=0)**2` | 5.1 |
-| $\mathcal{N}(\mathbf{x}\mid\boldsymbol{\mu},\boldsymbol{\Sigma})$ | `mvn_log_prob(x, mu, Sigma)` | 5.2 |
-| $\boldsymbol{\mu}_{1\mid 2}, \boldsymbol{\Sigma}_{1\mid 2}$（条件付き分布）| `mvn_conditional(mu, Sigma, obs_idx, obs_val)` | 5.2 |
-| $p(x\mid\boldsymbol{\eta}) = h(x)\exp(\boldsymbol{\eta}^\top T(x) - A(\boldsymbol{\eta}))$ | `ExpFamilyGaussian.mle(X)` | 5.3 |
-| $p(\mathbf{x}\mid\theta) = \pi\mathcal{N}_1 + (1-\pi)\mathcal{N}_2$ | `gmm_log_likelihood(...)` | 5.4 |
-| $p(\theta\mid\mathbf{x}) \propto \theta^{a+h-1}(1-\theta)^{b+t-1}$ | `log_beta(post_a, post_b)` | 5.5a |
-| $\mu_N, \tau_N^2$（Gaussian事後） | `gaussian_conjugate_update(...)` | 5.5b |
-| $D_{\mathrm{KL}}(\mathcal{N}_1\|\mathcal{N}_2)$（閉形式） | `kl_gaussian(mu1, var1, mu2, var2)` | 5.5a-KL |
-| $I(\theta) = \mathbb{E}[s^2]$, CR下界 $1/(nI)$ | `fisher_info_gauss_mean`, `cramer_rao` | 5.5c |
-| $M_X(t) = \exp(\mu t + \frac{\sigma^2 t^2}{2})$ | `mgf_gaussian(t, mu, sigma2)` | 5.6 |
-| $\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$ | `log_prob_sequence(logits, seq)` | 5.7 |
-| Perplexity $\exp(-\frac{1}{T}\log p)$ | `perplexity(logits, seq)` | 5.7 |
+| $f(x;\mu,\sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}}\exp(-\frac{(x-\mu)^2}{2\sigma^2})$ | `D.Normal(mu, sigma).log_prob(x)` | 5.1 Block 1 |
+| $\hat{\mu} = \bar{x}$, $\hat{\sigma}^2 = \frac{1}{N}\sum(x_i-\bar{x})^2$ | `x.mean()`, `x.std(unbiased=False)` | 5.1 Block 1 |
+| $\mathcal{H}(\boldsymbol{\pi}) \leq \log K$ | `D.Categorical(probs).entropy()` | 5.1 Block 1 |
+| $D_{\mathrm{KL}}(p\|q)$ (Gaussian 閉形式) | `D.kl_divergence(p, q)` | 5.1 Block 1 |
+| $\mathcal{N}(\mathbf{x}\mid\boldsymbol{\mu},\boldsymbol{\Sigma})$ | `D.MultivariateNormal(mu, cov).log_prob(x)` | 5.1 Block 1 |
+| $\boldsymbol{\mu}_{1\mid 2}, \boldsymbol{\Sigma}_{1\mid 2}$（Schur 補行列） | 導出参照 §5.2 | 5.2 |
+| $p(x\mid\boldsymbol{\eta}) = h(x)\exp(\boldsymbol{\eta}^\top T(x) - A(\boldsymbol{\eta}))$ | 自然勾配・期待値パラメータ解析 | 5.3 |
+| $p(\mathbf{x}\mid\theta) = \pi\mathcal{N}_1 + (1-\pi)\mathcal{N}_2$ | EM 算法への橋渡し（§5.4） | 5.4 |
+| $p(\theta\mid\mathbf{x}) \propto \theta^{a+h-1}(1-\theta)^{b+t-1}$ | Beta-Bernoulli 共役更新 | 5.5a |
+| $\lambda_N = \lambda_0 + N/\sigma^2$（精度加法性） | 精度更新公式 | 5.5b |
+| $D_{\mathrm{KL}}(p\|q) \geq 0$（Gibbs 不等式） | `D.kl_divergence` | 5.5a-KL |
+| $\mathrm{Var}(\hat{\theta}) \geq 1/(nI(\theta))$（CR 下界） | CR 下界導出 §5.5c | 5.5c |
+| $M_X(t) = e^{\mu t + \sigma^2 t^2/2}$ | CLT 証明スケッチ §5.6 | 5.6 |
+| $\log p(\mathbf{x}) = \sum_t \log p(x_t\mid x_{<t})$ | `autoregressive_log_prob(logits, x)` | 5.7 Block 2 |
+| Perplexity $= \exp(-\frac{1}{T}\log p)$ | `perplexity(logits, x)` | 5.7 Block 2 |
+| $\ell_i = \log \mathcal{N}(x^{(i)}\mid\mu,\sigma)$ 並列 | `gaussian_log_lik_kernel[grid](...)` | 5.8 Block 3 |
 
 ### 7.1 本講義の核心 — 3つの持ち帰り
 

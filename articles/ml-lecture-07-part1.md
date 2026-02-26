@@ -30,29 +30,30 @@ keywords: ["最尤推定", "MLE", "Fisher情報量", "KLダイバージェンス
 > Progress: 3%
 
 ```python
-import numpy as np
+import torch
+import torch.distributions as D
 import matplotlib.pyplot as plt
 
 # 2成分ガウス混合の真の分布
-np.random.seed(42)
-X = np.concatenate([
-    np.random.randn(100) - 3,
-    np.random.randn(100) + 3
-])
+torch.manual_seed(42)
+X = torch.cat([
+    D.Normal(-3.0, 1.0).sample((100,)),
+    D.Normal( 3.0, 1.0).sample((100,)),
+])  # shape: (200,)
 
 # MLEで単一ガウスをフィット
 mu_mle = X.mean()
 sigma_mle = X.std()
 
 # 真の分布と推定を可視化
-x = np.linspace(-8, 8, 1000)
-plt.hist(X, bins=30, density=True, alpha=0.5, label='Data')
-plt.plot(x,
-         0.5 * np.exp(-(x+3)**2/2)/np.sqrt(2*np.pi) +
-         0.5 * np.exp(-(x-3)**2/2)/np.sqrt(2*np.pi),
-         label='True (2-component GMM)', linewidth=2)
-plt.plot(x,
-         np.exp(-(x-mu_mle)**2/(2*sigma_mle**2))/(sigma_mle*np.sqrt(2*np.pi)),
+x = torch.linspace(-8, 8, 1000)
+gmm_true = 0.5 * D.Normal(-3.0, 1.0).log_prob(x).exp() + \
+           0.5 * D.Normal( 3.0, 1.0).log_prob(x).exp()
+gauss_mle = D.Normal(mu_mle, sigma_mle).log_prob(x).exp()
+
+plt.hist(X.numpy(), bins=30, density=True, alpha=0.5, label='Data')
+plt.plot(x.numpy(), gmm_true.numpy(), label='True (2-component GMM)', linewidth=2)
+plt.plot(x.numpy(), gauss_mle.numpy(),
          label=f'MLE Gaussian (μ={mu_mle:.2f}, σ={sigma_mle:.2f})', linewidth=2)
 plt.legend()
 plt.title('MLE fails to capture multimodality')

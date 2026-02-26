@@ -42,8 +42,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 | レイヤー | 技術 | 役割 |
 |:--------|:-----|:-----|
-| **訓練** | 🦀 Rust (Candle + Burn) | aMUSEd / LTX-Videoのファインチューニング |
-| **推論** | 🦀 Rust (Candle / Burn) | モデル推論エンジン (低レイテンシ) |
+| **訓練** | 🐍 Python (PyTorch + HuggingFace) | aMUSEd / LTX-Videoのファインチューニング |
+| **推論** | 🦀 Rust (tch-rs / ort) | モデル推論エンジン (低レイテンシ) |
 | **配信** | 🔮 Elixir (Phoenix + Broadway) | API / 分散サービング / 監視 |
 | **FFI** | C-ABI (rustler / rustler) | Rust↔Rust↔Elixir 連携 |
 | **監視** | Prometheus + Grafana | メトリクス収集・可視化 |
@@ -65,7 +65,7 @@ graph TD
     end
 
     subgraph "🦀 Rust推論層"
-        InferenceEngine["Inference Engine<br/>(Candle / Burn)"]
+        InferenceEngine["Inference Engine<br/>(tch-rs / ort)"]
         SmolVLM["SmolVLM2-256M<br/>(Video Understanding)"]
         aMUSEd["aMUSEd-256<br/>(Image Generation)"]
         LTXVideo["LTX-Video<br/>(Video Generation)"]
@@ -117,7 +117,7 @@ graph TD
 3. **耐障害性**: Elixir Supervisor Tree で自動復旧。推論エンジンがクラッシュしても即座に再起動。
 4. **モデルレジストリ**: HuggingFace Hub で訓練済みモデルを一元管理。バージョン管理・A/Bテスト対応。
 
-### 4.3 🦀 Rust訓練パイプライン: Candle + Burn
+### 4.3 🐍 Python訓練パイプライン: PyTorch + HuggingFace
 
 第20回、第26回で学んだRust訓練の知識を活用し、aMUSEd / LTX-Video のファインチューニングパイプラインを実装する。
 
@@ -216,15 +216,15 @@ fn main() {
 - **SafeTensors**: Rust推論層で直接ロード可能な形式
 - **HuggingFace Hub**: モデルレジストリで一元管理
 
-### 4.4 🦀 Rust推論エンジン: Candle / Burn
+### 4.4 🦀 Rust推論エンジン: tch-rs / ort
 
 第20回、第28回で学んだRust推論の知識を活用し、低レイテンシ推論エンジンを実装する。
 
 ```rust
 // 卒業制作: Rust推論エンジン (aMUSEd / SmolVLM2 / LTX-Video統合)
-use candle_core::{Device, Tensor};
-use candle_nn::VarBuilder;
-use candle_transformers::models::amused::AMUSEdModel;
+use tch::{Device, Tensor, nn};
+use ort::{Environment, Session};
+// AMUSEdModel: load from safetensors via tch-rs
 use tokenizers::Tokenizer;
 use std::path::Path;
 
@@ -358,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
 
 **ポイント**:
 
-- **Candle**: HuggingFace製Rust推論ライブラリ。PyTorch比35-47%高速 [^10]
+- **tch-rs**: PyTorch C++ ライブラリへのRustバインディング。SafeTensors直接ロード対応 [^10]
 - **SafeTensors直接ロード**: Rust訓練モデルをそのまま読み込み
 - **低レイテンシ**: ゼロコピー設計で推論時間最小化
 - **統合API**: 3モデルを1つのエンジンで管理
@@ -367,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
 
 ```rust
 // バッチ推論エンジン: 複数リクエストをまとめて処理
-use candle_core::{Device, Tensor};
+use tch::{Device, Tensor};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -493,7 +493,7 @@ impl BatchInferenceEngine {
         // プロンプトをバッチ化
         let prompts: Vec<String> = requests.iter().map(|r| r.prompt.clone()).collect();
 
-        // バッチ推論 (Candle)
+        // バッチ推論 (tch-rs)
         let text_embs = self.amused.encode_text_batch(&prompts).unwrap();
         let latents = self.amused.generate_batch(&text_embs, 12, 7.5).unwrap();
         let images = self.amused.decode_batch(latents).unwrap();
@@ -738,9 +738,9 @@ end
 全てを統合した卒業制作のデモを実行しよう。
 
 ```bash
-# 1. Rust訓練 (aMUSEd Candle fine-tuning)
-cd julia/
-julia --project=. train_amused.jl
+# 1. Python訓練 (aMUSEd PyTorch fine-tuning)
+cd src/
+cargo run --bin train_amused
 # → モデルをHuggingFace Hubにアップロード: my-username/amused-custom-512
 
 # 2. Rust推論エンジンビルド
@@ -1114,8 +1114,8 @@ Rust訓練 / Rust推論 / Elixir配信 の役割分担を、各言語の特性�
 
 <details><summary>解答</summary>
 
-- **🦀 Rust (訓練)**: ゼロコスト抽象化で数式→コード1:1対応。型安定性でAOTコンパイル最適化。Burn (XLA) でGPU/TPU高速化。研究フェーズでの柔軟性とREPL駆動開発。
-- **🦀 Rust (推論)**: 所有権・借用でゼロコピー。メモリ安全性で本番環境でも安心。Candle/Burnで低レイテンシ推論。C-ABI FFI ハブとして、RustとElixirを橋渡し。
+- **🐍 Python (訓練)**: PyTorch + HuggingFace Transformers。豊富なエコシステムと研究コミュニティ。実験・ファインチューニングに最適。
+- **🦀 Rust (推論)**: 所有権・借用でゼロコピー。メモリ安全性で本番環境でも安心。tch-rs / ort で低レイテンシ推論。C-ABI FFI ハブとして、RustとElixirを橋渡し。
 - **🔮 Elixir (配信)**: BEAM VMで軽量プロセス・耐障害性 (Let it crash)。GenServer+Supervisorで自動復旧。Broadway需要駆動パイプラインでバックプレッシャー。OTPで分散システムの信頼性。
 
 </details>
@@ -1770,8 +1770,8 @@ fn main() {
 [^7]: European Commission. (2025). "Code of Practice on marking and labelling of AI-generated content". *EU Digital Strategy*.
 <https://digital-strategy.ec.europa.eu/en/policies/code-practice-ai-generated-content>
 
-[^10]: HuggingFace Candle. (2024). "Candle: Minimalist ML framework for Rust".
-<https://github.com/huggingface/candle>
+[^10]: tch-rs. (2024). "PyTorch bindings for Rust".
+<https://github.com/LaurentMazare/tch-rs>
 
 ### 教科書
 

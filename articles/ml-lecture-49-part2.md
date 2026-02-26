@@ -21,11 +21,11 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 #### Rust環境
 
 ```bash
-# Rust (candle + burn, cargo 1.75+)
-julia --version  # v1.12以降を確認
+# Rust (tch-rs / ort, cargo 1.75+)
+rustup --version  # verify installation
 
 # パッケージインストール
-julia -e 'using Pkg; Pkg.add(["Lux", "Reactant", "NNlib", "Optimisers", "Zygote", "CUDA"])'
+# Add dependencies to Cargo.toml: see [dependencies] section below
 ```
 
 #### Rust環境
@@ -35,10 +35,10 @@ julia -e 'using Pkg; Pkg.add(["Lux", "Reactant", "NNlib", "Optimisers", "Zygote"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
 
-# Candle (HuggingFace推論エンジン)
+# tch-rs (PyTorch Rust bindings) — 推論エンジン
 cargo new --lib multimodal_inference
 cd multimodal_inference
-# Cargo.tomlに追加: candle-core = "0.9"
+# Cargo.tomlに追加: tch = "0.17"
 ```
 
 #### Elixir環境
@@ -257,7 +257,7 @@ fn main() {
 
 ```rust
 // File: src/lib.rs (Rust)
-use candle_core::{Tensor, Device, DType};
+use tch::{Tensor, Device, Kind};
 use std::error::Error;
 
 /// Reflect-DiT: 推論時反復改善
@@ -352,7 +352,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-candle-core = "0.9"
+tch = "0.17"
 rand = "0.8"
 ```
 

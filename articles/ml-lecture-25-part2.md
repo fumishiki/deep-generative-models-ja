@@ -1638,12 +1638,12 @@ $$
 ```rust
 // TARNet: Treatment-Agnostic Representation Network for CATE estimation.
 // φ(x) shared representation → separate heads μ₁, μ₀
-// For production: use the `candle` or `burn` deep learning crate.
+// For production: use tch-rs or ort for neural network layers with autodiff.
 
 /// TARNet: shared encoder + two outcome heads (treated / control)
 struct TARNet {
     // In a real implementation these would be actual neural network layers
-    // e.g., using candle_nn::Linear
+    // e.g., using tch::nn::Linear
     input_dim: usize,
     hidden_dim: usize,
 }
@@ -1673,7 +1673,7 @@ impl TARNet {
     }
 }
 
-// Training loop (placeholder — use candle/burn for real autodiff):
+// Training loop (placeholder — use tch-rs for real autodiff):
 fn train_tarnet(model: &TARNet, x: &[Vec<f64>], d: &[f64], y: &[f64],
                 n_epochs: usize, _lr: f64) {
     for epoch in 0..n_epochs {
@@ -1684,7 +1684,7 @@ fn train_tarnet(model: &TARNet, x: &[Vec<f64>], d: &[f64], y: &[f64],
         if epoch % 20 == 0 {
             println!("Epoch {}: Loss = {:.4}", epoch, loss);
         }
-        // Gradient update omitted — use candle_nn::Adam in production
+        // Gradient update omitted — use tch-rs nn::Adam in production
     }
 }
 ```

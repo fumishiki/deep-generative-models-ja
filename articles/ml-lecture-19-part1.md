@@ -31,7 +31,7 @@ Course III（第19-32回）は実装編だ。第19回の今回は、以降13回�
 
 ```mermaid
 graph LR
-    A["🦀 Rust<br/>Training<br/>Candle + Burn"] --> B["🦀 Rust<br/>Inference<br/>Candle + ort"]
+    A["🐍 Python<br/>Training<br/>PyTorch + Triton"] --> B["🦀 Rust<br/>Inference<br/>ndarray + ort"]
     B --> C["🔮 Elixir<br/>Serving<br/>GenStage + rustler"]
     C --> D["💬 Feedback"]
     D --> A
@@ -87,7 +87,7 @@ pub struct MatrixResult {
     cols: usize,
 }
 
-pub fn call_julia_matmul(a_ptr: *const f64, a_rows: usize, a_cols: usize,
+pub fn call_nif_matmul(a_ptr: *const f64, a_rows: usize, a_cols: usize,
                          b_ptr: *const f64, b_rows: usize, b_cols: usize) -> MatrixResult {
     // Rust: ゼロコピーで計算し、Elixir NIF経由で返す
     // 詳細はZone 3で導出
@@ -161,7 +161,7 @@ A: Rustは訓練には最適だが、**推論配信**には不向き:
 
 A: Rustは推論には最適だが、**訓練実装**には不向き:
 - 数式→コードの翻訳が煩雑（型パズル、lifetime戦争）
-- 自動微分ライブラリが未成熟（CandleはPyTorch比で機能不足）
+- 自動微分ライブラリが未成熟（tch-rsはPyTorchのRustバインディングだが、研究用途はPythonが有利）
 - 研究的な試行錯誤がしづらい（コンパイル時間、型制約）
 
 **Q: Elixirで全部やればいいのでは？**
@@ -260,9 +260,9 @@ $$
 
 | フェーズ | 言語 | 処理 | なぜその言語？ |
 |:--------|:-----|:-----|:-------------|
-| **Training** | 🦀 Rust | CandleでVAEモデル定義・訓練・チェックポイント保存 | 数式 $\mathcal{L}_{\text{ELBO}}$ がほぼそのままコード。自動微分・GPU最適化が自動。 |
-| **Export** | 🦀 Rust | RustモデルをONNX/safetensors形式でエクスポート → Candle推論エンジンにロード | ゼロコピーでGPUメモリ管理。メモリリークなし。 |
-| **Inference** | 🦀 Rust | Candleで推論（`model.forward(input)`） → 結果をJSON/MessagePackで返す | レイテンシ <10ms。GCポーズなし。 |
+| **Training** | 🐍 Python | PyTorchでVAEモデル定義・訓練・チェックポイント保存 | 数式 $\mathcal{L}_{\text{ELBO}}$ がほぼそのままコード。自動微分・GPU最適化が自動。 |
+| **Export** | 🦀 Rust | モデルをONNX/safetensors形式でエクスポート → ort（ONNX Runtime）でロード | ゼロコピーでGPUメモリ管理。メモリリークなし。 |
+| **Inference** | 🦀 Rust | ort（ONNX Runtime）で推論 → 結果をJSON/MessagePackで返す | レイテンシ <10ms。GCポーズなし。 |
 | **Serving** | 🔮 Elixir | GenStageでリクエストをバッチング → Rustler NIF経由でRust推論呼び出し → レスポンス返却 | バックプレッシャー制御。1プロセスクラッシュ→Supervisor自動再起動。 |
 | **Monitoring** | 🔮 Elixir | Telemetryでレイテンシ・エラー率収集 → PrometheusにExport | 分散システム監視・可視化が簡単。 |
 
@@ -348,9 +348,9 @@ graph LR
 | フェーズ | 処理 | 言語 | 第N回 |
 |:--------|:-----|:-----|:------|
 | **Data** | 収集・クリーニング・EDA | 🦀 Rust (polars) | 21 |
-| **Train** | モデル定義・訓練ループ | 🦀 Rust (Candle + Burn) | 20, 22, 23 |
+| **Train** | モデル定義・訓練ループ | 🐍 Python (PyTorch + Triton) | 20, 22, 23 |
 | **Evaluate** | 統計検定・因果推論・評価指標 | 🦀 Rust (statrs, ndarray) | 24, 25, 27 |
-| **Deploy** | 推論最適化・量子化・サービング | 🦀 Rust (Candle) + 🔮 Elixir (GenStage) | 20, 26, 31 |
+| **Deploy** | 推論最適化・量子化・サービング | 🦀 Rust (ort + ndarray) + 🔮 Elixir (GenStage) | 20, 26, 31 |
 | **Feedback** | プロンプト実験・A/Bテスト | 🔮 Elixir (ユーザー接点) | 28 |
 | **Improve** | RAG統合・エージェント設計 | 🦀🦀🔮 連携 | 29, 30 |
 
@@ -839,10 +839,10 @@ graph LR
 2. **配列ゼロコピー**: Rust配列をRustスライス `&[T]` として借用
 3. **GC連携**: Rustオブジェクトの生存期間をRustのライフタイムで管理
 
-**Rust ランタイム埋め込みのコスト**: rustler を使って Rust プロセス内に Rust を埋め込む場合、初期化コストが発生する:
+**Rust NIF 初期化コスト**: rustler を使って BEAM VM 内に Rust NIF をロードする場合、初期化コストが発生する:
 
 $$
-C_{\text{init}} = C_{\text{libjulia.so}} + C_{\text{AOT}} \approx 0.5\text{–}2\,\text{秒}
+C_{\text{init}} = C_{\text{beam.vm}} + C_{\text{nif\_load}} \approx 0.1\text{–}0.5\,\text{秒}
 $$
 
 これは1回だけ払えばよく、その後の Rust 関数呼び出しは:

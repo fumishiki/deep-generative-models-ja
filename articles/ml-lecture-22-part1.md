@@ -36,33 +36,33 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 いきなりだが、**3行のRustコード**で画像分類をやってみよう。訓練データは**ゼロ**だ。
 
 ```rust
-use candle_core::{Device, Result, Tensor};
+use tch::{Device, Kind, Tensor};
 
 /// コサイン類似度: (a · b) / (‖a‖ · ‖b‖)
-fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f64> {
-    let dot = (a * b)?.sum_all()?.to_scalar::<f64>()?;
-    let norm_a = a.sqr()?.sum_all()?.sqrt()?.to_scalar::<f64>()?;
-    let norm_b = b.sqr()?.sum_all()?.sqrt()?.to_scalar::<f64>()?;
-    Ok(dot / (norm_a * norm_b))
+fn cosine_similarity(a: &Tensor, b: &Tensor) -> f64 {
+    let dot = (a * b).sum(Kind::Double).double_value(&[]);
+    let norm_a = a.pow_tensor_scalar(2).sum(Kind::Double).sqrt().double_value(&[]);
+    let norm_b = b.pow_tensor_scalar(2).sum(Kind::Double).sqrt().double_value(&[]);
+    dot / (norm_a * norm_b)
 }
 
-fn main() -> Result<()> {
+fn main() {
     let device = Device::Cpu;
 
     // 画像とテキストをエンコード
     // (実際は HuggingFace の openai/clip-vit-base-patch32 をロード)
-    let img_emb: Tensor = clip_encode_image("cat.jpg", &device)?;  // (512,)
+    let img_emb: Tensor = clip_encode_image("cat.jpg", device);  // (512,)
     let texts = ["a cat", "a dog", "a car"];
     let text_embs: Vec<Tensor> = texts
         .iter()
-        .map(|t| clip_encode_text(t, &device))
-        .collect::<Result<_>>()?;  // [(512,), (512,), (512,)]
+        .map(|t| clip_encode_text(t, device))
+        .collect();  // [(512,), (512,), (512,)]
 
     // 類似度計算 → ゼロショット分類
     let similarities: Vec<f64> = text_embs
         .iter()
         .map(|t| cosine_similarity(&img_emb, t))
-        .collect::<Result<_>>()?;
+        .collect();
     // => [0.92, 0.15, 0.08] — "a cat" が最も類似
 
     let best_idx = similarities
@@ -72,7 +72,6 @@ fn main() -> Result<()> {
         .map(|(i, _)| i)
         .unwrap();
     println!("予測: {}", texts[best_idx]); // "a cat"
-    Ok(())
 }
 ```
 
@@ -290,7 +289,7 @@ graph TD
 
 **今回（第22回）の言語構成**:
 - 🦀**Rust**: CLIP訓練、ViT実装、InfoNCE loss実装
-- 🦀**Rust**: SmolVLM2推論（GGUF/Candle統合）
+- 🦀**Rust**: SmolVLM2推論（GGUF/ort統合）
 - 🐍**Python**: 完全不使用
 
 **これ以降のCourse III**:

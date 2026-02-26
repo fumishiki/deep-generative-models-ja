@@ -7,23 +7,23 @@ published: true
 slug: "ml-lecture-36-part2"
 difficulty: "advanced"
 time_estimate: "90 minutes"
-languages: ["Rust"]
+languages: ["Python", "Rust"]
 keywords: ["機械学習", "深層学習", "生成モデル"]
 ---
 
-## 💻 Z5. 試練（実装）（45分）— Rust訓練 + Rust推論
+## 💻 Z5. 試練（実装）（45分）— Python訓練 + Rust推論
 
 ### 4.1 環境構築 & ライブラリ選定
 
 **Rust環境**:
 
-```rust
-// Cargo.toml [dependencies] — Rust 訓練環境:
-// candle-core = { version = "0.8", features = ["cuda"] }
-// candle-nn   = "0.8"
-// ndarray     = "0.15"
-// ndarray-rand = "0.14"
-// image       = "0.25"
+```python
+# requirements.txt — Python訓練環境:
+# torch>=2.0        (PyTorch + CUDA)
+# torchvision>=0.15
+# numpy
+# Pillow
+# python-mnist
 ```
 
 **Rust環境** (推論):
@@ -36,7 +36,7 @@ ort = "2.0"  # ONNX Runtime
 image = "0.25"
 ```
 
-### 4.2 Tiny DDPM Rust実装 (訓練ループ完全版)
+### 4.2 Tiny DDPM PyTorch訓練実装 (完全版)
 
 **目標**: MNIST で 500K params、CPU 5分で訓練。
 
@@ -76,253 +76,211 @@ fn main() {
 
 #### 4.2.2 Simplified U-Net (Tiny版)
 
-```rust
-use candle_core::{Tensor, Device, DType};
-use candle_nn::{Conv2d, ConvTranspose2d, Linear, Module, VarBuilder};
+```python
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-/// Sinusoidal time embedding: returns Vec of length `d`.
-fn time_embedding(t: usize, d: usize) -> Vec<f32> {
-    let half = d / 2;
-    let log_scale = (10000.0f32).ln() / (half - 1) as f32;
-    (0..half)
-        .flat_map(|i| {
-            let freq = (-(log_scale * i as f32)).exp();
-            let val  = t as f32 * freq;
-            [val.sin(), val.cos()]
-        })
-        .collect()
-}
+def time_embedding(t: int, d: int) -> torch.Tensor:
+    # Sinusoidal time embedding: returns Tensor of shape (d,).
+    half = d // 2
+    log_scale = math.log(10000.0) / (half - 1)
+    freqs = torch.exp(-log_scale * torch.arange(half, dtype=torch.float32))
+    vals  = t * freqs
+    return torch.cat([vals.sin(), vals.cos()])  # (d,)
 
-/// Tiny U-Net for MNIST 28×28 (~500K params).
-struct TinyUNet {
-    time_fc1:   Linear,
-    time_fc2:   Linear,
-    enc1_conv:  Conv2d,
-    enc2_conv:  Conv2d,
-    bottleneck: Conv2d,
-    dec1_conv:  ConvTranspose2d,
-    out_conv:   Conv2d,
-}
+class TinyUNet(nn.Module):
+    # Tiny U-Net for MNIST 28×28 (~500K params).
 
-impl TinyUNet {
-    fn new(vb: VarBuilder, d_model: usize) -> candle_core::Result<Self> {
-        let t_dim = 128usize;
-        let cfg2  = candle_nn::Conv2dConfig       { padding: 1, ..Default::default() };
-        let cfg2s = candle_nn::Conv2dConfig       { padding: 1, stride: 2, ..Default::default() };
-        let cfgT  = candle_nn::ConvTranspose2dConfig { padding: 1, stride: 2, ..Default::default() };
-        Ok(Self {
-            time_fc1:   candle_nn::linear(t_dim,        d_model * 4, vb.pp("time_fc1"))?,
-            time_fc2:   candle_nn::linear(d_model * 4,  d_model * 4, vb.pp("time_fc2"))?,
-            enc1_conv:  candle_nn::conv2d(1,             d_model,     3, cfg2,  vb.pp("enc1"))?,
-            enc2_conv:  candle_nn::conv2d(d_model,       d_model * 2, 3, cfg2s, vb.pp("enc2"))?,
-            bottleneck: candle_nn::conv2d(d_model * 2,   d_model * 2, 3, cfg2,  vb.pp("btn"))?,
-            dec1_conv:  candle_nn::conv_transpose2d(d_model * 4, d_model, 4, cfgT, vb.pp("dec1"))?,
-            out_conv:   candle_nn::conv2d(d_model, 1, 3, cfg2, vb.pp("out"))?,
-        })
-    }
+    def __init__(self, d_model: int = 64) -> None:
+        super().__init__()
+        t_dim = 128
+        self.time_fc1   = nn.Linear(t_dim,       d_model * 4)
+        self.time_fc2   = nn.Linear(d_model * 4, d_model * 4)
+        self.enc1_conv  = nn.Conv2d(1,            d_model,     3, padding=1)
+        self.enc2_conv  = nn.Conv2d(d_model,      d_model * 2, 3, padding=1, stride=2)
+        self.bottleneck = nn.Conv2d(d_model * 2,  d_model * 2, 3, padding=1)
+        self.dec1_conv  = nn.ConvTranspose2d(d_model * 4, d_model, 4, padding=1, stride=2)
+        self.out_conv   = nn.Conv2d(d_model, 1, 3, padding=1)
 
-    fn forward(&self, x: &Tensor, t: usize) -> candle_core::Result<Tensor> {
-        let dev = x.device();
-        // Time embedding → (1, d*4)
-        let t_vec = time_embedding(t, 128);
-        let t_emb = Tensor::from_vec(t_vec, (1, 128), dev)?;
-        let t_emb = candle_nn::ops::silu(&self.time_fc1.forward(&t_emb)?)?;
-        let _t_emb = self.time_fc2.forward(&t_emb)?;
+    def forward(self, x: torch.Tensor, t: int) -> torch.Tensor:
+        t_vec  = time_embedding(t, 128).to(x.device)
+        t_emb  = F.silu(self.time_fc1(t_vec.unsqueeze(0)))  # (1, d*4)
+        _t_emb = self.time_fc2(t_emb)
 
-        // Encoder
-        let h1 = candle_nn::ops::silu(&self.enc1_conv.forward(x)?)?;   // (B, d, 28, 28)
-        let h2 = candle_nn::ops::silu(&self.enc2_conv.forward(&h1)?)?;  // (B, d*2, 14, 14)
+        # Encoder
+        h1 = F.silu(self.enc1_conv(x))    # (B, d, 28, 28)
+        h2 = F.silu(self.enc2_conv(h1))   # (B, d*2, 14, 14)
 
-        // Bottleneck
-        let h  = candle_nn::ops::silu(&self.bottleneck.forward(&h2)?)?; // (B, d*2, 14, 14)
+        # Bottleneck
+        h  = F.silu(self.bottleneck(h2))  # (B, d*2, 14, 14)
 
-        // Decoder with skip connection
-        let h_cat = Tensor::cat(&[&h, &h2], 1)?;                         // (B, d*4, 14, 14)
-        let h = candle_nn::ops::silu(&self.dec1_conv.forward(&h_cat)?)?; // (B, d,   28, 28)
+        # Decoder with skip connection
+        h_cat = torch.cat([h, h2], dim=1)   # (B, d*4, 14, 14)
+        h     = F.silu(self.dec1_conv(h_cat))  # (B, d, 28, 28)
 
-        self.out_conv.forward(&h) // (B, 1, 28, 28)
-    }
-}
+        return self.out_conv(h)  # (B, 1, 28, 28)
 ```
 
 <details><summary>完全なU-Net実装 (Self-Attention付き)</summary>
 
 本格的なU-Netには16×16解像度でSelf-Attentionを追加する。以下は完全版 (MNIST では過剰):
 
-```rust
-use candle_core::Tensor;
+```python
+import torch
+import torch.nn as nn
 
-/// Multi-Head Self-Attention layer.
-/// x: Tensor of shape (B, C, H, W) — applied at low-resolution feature maps.
-struct SelfAttention {
-    heads:   usize,
-    d_model: usize,
-}
+class SelfAttention(nn.Module):
+    # Multi-Head Self-Attention layer.
+    # x: Tensor of shape (B, C, H, W) — applied at low-resolution feature maps.
 
-impl SelfAttention {
-    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
-        let (b, c, h, w) = x.dims4()?;
-        assert_eq!(c % self.heads, 0, "C must be divisible by heads");
-        let n = h * w;
+    def __init__(self, heads: int, d_model: int) -> None:
+        super().__init__()
+        self.heads   = heads
+        self.d_model = d_model
 
-        // Reshape to (B, N, C) for attention
-        let x_flat = x.reshape((b, c, n))?.transpose(1, 2)?; // (B, N, C)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        assert c % self.heads == 0, "C must be divisible by heads"
+        n = h * w
 
-        // Simplified: Q = K = V = x_flat (identity projection for demo)
-        let scale = (c / self.heads) as f64;
-        let scores = x_flat.matmul(&x_flat.transpose(1, 2)?)? / scale; // (B, N, N)
-        let attn   = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)?;
-        let out    = attn.matmul(&x_flat)?;                             // (B, N, C)
+        # Reshape to (B, N, C) for attention
+        x_flat = x.reshape(b, c, n).transpose(1, 2)  # (B, N, C)
 
-        // Reshape back to (B, C, H, W) and add residual
-        let out = out.transpose(1, 2)?.reshape((b, c, h, w))?;
-        out + x // Residual connection
-    }
-}
+        # Simplified: Q = K = V = x_flat (identity projection for demo)
+        scale  = c / self.heads
+        scores = x_flat.matmul(x_flat.transpose(1, 2)) / scale  # (B, N, N)
+        attn   = scores.softmax(dim=-1)
+        out    = attn.matmul(x_flat)                             # (B, N, C)
+
+        # Reshape back to (B, C, H, W) and add residual
+        out = out.transpose(1, 2).reshape(b, c, h, w)
+        return out + x  # Residual connection
 ```
 
 </details>
 
 #### 4.2.3 訓練ループ
 
-```rust
-use candle_core::Tensor;
-use candle_nn::{AdamW, Optimizer, ParamsAdamW};
+```python
+import math
+import torch
+import torch.nn.functional as F
+from torch.optim import AdamW
 
-/// Single training step; returns MSE loss scalar.
-fn train_step(
-    model:      &TinyUNet,
-    opt:        &mut AdamW,
-    x0:         &Tensor,
-    alpha_bar:  &[f32],
-    t_steps:    usize,
-    rng:        &mut impl rand::Rng,
-) -> candle_core::Result<f32> {
-    let t    = rng.gen_range(0..t_steps);
-    let ab_t = alpha_bar[t];
+def train_step(
+    model:     TinyUNet,
+    opt:       AdamW,
+    x0:        torch.Tensor,
+    alpha_bar: list[float],
+    t_steps:   int,
+) -> float:
+    # Single training step; returns MSE loss scalar.
+    t    = torch.randint(0, t_steps, (1,)).item()
+    ab_t = alpha_bar[t]
 
-    // q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
-    let eps = Tensor::randn(0f32, 1f32, x0.shape(), x0.device())?;
-    let x_t = (x0 * ab_t.sqrt() as f64 + &eps * (1.0 - ab_t).sqrt() as f64)?;
+    # q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
+    eps = torch.randn_like(x0)
+    x_t = math.sqrt(ab_t) * x0 + math.sqrt(1.0 - ab_t) * eps
 
-    // L_simple = E[||ε - ε_θ(xₜ, t)||²]  (Ho et al. 2020)
-    let eps_pred = model.forward(&x_t, t)?;
-    let loss     = (&eps - &eps_pred)?.sqr()?.mean_all()?;
-    opt.backward_step(&loss)?;
-    loss.to_scalar::<f32>()
-}
+    # L_simple = E[||ε - ε_θ(xₜ, t)||²]  (Ho et al. 2020)
+    eps_pred = model(x_t, t)
+    loss     = F.mse_loss(eps_pred, eps)
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
+    opt.step()
+    return loss.item()
 
-/// Full training loop.
-fn train_ddpm(
-    model:      &TinyUNet,
-    train_data: &[Tensor],
-    alpha_bar:  &[f32],
-    beta:       &[f32],
-    t_steps:    usize,
-    epochs:     usize,
-    lr:         f64,
-) -> candle_core::Result<()> {
-    let params  = ParamsAdamW { lr, ..Default::default() };
-    let mut opt = AdamW::new(vec![], params)?;
-    let mut rng = rand::thread_rng();
-
-    for epoch in 0..epochs {
-        let mut total_loss = 0.0f32;
-        for (batch_idx, x0) in train_data.iter().enumerate() {
-            let loss = train_step(model, &mut opt, x0, alpha_bar, t_steps, &mut rng)?;
-            total_loss += loss;
-            if batch_idx % 100 == 0 {
-                println!("Epoch {}, Batch {}, Loss: {:.4}", epoch + 1, batch_idx, loss);
-            }
-        }
-        let avg = total_loss / train_data.len() as f32;
-        println!("Epoch {} completed. Avg Loss: {:.4}", epoch + 1, avg);
-    }
-    Ok(())
-}
+def train_ddpm(
+    model:      TinyUNet,
+    train_data: list[torch.Tensor],
+    alpha_bar:  list[float],
+    t_steps:    int,
+    epochs:     int,
+    lr:         float,
+) -> None:
+    # Full training loop.
+    opt = AdamW(model.parameters(), lr=lr)
+    for epoch in range(epochs):
+        total_loss = 0.0
+        for batch_idx, x0 in enumerate(train_data):
+            loss = train_step(model, opt, x0, alpha_bar, t_steps)
+            total_loss += loss
+            if batch_idx % 100 == 0:
+                print(f"Epoch {epoch + 1}, Batch {batch_idx}, Loss: {loss:.4f}")
+        avg = total_loss / len(train_data)
+        print(f"Epoch {epoch + 1} completed. Avg Loss: {avg:.4f}")
 ```
 
 #### 4.2.4 サンプリング (DDPM & DDIM)
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import math
+import torch
 
-/// DDPM sampling: stochastic reverse process from x_T → x_0.
-fn ddpm_sample(
-    model:      &TinyUNet,
-    x_t_init:  Tensor,
-    beta:       &[f32],
-    alpha:      &[f32],
-    alpha_bar:  &[f32],
-    t_steps:    usize,
-) -> candle_core::Result<Tensor> {
-    let mut x_t = x_t_init;
-    let dev = x_t.device().clone();
+@torch.no_grad()
+def ddpm_sample(
+    model:     TinyUNet,
+    x_t_init:  torch.Tensor,
+    beta:      list[float],
+    alpha:     list[float],
+    alpha_bar: list[float],
+    t_steps:   int,
+) -> torch.Tensor:
+    # DDPM sampling: stochastic reverse process from x_T → x_0.
+    x_t = x_t_init.clone()
+    for t in reversed(range(t_steps)):
+        # p_θ(x_{t-1}|xₜ) = N(μ_θ(xₜ,t), σₜ²·I)
+        eps_pred = model(x_t, t)
+        # μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ
+        coeff = beta[t] / math.sqrt(1.0 - alpha_bar[t])
+        mu    = (x_t - coeff * eps_pred) / math.sqrt(alpha[t])
+        if t > 0:
+            sigma = math.sqrt(beta[t])  # σₜ = √βₜ
+            z     = torch.randn_like(x_t)
+            x_t   = mu + sigma * z      # x_{t-1} = μ_θ + σₜ·z
+        else:
+            x_t = mu
+    return x_t
 
-    for t in (0..t_steps).rev() {
-        // p_θ(x_{t-1}|xₜ) = N(μ_θ(xₜ,t), σₜ²·I)
-        let eps_pred = model.forward(&x_t, t)?;
-        // μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ
-        let coeff = beta[t] / (1.0 - alpha_bar[t]).sqrt();
-        let mu    = ((&x_t - &eps_pred * coeff as f64)? / alpha[t].sqrt() as f64)?;
+@torch.no_grad()
+def ddim_sample(
+    model:     TinyUNet,
+    x_t_init:  torch.Tensor,
+    alpha_bar: list[float],
+    steps:     int,
+    eta:       float,
+) -> torch.Tensor:
+    # DDIM sampling: accelerated deterministic (η=0) or stochastic (η=1) reverse.
+    total = len(alpha_bar)
+    tau   = [min(i * total // steps, total - 1) for i in range(steps)]
+    x_t   = x_t_init.clone()
 
-        x_t = if t > 0 {
-            let sigma = beta[t].sqrt(); // σₜ = √βₜ
-            let z = Tensor::randn(0f32, 1f32, x_t.shape(), &dev)?;
-            (mu + z * sigma as f64)? // x_{t-1} = μ_θ + σₜ·z
-        } else {
-            mu
-        };
-    }
-    Ok(x_t)
-}
+    for i in reversed(range(1, len(tau))):
+        t, t_prev     = tau[i], tau[i - 1]
+        ab_t, ab_prev = alpha_bar[t], alpha_bar[t_prev]
+        eps_pred      = model(x_t, t)
 
-/// DDIM sampling: accelerated deterministic (η=0) or stochastic (η=1) reverse.
-fn ddim_sample(
-    model:     &TinyUNet,
-    x_t_init:  Tensor,
-    alpha_bar: &[f32],
-    steps:     usize,
-    eta:       f32,
-) -> candle_core::Result<Tensor> {
-    let total = alpha_bar.len();
-    // Sub-sequence τ: `steps` indices spread across [0, total)
-    let tau: Vec<usize> = (0..steps)
-        .map(|i| (i * total / steps).min(total - 1))
-        .collect();
-    let mut x_t = x_t_init;
-    let dev = x_t.device().clone();
+        # x̂₀ = (xₜ - √(1-ᾱₜ)·ε_θ) / √ᾱₜ
+        x0_pred = (x_t - math.sqrt(1.0 - ab_t) * eps_pred) / math.sqrt(ab_t)
 
-    for i in (1..tau.len()).rev() {
-        let (t, t_prev) = (tau[i], tau[i - 1]);
-        let (ab_t, ab_prev) = (alpha_bar[t], alpha_bar[t_prev]);
+        # σₜ(η) = η·√((1-ᾱ_{t-1})/(1-ᾱₜ))·√(1 - ᾱₜ/ᾱ_{t-1})  (η=0 → deterministic)
+        sigma_t   = eta * math.sqrt((1.0 - ab_prev) / (1.0 - ab_t))                         * math.sqrt(1.0 - ab_t / ab_prev)
+        dir_coeff = math.sqrt(1.0 - ab_prev - sigma_t ** 2)
+        dir_xt    = dir_coeff * eps_pred  # √(1-ᾱ_{t-1}-σₜ²)·ε_θ
 
-        let eps_pred = model.forward(&x_t, t)?;
+        if eta > 0.0:
+            noise = torch.randn_like(x_t)
+            x_t   = math.sqrt(ab_prev) * x0_pred + dir_xt + sigma_t * noise
+        else:
+            x_t = math.sqrt(ab_prev) * x0_pred + dir_xt
 
-        // x̂₀ = (xₜ - √(1-ᾱₜ)·ε_θ) / √ᾱₜ
-        let x0_pred = ((&x_t - &eps_pred * (1.0 - ab_t).sqrt() as f64)? / ab_t.sqrt() as f64)?;
-
-        // σₜ(η) = η·√((1-ᾱ_{t-1})/(1-ᾱₜ))·√(1 - ᾱₜ/ᾱ_{t-1})  (η=0 → deterministic)
-        let sigma_t   = eta * ((1.0 - ab_prev) / (1.0 - ab_t)).sqrt()
-                            * (1.0 - ab_t / ab_prev).sqrt();
-        let dir_coeff = (1.0 - ab_prev - sigma_t * sigma_t).sqrt();
-        let dir_xt    = (&eps_pred * dir_coeff as f64)?; // √(1-ᾱ_{t-1}-σₜ²)·ε_θ
-
-        x_t = if eta > 0.0 {
-            let noise = Tensor::randn(0f32, 1f32, x_t.shape(), &dev)?;
-            (x0_pred * ab_prev.sqrt() as f64 + dir_xt + noise * sigma_t as f64)?
-        } else {
-            (x0_pred * ab_prev.sqrt() as f64 + dir_xt)?
-        };
-    }
-
-    // Final step: t = τ[0] → x_0
-    let t0   = tau[0];
-    let ab0  = alpha_bar[t0];
-    let eps_pred = model.forward(&x_t, t0)?;
-    let x0 = ((&x_t - &eps_pred * (1.0 - ab0).sqrt() as f64)? / ab0.sqrt() as f64)?;
-    Ok(x0)
-}
+    # Final step: t = τ[0] → x_0
+    t0   = tau[0]
+    ab0  = alpha_bar[t0]
+    eps_pred = model(x_t, t0)
+    return (x_t - math.sqrt(1.0 - ab0) * eps_pred) / math.sqrt(ab0)
 ```
 
 ### 4.3 🦀 Rust推論実装 (DDIM高速サンプリング)
@@ -408,24 +366,28 @@ impl DDIMSampler {
 
 #### 4.3.2 エクスポート (Rust → ONNX)
 
-```rust
-// Export via tract-onnx or burn's ONNX export.
-// For candle, serialize weights with safetensors then convert with a Python script:
-//   candle_core::safetensors::save(&weights_map, "tiny_ddpm.safetensors")
-//   burn::export::to_onnx(&model_record, filepath)
+```python
+# Export trained PyTorch model to ONNX for Rust inference (ort):
+#
+#   from safetensors.torch import save_file
+#   save_file(model.state_dict(), "tiny_ddpm.safetensors")
+#   # Full ONNX export:
+#   torch.onnx.export(model, (x_dummy, torch.tensor(0)), "tiny_ddpm.onnx",
+#                     input_names=["x_t", "t"], output_names=["eps_pred"])
 
-fn export_to_onnx(var_map: &candle_nn::VarMap, filepath: &str) -> candle_core::Result<()> {
-    let path = std::path::Path::new(filepath).with_extension("safetensors");
-    var_map.save(&path)?;
-    println!("Model exported to {}", path.display());
-    Ok(())
-}
+def export_to_onnx(model: TinyUNet, filepath: str) -> None:
+    x_dummy = torch.zeros(1, 1, 28, 28)
+    t_dummy = torch.tensor(0)
+    torch.onnx.export(
+        model, (x_dummy, t_dummy), filepath,
+        input_names=["x_t", "t"], output_names=["eps_pred"],
+    )
+    print(f"Model exported to {filepath}")
 
-fn main() -> candle_core::Result<()> {
-    let var_map = candle_nn::VarMap::new();
-    // ... (train model) ...
-    export_to_onnx(&var_map, "tiny_ddpm.onnx")
-}
+if __name__ == "__main__":
+    model = TinyUNet(d_model=64)
+    # ... (train model) ...
+    export_to_onnx(model, "tiny_ddpm.onnx")
 ```
 
 #### 4.3.3 Rust実行
@@ -465,13 +427,13 @@ fn save_image(x: &Array4<f32>, path: &str) {
 
 ### 4.4 Math → Code 1:1対応パターン
 
-| 数式 | Rust | Rust |
+| 数式 | Python | Rust推論 |
 |:-----|:------|:-----|
 | $\mathbf{x}_t = \sqrt{\bar{\alpha}_t} \mathbf{x}_0 + \sqrt{1-\bar{\alpha}_t} \boldsymbol{\epsilon}$ | `x_t = sqrt(ᾱ[t]) .* x₀ .+ sqrt(1 - ᾱ[t]) .* ε` | `x_t = alpha_bar_t.sqrt() * x_0 + (1.0 - alpha_bar_t).sqrt() * epsilon` |
 | $\boldsymbol{\mu}_\theta = \frac{1}{\sqrt{\alpha_t}} (\mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar{\alpha}_t}} \boldsymbol{\epsilon}_\theta)$ | `μ = (1 / sqrt(α[t])) .* (x_t .- (β[t] / sqrt(1 - ᾱ[t])) .* ε_pred)` | `mu = (x_t - (beta_t / (1.0 - alpha_bar_t).sqrt()) * epsilon_pred) / alpha_t.sqrt()` |
 | $\mathbf{x}_{t-1} = \sqrt{\bar{\alpha}_{t-1}} \mathbf{x}_0 + \sqrt{1-\bar{\alpha}_{t-1}} \boldsymbol{\epsilon}_\theta$ | `x_prev = sqrt(ᾱ[t_prev]) .* x₀_pred .+ sqrt(1 - ᾱ[t_prev]) .* ε_pred` | `x_prev = alpha_bar_prev.sqrt() * x_0_pred + (1.0 - alpha_bar_prev).sqrt() * epsilon_pred` |
 
-> **Note:** **進捗: 70% 完了** Rust訓練 + Rust推論の実装完了。Zone 5で実験へ。
+> **Note:** **進捗: 70% 完了** Python訓練 + Rust推論の実装完了。Zone 5で実験へ。
 
 ---
 
@@ -479,56 +441,45 @@ fn save_image(x: &Array4<f32>, path: &str) {
 
 ### 5.1 データセット準備 (MNIST)
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import torch
+from torchvision import datasets, transforms
 
-/// Load MNIST, normalize to [-1, 1], and return batched Tensors of shape (B, 1, 28, 28).
-fn load_mnist_batched(batch_size: usize, device: &Device) -> candle_core::Result<Vec<Tensor>> {
-    // Uses the `mnist` crate: https://crates.io/crates/mnist
-    let mnist::Mnist { trn_img, .. } =
-        mnist::MnistBuilder::new().label_format_digit().finalize();
-
-    // Normalize pixel values [0, 255] → [-1.0, 1.0]
-    let data: Vec<f32> = trn_img.iter()
-        .map(|&p| p as f32 / 127.5 - 1.0)
-        .collect();
-
-    let n = data.len() / (28 * 28); // 60 000 samples
-    let all = Tensor::from_vec(data, (n, 1, 28, 28), device)?;
-    println!("Training samples: {}", n);
-
-    // Split into mini-batches
-    (0..n / batch_size)
-        .map(|i| all.narrow(0, i * batch_size, batch_size))
-        .collect()
-}
+def load_mnist_batched(batch_size: int, device: torch.device) -> list[torch.Tensor]:
+    # Load MNIST, normalize to [-1, 1], and return batched Tensors of shape (B, 1, 28, 28).
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,)),  # [0, 1] → [-1, 1]
+    ])
+    dataset = datasets.MNIST("data", train=True, download=True, transform=transform)
+    loader  = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    batches = [x.to(device) for x, _ in loader]
+    print(f"Training batches: {len(batches)}  (batch_size={batch_size})")
+    return batches
 ```
 
 ### 5.2 訓練実行 (CPU 5分)
 
-```rust
-use candle_core::Device;
-use candle_nn::VarMap;
+```python
+import torch
 
-fn main() -> candle_core::Result<()> {
-    let dev     = Device::Cpu;
-    let var_map = VarMap::new();
-    let vb      = candle_nn::VarBuilder::from_varmap(&var_map, candle_core::DType::F32, &dev);
+def main() -> None:
+    dev   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TinyUNet(d_model=64).to(dev)
 
-    // Initialize model
-    let model = TinyUNet::new(vb, 64)?;
+    # Noise schedule
+    t_steps = 1000
+    beta, alpha, alpha_bar = cosine_schedule(t_steps, 0.008)
 
-    // Noise schedule
-    let t_steps = 1000usize;
-    let (beta, alpha, alpha_bar) = cosine_schedule(t_steps, 0.008);
+    # Load data and train
+    train_batches = load_mnist_batched(128, dev)
+    train_ddpm(model, train_batches, alpha_bar, t_steps, epochs=10, lr=1e-3)
 
-    // Load data and train
-    let train_batches = load_mnist_batched(128, &dev)?;
-    train_ddpm(&model, &train_batches, &alpha_bar, &beta, t_steps, 10, 1e-3)?;
+    torch.save(model.state_dict(), "tiny_ddpm.pt")
+    print("Training completed!")
 
-    println!("Training completed!");
-    Ok(())
-}
+if __name__ == "__main__":
+    main()
 ```
 
 **Expected output**:
@@ -541,74 +492,64 @@ Training completed!
 
 ### 5.3 サンプリング & 可視化
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import torch
 
-/// Print pixel statistics for a batch of samples (shape: N×1×H×W, range [-1, 1]).
-fn print_sample_stats(samples: &Tensor, label: &str) -> candle_core::Result<()> {
-    let data = samples.flatten_all()?.to_vec1::<f32>()?;
-    let min  = data.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max  = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mean = data.iter().sum::<f32>() / data.len() as f32;
-    println!("{}: min={:.3}, max={:.3}, mean={:.3}", label, min, max, mean);
-    Ok(())
-}
+def print_sample_stats(samples: torch.Tensor, label: str) -> None:
+    # Print pixel statistics for a batch of samples (shape: N×1×H×W, range [-1, 1]).
+    d = samples.flatten()
+    print(f"{label}: min={d.min():.3f}, max={d.max():.3f}, mean={d.mean():.3f}")
 
-fn main() -> candle_core::Result<()> {
-    let dev = Device::Cpu;
+def main() -> None:
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    // Sample 16 images (DDPM 1000 steps)
-    let x_t = Tensor::randn(0f32, 1f32, (16, 1, 28, 28), &dev)?;
-    let samples_ddpm = ddpm_sample(&model, x_t.clone(), &beta, &alpha, &alpha_bar, 1000)?;
+    # Sample 16 images (DDPM 1000 steps)
+    x_t          = torch.randn(16, 1, 28, 28, device=dev)
+    samples_ddpm = ddpm_sample(model, x_t.clone(), beta, alpha, alpha_bar, 1000)
 
-    // Sample 16 images (DDIM 50 steps, deterministic η=0)
-    let samples_ddim = ddim_sample(&model, x_t, &alpha_bar, 50, 0.0)?;
+    # Sample 16 images (DDIM 50 steps, deterministic η=0)
+    samples_ddim = ddim_sample(model, x_t, alpha_bar, 50, 0.0)
 
-    // Print statistics; use `image` crate to save PNGs for visual inspection
-    print_sample_stats(&samples_ddpm, "DDPM (1000 steps)")?;
-    print_sample_stats(&samples_ddim, "DDIM (50 steps, deterministic)")?;
-    Ok(())
-}
+    # Print statistics; use torchvision.utils.save_image for visual inspection
+    print_sample_stats(samples_ddpm, "DDPM (1000 steps)")
+    print_sample_stats(samples_ddim, "DDIM (50 steps, deterministic)")
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### 5.4 定量評価 & 比較
 
 **FID (Fréchet Inception Distance)** は計算コスト高いため、簡易的な **再構成誤差** と **多様性** を測定:
 
-```rust
-use candle_core::Tensor;
+```python
+import math
+import torch
 
-/// Encode x_0 to x_t (t=500), denoise back with DDIM, and return MSE.
-fn test_reconstruction(
-    model:     &TinyUNet,
-    x0:        &Tensor,
-    alpha_bar: &[f32],
-    t:         usize,
-) -> candle_core::Result<f32> {
-    let ab_t = alpha_bar[t];
+@torch.no_grad()
+def test_reconstruction(
+    model:     TinyUNet,
+    x0:        torch.Tensor,
+    alpha_bar: list[float],
+    t:         int,
+) -> float:
+    # Encode x_0 to x_t (t=500), denoise back with DDIM, and return MSE.
+    ab_t = alpha_bar[t]
+    # q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
+    eps    = torch.randn_like(x0)
+    x_t    = math.sqrt(ab_t) * x0 + math.sqrt(1.0 - ab_t) * eps
+    x_recon = ddim_sample(model, x_t, alpha_bar[:t + 1], 50, 0.0)
+    return ((x0 - x_recon) ** 2).mean().item()
 
-    // q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
-    let eps = Tensor::randn(0f32, 1f32, x0.shape(), x0.device())?;
-    let x_t = (x0 * ab_t.sqrt() as f64 + &eps * (1.0 - ab_t).sqrt() as f64)?;
+def main() -> None:
+    mse_sum = sum(
+        test_reconstruction(model, test_data[i:i+1], alpha_bar, 500)
+        for i in range(100)
+    )
+    print(f"Average reconstruction MSE: {mse_sum / 100.0:.4f}")
 
-    // Denoise with DDIM (sub-schedule up to t)
-    let x_recon = ddim_sample(model, x_t, &alpha_bar[..=t], 50, 0.0)?;
-
-    // MSE
-    (x0 - &x_recon)?.sqr()?.mean_all()?.to_scalar::<f32>()
-}
-
-fn main() -> candle_core::Result<()> {
-    // Test on 100 samples
-    let mse_sum: f32 = (0..100)
-        .map(|i| {
-            let x0 = test_data.narrow(0, i, 1).unwrap();
-            test_reconstruction(&model, &x0, &alpha_bar, 500).unwrap()
-        })
-        .sum();
-    println!("Average reconstruction MSE: {:.4}", mse_sum / 100.0);
-    Ok(())
-}
+if __name__ == "__main__":
+    main()
 ```
 
 **aMUSEd-256 推論デモとの品質比較**:
@@ -662,168 +603,130 @@ fn main() {
 
 **訓練安定化テクニック**:
 
-```rust
-use candle_core::Tensor;
-use candle_nn::{AdamW, Optimizer};
+```python
+import math
+import torch
+import torch.nn.functional as F
+from torch.optim import AdamW
 
-/// Training step with gradient-norm clipping.
-/// Returns (loss, grad_norm).
-fn train_step_with_clip(
-    model:     &TinyUNet,
-    opt:       &mut AdamW,
-    x0:        &Tensor,
-    alpha_bar: &[f32],
-    t_steps:   usize,
-    clip_norm: f32,
-    rng:       &mut impl rand::Rng,
-) -> candle_core::Result<(f32, f32)> {
-    let t    = rng.gen_range(0..t_steps);
-    let ab_t = alpha_bar[t];
+def train_step_with_clip(
+    model:     TinyUNet,
+    opt:       AdamW,
+    x0:        torch.Tensor,
+    alpha_bar: list[float],
+    t_steps:   int,
+    clip_norm: float,
+) -> tuple[float, float]:
+    # Training step with gradient-norm clipping. Returns (loss, grad_norm).
+    t    = torch.randint(0, t_steps, (1,)).item()
+    ab_t = alpha_bar[t]
 
-    // q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
-    let eps  = Tensor::randn(0f32, 1f32, x0.shape(), x0.device())?;
-    let x_t  = (x0 * ab_t.sqrt() as f64 + &eps * (1.0 - ab_t).sqrt() as f64)?;
+    # q(xₜ|x₀) = N(√ᾱₜ·x₀, (1-ᾱₜ)·I)  →  xₜ = √ᾱₜ·x₀ + √(1-ᾱₜ)·ε
+    eps  = torch.randn_like(x0)
+    x_t  = math.sqrt(ab_t) * x0 + math.sqrt(1.0 - ab_t) * eps
 
-    let eps_pred = model.forward(&x_t, t)?;
-    let loss     = (&eps - &eps_pred)?.sqr()?.sum_all()?;
+    eps_pred = model(x_t, t)
+    loss     = F.mse_loss(eps_pred, eps)
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
 
-    // Compute per-parameter gradient norms for logging
-    let grads = loss.backward()?;
-    let grad_norm: f32 = grads.values()
-        .filter_map(|g| g.sqr().ok()?.sum_all().ok()?.to_scalar::<f32>().ok())
-        .sum::<f32>()
-        .sqrt();
+    # Clip by scaling gradients if norm exceeds threshold
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm).item()
+    opt.step()
 
-    // Clip by scaling gradients if norm exceeds threshold
-    if grad_norm > clip_norm {
-        let _scale = clip_norm / grad_norm; // apply scale to grads in production
-    }
-    opt.step(&grads)?;
-
-    Ok((loss.to_scalar::<f32>()?, grad_norm))
-}
+    return loss.item(), grad_norm
 ```
 
 **EMA (Exponential Moving Average) for Stable Inference**:
 
-```rust
-use std::collections::HashMap;
-use candle_core::Tensor;
+```python
+import copy
+import torch
+import torch.nn as nn
 
-/// Exponential Moving Average of model weights for stable inference.
-struct Ema {
-    shadow: HashMap<String, Tensor>,
-    decay:  f64,
-}
+class Ema:
+    # Exponential Moving Average of model weights for stable inference.
 
-impl Ema {
-    fn new(var_map: &candle_nn::VarMap, decay: f64) -> candle_core::Result<Self> {
-        let shadow = var_map
-            .data()
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_tensor().clone()))
-            .collect();
-        Ok(Self { shadow, decay })
-    }
+    def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
+        self.shadow = copy.deepcopy(model)
+        self.shadow.eval()
+        self.decay  = decay
 
-    /// shadow = decay * shadow + (1 − decay) * current
-    fn update(&mut self, var_map: &candle_nn::VarMap) -> candle_core::Result<()> {
-        for (name, current) in var_map.data().lock().unwrap().iter() {
-            if let Some(shadow) = self.shadow.get_mut(name) {
-                *shadow = (shadow.affine(self.decay, 0.0)?
-                    + current.affine(1.0 - self.decay, 0.0)?)?;
-            }
-        }
-        Ok(())
-    }
-}
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        # shadow = decay * shadow + (1 − decay) * current
+        for shadow_p, model_p in zip(
+            self.shadow.parameters(), model.parameters()
+        ):
+            shadow_p.data.mul_(self.decay).add_(model_p.data, alpha=1.0 - self.decay)
 
-fn main() -> candle_core::Result<()> {
-    let var_map = candle_nn::VarMap::new();
-    let mut ema = Ema::new(&var_map, 0.9999)?;
+def main() -> None:
+    dev   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TinyUNet(d_model=64).to(dev)
+    ema   = Ema(model, decay=0.9999)
 
-    for _epoch in 0..epochs {
-        // ... train_step(...) ...
-        ema.update(&var_map)?; // Update EMA after each batch
-    }
+    for _epoch in range(epochs):
+        # ... train_step(...) ...
+        ema.update(model)  # Update EMA after each batch
 
-    // Load EMA weights back into model for sampling
-    println!("Using EMA weights for sampling");
-    Ok(())
-}
+    # Use ema.shadow weights for sampling
+    print("Using EMA weights for sampling")
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### 5.6 サンプリング品質の定量評価
 
 **FID (Fréchet Inception Distance)** の完全実装:
 
-```rust
-use candle_core::{Tensor, Device};
-use candle_nn::{Conv2d, Linear, Module};
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-/// Lightweight CNN feature extractor for MNIST-scale FID computation.
-struct SimpleFeatureExtractor {
-    conv1: Conv2d,
-    conv2: Conv2d,
-    fc:    Linear,
-}
+class SimpleFeatureExtractor(nn.Module):
+    # Lightweight CNN feature extractor for MNIST-scale FID computation.
 
-impl SimpleFeatureExtractor {
-    fn new(vb: candle_nn::VarBuilder) -> candle_core::Result<Self> {
-        let cfg = candle_nn::Conv2dConfig { padding: 1, ..Default::default() };
-        Ok(Self {
-            conv1: candle_nn::conv2d(1,  32, 3, cfg, vb.pp("conv1"))?,
-            conv2: candle_nn::conv2d(32, 64, 3, cfg, vb.pp("conv2"))?,
-            fc:    candle_nn::linear(7 * 7 * 64, 256, vb.pp("fc"))?,
-        })
-    }
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(1,  32, 3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.fc    = nn.Linear(7 * 7 * 64, 256)
 
-    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
-        let h = self.conv1.forward(x)?.relu()?.avg_pool2d(2)?;  // (B, 32, 14, 14)
-        let h = self.conv2.forward(&h)?.relu()?.avg_pool2d(2)?; // (B, 64,  7,  7)
-        let h = h.flatten_from(1)?;                              // (B, 3136)
-        self.fc.forward(&h)                                      // (B, 256)
-    }
-}
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = F.avg_pool2d(self.conv1(x).relu(), 2)   # (B, 32, 14, 14)
+        h = F.avg_pool2d(self.conv2(h).relu(), 2)   # (B, 64,  7,  7)
+        h = h.flatten(1)                              # (B, 3136)
+        return self.fc(h)                             # (B, 256)
 
-/// Simplified FID: squared distance between feature means (full cov requires nalgebra).
-fn compute_fid(real_feats: &[Vec<f32>], fake_feats: &[Vec<f32>]) -> f32 {
-    let dim = real_feats[0].len();
-    let mu_real: Vec<f32> = (0..dim)
-        .map(|d| real_feats.iter().map(|f| f[d]).sum::<f32>() / real_feats.len() as f32)
-        .collect();
-    let mu_fake: Vec<f32> = (0..dim)
-        .map(|d| fake_feats.iter().map(|f| f[d]).sum::<f32>() / fake_feats.len() as f32)
-        .collect();
-    mu_real.iter().zip(&mu_fake).map(|(a, b)| (a - b).powi(2)).sum()
-}
+def compute_fid(real_feats: list[list[float]], fake_feats: list[list[float]]) -> float:
+    # Simplified FID: squared distance between feature means.
+    dim     = len(real_feats[0])
+    mu_real = [sum(f[d] for f in real_feats) / len(real_feats) for d in range(dim)]
+    mu_fake = [sum(f[d] for f in fake_feats) / len(fake_feats) for d in range(dim)]
+    return sum((a - b) ** 2 for a, b in zip(mu_real, mu_fake))
 
-fn main() -> candle_core::Result<()> {
-    let dev     = Device::Cpu;
-    let var_map = candle_nn::VarMap::new();
-    let vb      = candle_nn::VarBuilder::from_varmap(&var_map, candle_core::DType::F32, &dev);
-    let extractor = SimpleFeatureExtractor::new(vb)?;
+def main() -> None:
+    dev       = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    extractor = SimpleFeatureExtractor().to(dev).eval()
 
-    // Extract features from 1000 real and fake samples
-    let extract = |batch: &[Tensor]| -> candle_core::Result<Vec<Vec<f32>>> {
-        batch.iter()
-            .map(|x| extractor.forward(x)?.to_vec2::<f32>().map(|v| v.into_iter().flatten().collect()))
-            .collect()
-    };
-    let real_feats = extract(&real_batch)?;
-    let fake_feats = extract(&fake_batch)?;
+    def extract(batch: list[torch.Tensor]) -> list[list[float]]:
+        with torch.inference_mode():
+            return [extractor(x).tolist() for x in batch]
 
-    println!("FID Score: {:.2}", compute_fid(&real_feats, &fake_feats));
-    Ok(())
-}
+    real_feats = extract(real_batch)
+    fake_feats = extract(fake_batch)
+    print(f"FID Score: {compute_fid(real_feats, fake_feats):.2f}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 **Inception Score (IS)** の実装:
 
-```rust
-/// Compute Inception Score from per-sample softmax predictions.
+```python
+# Compute Inception Score from per-sample softmax predictions.
 /// `pyx`: shape (N, num_classes), each row is p(y | x) for one sample.
 fn compute_inception_score(pyx: &[Vec<f32>]) -> f32 {
     let n = pyx.len();
@@ -847,19 +750,16 @@ fn compute_inception_score(pyx: &[Vec<f32>]) -> f32 {
     mean_kl.exp() // IS = exp(E[KL])
 }
 
-fn main() -> candle_core::Result<()> {
-    // mnist_classifier returns (N, 10) softmax probabilities
-    let pyx: Vec<Vec<f32>> = fake_batch.iter()
-        .map(|x| {
-            mnist_classifier.forward(x)?
-                .to_vec2::<f32>()
-                .map(|v| v.into_iter().flatten().collect())
-        })
-        .collect::<candle_core::Result<_>>()?;
+def main() -> None:
+    pyx: list[list[float]] = []
+    for x in fake_batch:
+        with torch.inference_mode():
+            probs = mnist_classifier(x).softmax(dim=-1)
+        pyx.extend(probs.tolist())
+    print(f"Inception Score: {compute_inception_score(pyx):.2f}")
 
-    println!("Inception Score: {:.2}", compute_inception_score(&pyx));
-    Ok(())
-}
+if __name__ == "__main__":
+    main()
 ```
 
 **Expected results** (Tiny DDPM on MNIST after 50 epochs):
@@ -874,38 +774,36 @@ fn main() -> candle_core::Result<()> {
 
 **実験**: DDPM と DDIM で異なるステップ数での生成品質を比較。
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import torch
 
-fn main() -> candle_core::Result<()> {
-    let dev         = Device::Cpu;
-    let step_counts = [10usize, 20, 50, 100, 200, 500, 1000];
-    let mut fid_ddpm = Vec::with_capacity(step_counts.len());
-    let mut fid_ddim = Vec::with_capacity(step_counts.len());
+def main() -> None:
+    dev         = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    step_counts = [10, 20, 50, 100, 200, 500, 1000]
+    fid_ddpm, fid_ddim = [], []
 
-    let x_t_base = Tensor::randn(0f32, 1f32, (16, 1, 28, 28), &dev)?;
+    x_t_base = torch.randn(16, 1, 28, 28, device=dev)
 
-    for &steps in &step_counts {
-        // DDPM with `steps` uniform timesteps
-        let samples_d = ddpm_sample(&model, x_t_base.clone(), &beta, &alpha, &alpha_bar, steps)?;
-        let fid_d = compute_fid_from_tensors(&real_batch, &samples_d, &extractor)?;
-        fid_ddpm.push(fid_d);
+    for steps in step_counts:
+        # DDPM with `steps` uniform timesteps
+        samples_d = ddpm_sample(model, x_t_base.clone(), beta, alpha, alpha_bar, steps)
+        fid_d     = compute_fid_from_tensors(real_batch, samples_d, extractor)
+        fid_ddpm.append(fid_d)
 
-        // DDIM deterministic (η = 0)
-        let samples_i = ddim_sample(&model, x_t_base.clone(), &alpha_bar, steps, 0.0)?;
-        let fid_i = compute_fid_from_tensors(&real_batch, &samples_i, &extractor)?;
-        fid_ddim.push(fid_i);
+        # DDIM deterministic (η = 0)
+        samples_i = ddim_sample(model, x_t_base.clone(), alpha_bar, steps, 0.0)
+        fid_i     = compute_fid_from_tensors(real_batch, samples_i, extractor)
+        fid_ddim.append(fid_i)
 
-        println!("Steps: {:4},  FID (DDPM): {:.2},  FID (DDIM): {:.2}", steps, fid_d, fid_i);
-    }
+        print(f"Steps: {steps:4},  FID (DDPM): {fid_d:.2f},  FID (DDIM): {fid_i:.2f}")
 
-    // Summary table (use plotters crate for log-scale chart)
-    println!("\n{:<8} {:>12} {:>12}", "Steps", "FID DDPM", "FID DDIM");
-    for (&s, (&fd, &fi)) in step_counts.iter().zip(fid_ddpm.iter().zip(&fid_ddim)) {
-        println!("{:<8} {:>12.2} {:>12.2}", s, fd, fi);
-    }
-    Ok(())
-}
+    print(f"
+{'Steps':<8} {'FID DDPM':>12} {'FID DDIM':>12}")
+    for s, (fd, fi) in zip(step_counts, zip(fid_ddpm, fid_ddim)):
+        print(f"{s:<8} {fd:>12.2f} {fi:>12.2f}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 **Expected curve**:
@@ -959,22 +857,24 @@ fn zero_terminal_snr_schedule(t_steps: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) 
     beta.iter_mut().zip(&alpha).for_each(|(b, &a)| *b = 1.0 - a); // βₜ = 1 - αₜ
     (beta, alpha, alpha_bar)
 }
+```
 
-fn main() -> candle_core::Result<()> {
-    let t_steps = 1000usize;
-    let (beta_linear, _, ab_linear) = linear_schedule(t_steps, 1e-4, 0.02);
-    let (beta_cosine, _, ab_cosine) = cosine_schedule(t_steps, 0.008);
-    let (beta_zt,     _, ab_zt)     = zero_terminal_snr_schedule(t_steps);
+```python
+def main() -> None:
+    t_steps = 1000
+    beta_linear, _, ab_linear = linear_schedule(t_steps, 1e-4, 0.02)
+    beta_cosine, _, ab_cosine = cosine_schedule(t_steps, 0.008)
+    beta_zt,     _, ab_zt     = zero_terminal_snr_schedule(t_steps)
 
-    // Train and evaluate each schedule (abbreviated)
-    let fid_linear = evaluate_schedule(&model, &train_batches, &beta_linear, &ab_linear, 50)?;
-    let fid_cosine = evaluate_schedule(&model, &train_batches, &beta_cosine, &ab_cosine, 50)?;
-    let fid_zt     = evaluate_schedule(&model, &train_batches, &beta_zt,     &ab_zt,     50)?;
+    # Train and evaluate each schedule (abbreviated)
+    fid_linear = evaluate_schedule(model, train_batches, beta_linear, ab_linear, 50)
+    fid_cosine = evaluate_schedule(model, train_batches, beta_cosine, ab_cosine, 50)
+    fid_zt     = evaluate_schedule(model, train_batches, beta_zt,     ab_zt,     50)
 
-    println!("FID — Linear: {:.2}, Cosine: {:.2}, Zero-Terminal: {:.2}",
-             fid_linear, fid_cosine, fid_zt);
-    Ok(())
-}
+    print(f"FID — Linear: {fid_linear:.2f}, Cosine: {fid_cosine:.2f}, Zero-Terminal: {fid_zt:.2f}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 **Expected results**:
@@ -1120,39 +1020,37 @@ $$
 
 <details><summary>DPM-Solver++ 実装 (Rust)</summary>
 
-```rust
-use candle_core::Tensor;
+```python
+import math
+import torch
 
-/// DPM-Solver++ 2nd-order step: t → t_prev via Heun predictor-corrector.
-/// Solves Diffusion ODE: dx/dt = -½σ'(t)/σ(t)·ε_θ(x, t)
-fn dpm_solver_step(
-    model:     &TinyUNet,
-    x_t:       &Tensor,
-    t:         usize,
-    t_prev:    usize,
-    alpha_bar: &[f32],
-) -> candle_core::Result<Tensor> {
-    let (ab_t, ab_prev) = (alpha_bar[t], alpha_bar[t_prev]);
+@torch.no_grad()
+def dpm_solver_step(
+    model:     TinyUNet,
+    x_t:       torch.Tensor,
+    t:         int,
+    t_prev:    int,
+    alpha_bar: list[float],
+) -> torch.Tensor:
+    # DPM-Solver++ 2nd-order step: t → t_prev via Heun predictor-corrector.
+    # Solves Diffusion ODE: dx/dt = -½σ'(t)/σ(t)·ε_θ(x, t)
+    ab_t, ab_prev = alpha_bar[t], alpha_bar[t_prev]
 
-    // x̂₀ = (xₜ - √(1-ᾱₜ)·ε_θ) / √ᾱₜ
-    let eps_t  = model.forward(x_t, t)?;
-    let x0_t   = ((x_t - &eps_t * (1.0 - ab_t).sqrt() as f64)? / ab_t.sqrt() as f64)?;
+    # x̂₀ = (xₜ - √(1-ᾱₜ)·ε_θ) / √ᾱₜ
+    eps_t = model(x_t, t)
+    x0_t  = (x_t - math.sqrt(1.0 - ab_t) * eps_t) / math.sqrt(ab_t)
 
-    // Predictor (Heun): half step to t_mid
-    let t_mid  = (t + t_prev) / 2;
-    let ab_mid = alpha_bar[t_mid];
-    let x_mid  = (x0_t.affine(ab_mid.sqrt() as f64, 0.0)?
-               +  eps_t.affine((1.0 - ab_mid).sqrt() as f64, 0.0)?)?;
+    # Predictor (Heun): half step to t_mid
+    t_mid  = (t + t_prev) // 2
+    ab_mid = alpha_bar[t_mid]
+    x_mid  = math.sqrt(ab_mid) * x0_t + math.sqrt(1.0 - ab_mid) * eps_t
 
-    // Corrector: 2nd model call at t_mid
-    let eps_mid = model.forward(&x_mid, t_mid)?;
-    let x0_mid  = ((&x_mid - &eps_mid * (1.0 - ab_mid).sqrt() as f64)? / ab_mid.sqrt() as f64)?;
+    # Corrector: 2nd model call at t_mid
+    eps_mid = model(x_mid, t_mid)
+    x0_mid  = (x_mid - math.sqrt(1.0 - ab_mid) * eps_mid) / math.sqrt(ab_mid)
 
-    // x_{t_prev} = √ᾱ_{t_prev}·x̂₀_mid + √(1-ᾱ_{t_prev})·ε_mid
-    let x_prev = (x0_mid.affine(ab_prev.sqrt() as f64, 0.0)?
-               +  eps_mid.affine((1.0 - ab_prev).sqrt() as f64, 0.0)?)?;
-    Ok(x_prev)
-}
+    # x_{t_prev} = √ᾱ_{t_prev}·x̂₀_mid + √(1-ᾱ_{t_prev})·ε_mid
+    return math.sqrt(ab_prev) * x0_mid + math.sqrt(1.0 - ab_prev) * eps_mid
 ```
 
 </details>
@@ -1214,43 +1112,41 @@ $$
 - 訓練時に $p = 0.1$ の確率で条件 $y$ をドロップ (無条件訓練)
 - 推論時に条件付き・無条件の2回推論して線形結合
 
-```rust
-use candle_core::Tensor;
+```python
+import math
+import torch
 
-/// Classifier-Free Guidance DDIM step.
-/// Pass `None` for `t_prev` at the last step to treat ᾱ_prev = 1.
-fn ddim_step_cfg(
-    model_cond:   &TinyUNet,   // conditioned model (or unified model with class token)
-    model_uncond: &TinyUNet,   // unconditional model (null-class token)
-    x_t:          &Tensor,
-    t:             usize,
-    t_prev:        Option<usize>,
-    alpha_bar:    &[f32],
-    w:             f32,        // guidance scale
-    eta:           f32,        // 0 = deterministic DDIM, 1 = DDPM-like
-) -> candle_core::Result<Tensor> {
-    // Conditional and unconditional noise predictions
-    let eps_cond   = model_cond.forward(x_t, t)?;
-    let eps_uncond = model_uncond.forward(x_t, t)?;
+@torch.no_grad()
+def ddim_step_cfg(
+    model_cond:   TinyUNet,
+    model_uncond: TinyUNet,
+    x_t:          torch.Tensor,
+    t:             int,
+    t_prev:        int | None,
+    alpha_bar:    list[float],
+    w:             float,       # guidance scale
+    eta:           float,       # 0 = deterministic DDIM, 1 = DDPM-like
+) -> torch.Tensor:
+    # Classifier-Free Guidance DDIM step.
+    # Pass None for t_prev at the last step to treat ᾱ_prev = 1.
+    eps_cond   = model_cond(x_t, t)
+    eps_uncond = model_uncond(x_t, t)
 
-    // CFG: ε̃_θ = ε_uncond + w·(ε_cond − ε_uncond)  (Dhariwal & Nichol 2021)
-    let eps_guided = (&eps_uncond + (&eps_cond - &eps_uncond)? * w as f64)?;
+    # CFG: ε̃_θ = ε_uncond + w·(ε_cond − ε_uncond)  (Dhariwal & Nichol 2021)
+    eps_guided = eps_uncond + w * (eps_cond - eps_uncond)
 
-    let ab_t    = alpha_bar[t];
-    let ab_prev = t_prev.map(|tp| alpha_bar[tp]).unwrap_or(1.0);
+    ab_t    = alpha_bar[t]
+    ab_prev = alpha_bar[t_prev] if t_prev is not None else 1.0
 
-    // Predicted x_0
-    // x̂₀ = (xₜ - √(1-ᾱₜ)·ε̃_θ) / √ᾱₜ
-    let x0_pred = ((x_t - &eps_guided * (1.0 - ab_t).sqrt() as f64)? / ab_t.sqrt() as f64)?;
+    # x̂₀ = (xₜ - √(1-ᾱₜ)·ε̃_θ) / √ᾱₜ
+    x0_pred = (x_t - math.sqrt(1.0 - ab_t) * eps_guided) / math.sqrt(ab_t)
 
-    // σₜ(η) = η·√((1-ᾱ_{t-1})/(1-ᾱₜ))·√(1 - ᾱₜ/ᾱ_{t-1})  (η=0 → deterministic)
-    let sigma_t   = eta * ((1.0 - ab_prev) / (1.0 - ab_t)).sqrt()
-                       * (1.0 - ab_t / ab_prev).sqrt();
-    let dir_coeff = (1.0 - ab_prev - sigma_t * sigma_t).sqrt(); // √(1-ᾱ_{t-1}-σₜ²)
-    let dir_xt    = (&eps_guided * dir_coeff as f64)?;
+    # σₜ(η) = η·√((1-ᾱ_{t-1})/(1-ᾱₜ))·√(1 - ᾱₜ/ᾱ_{t-1})  (η=0 → deterministic)
+    sigma_t   = eta * math.sqrt((1.0 - ab_prev) / (1.0 - ab_t))                     * math.sqrt(1.0 - ab_t / ab_prev)
+    dir_coeff = math.sqrt(1.0 - ab_prev - sigma_t ** 2)  # √(1-ᾱ_{t-1}-σₜ²)
+    dir_xt    = dir_coeff * eps_guided
 
-    Ok((x0_pred * ab_prev.sqrt() as f64 + dir_xt)?)
-}
+    return math.sqrt(ab_prev) * x0_pred + dir_xt
 ```
 
 **効果**: $w = 7.5$ で FID 改善 & 条件一致度向上 (CLIP score ↑)。
@@ -1301,52 +1197,48 @@ $$
 
 **実装 — ODE Solver with ode_solvers**:
 
-```rust
-use candle_core::Tensor;
+```python
+import math
+import torch
 
-/// Probability Flow ODE (Song+ 2020):
-///   dx/dt = -0.5 · σ²(t) · score(x, t),   score ≈ -ε_θ / sqrt(1 − ᾱ_t)
-///
-/// Solved here with a simple Euler discretization.
-/// For higher accuracy use the `ode_solvers` crate (RK45 / Adams).
-fn probability_flow_ode(
-    model:     &TinyUNet,
-    x_t_init:  Tensor,
-    alpha_bar: &[f32],
-    steps:     usize,
-) -> candle_core::Result<Tensor> {
-    let t_max = alpha_bar.len() - 1;
-    // Timestep sub-sequence T → 0
-    let ts: Vec<usize> = (0..=t_max).rev()
-        .step_by((t_max / steps).max(1))
-        .collect();
+@torch.no_grad()
+def probability_flow_ode(
+    model:     TinyUNet,
+    x_t_init:  torch.Tensor,
+    alpha_bar: list[float],
+    steps:     int,
+) -> torch.Tensor:
+    # Probability Flow ODE (Song+ 2020):
+    # dx/dt = -0.5 · σ²(t) · score(x, t),   score ≈ -ε_θ / sqrt(1 − ᾱ_t)
+    # Solved with Euler discretization.
+    # For higher accuracy use torchdiffeq (RK45 / Adams).
+    t_max = len(alpha_bar) - 1
+    step  = max(t_max // steps, 1)
+    ts    = list(range(t_max, -1, -step))
 
-    let mut x = x_t_init;
-    for window in ts.windows(2) {
-        let (t, t_next) = (window[0], window[1]);
-        let ab_t = alpha_bar[t];
+    x = x_t_init.clone()
+    for t, t_next in zip(ts, ts[1:]):
+        ab_t = alpha_bar[t]
+        # score ≈ -ε_θ / √(1-ᾱₜ)  (Tweedie: ∇_x log pₜ(x) = -ε_θ/√(1-ᾱₜ))
+        eps   = model(x, t)
+        score = -(1.0 / math.sqrt(1.0 - ab_t)) * eps
 
-        // score ≈ -ε_θ / √(1-ᾱₜ)  (Tweedie: ∇_x log pₜ(x) = -ε_θ/√(1-ᾱₜ))
-        let eps   = model.forward(&x, t)?;
-        let score = (&eps * -(1.0 / (1.0 - ab_t).sqrt()) as f64)?;
+        # ODE step: dx = -½·σ²(t)·score·dt  (dt < 0 → going backward in time)
+        sigma_sq = (1.0 - ab_t) / ab_t  # σ²(t) = (1-ᾱₜ)/ᾱₜ
+        dt       = t_next - t           # negative
+        x        = x + (-0.5 * sigma_sq * dt) * score
 
-        // ODE step: dx = -½·σ²(t)·score·dt  (dt < 0 → going backward in time)
-        let sigma_sq = (1.0 - ab_t) / ab_t; // σ²(t) = (1-ᾱₜ)/ᾱₜ
-        let dt       = t_next as f32 - t as f32; // negative
-        let dx       = (&score * (-0.5 * sigma_sq * dt) as f64)?;
-        x = (x + dx)?;
-    }
-    Ok(x) // final x_0
-}
+    return x  # final x_0
 
-fn main() -> candle_core::Result<()> {
-    let dev = candle_core::Device::Cpu;
-    let x_t = Tensor::randn(0f32, 1f32, (1, 1, 28, 28), &dev)?;
-    let (_, _, alpha_bar) = cosine_schedule(1000, 0.008);
-    let x_0 = probability_flow_ode(&model, x_t, &alpha_bar, 50)?;
-    println!("PF-ODE sample shape: {:?}", x_0.shape());
-    Ok(())
-}
+def main() -> None:
+    dev = torch.device("cpu")
+    x_t = torch.randn(1, 1, 28, 28, device=dev)
+    _, _, alpha_bar = cosine_schedule(1000, 0.008)
+    x_0 = probability_flow_ode(model, x_t, alpha_bar, 50)
+    print(f"PF-ODE sample shape: {x_0.shape}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 **利点**:
@@ -1360,251 +1252,240 @@ fn main() -> candle_core::Result<()> {
 
 DDPMで画像の一部を修復:
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import math
+import torch
 
-/// DDPM inpainting: reverse-diffuse while preserving known pixels.
-/// `mask`: 1.0 = generate freely, 0.0 = preserve from known_region.
-fn ddpm_inpaint(
-    model:        &TinyUNet,
-    x_t_init:     Tensor,
-    mask:         &Tensor,
-    known_region: &Tensor,
-    beta:         &[f32],
-    alpha:        &[f32],
-    alpha_bar:    &[f32],
-    t_steps:      usize,
-) -> candle_core::Result<Tensor> {
-    let mut x_t = x_t_init;
-    let dev = x_t.device().clone();
+@torch.no_grad()
+def ddpm_inpaint(
+    model:        TinyUNet,
+    x_t_init:     torch.Tensor,
+    mask:         torch.Tensor,
+    known_region: torch.Tensor,
+    beta:         list[float],
+    alpha:        list[float],
+    alpha_bar:    list[float],
+    t_steps:      int,
+) -> torch.Tensor:
+    # DDPM inpainting: reverse-diffuse while preserving known pixels.
+    # mask: 1.0 = generate freely, 0.0 = preserve from known_region.
+    x_t = x_t_init.clone()
+    for t in reversed(range(t_steps)):
+        eps_pred = model(x_t, t)
+        # μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ  (DDPM reverse mean)
+        coeff = (1.0 - alpha[t]) / math.sqrt(1.0 - alpha_bar[t])
+        mu    = (x_t - coeff * eps_pred) / math.sqrt(alpha[t])
+        if t > 0:
+            # σ̃ₜ² = (1-ᾱ_{t-1})/(1-ᾱₜ)·βₜ  (posterior variance)
+            sigma = math.sqrt(
+                (1.0 - alpha_bar[t - 1]) / (1.0 - alpha_bar[t]) * (1.0 - alpha[t])
+            )
+            z = torch.randn_like(x_t)
+            x_generated = mu + sigma * z
+        else:
+            x_generated = mu
+        # Blend: keep known_region where mask = 0
+        x_t = mask * x_generated + (1.0 - mask) * known_region
+    return x_t
 
-    for t in (0..t_steps).rev() {
-        let eps_pred = model.forward(&x_t, t)?;
+def main() -> None:
+    dev = torch.device("cpu")
+    # Mask: 1.0 everywhere except center 14×14 patch
+    mask         = torch.ones(1, 1, 28, 28, device=dev)
+    mask[0, 0, 7:21, 7:21] = 0.0
+    known_region = test_data[0:1]
+    x_t          = torch.randn(1, 1, 28, 28, device=dev)
+    inpainted = ddpm_inpaint(model, x_t, mask, known_region, beta, alpha, alpha_bar, 1000)
+    print(f"Inpainted shape: {inpainted.shape}")
 
-        // μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ  (DDPM reverse mean)
-        let coeff = (1.0 - alpha[t]) / (1.0 - alpha_bar[t]).sqrt();
-        let mu    = ((&x_t - &eps_pred * coeff as f64)? / alpha[t].sqrt() as f64)?;
-
-        let x_generated = if t > 0 {
-            // σ̃ₜ² = (1-ᾱ_{t-1})/(1-ᾱₜ)·βₜ  (posterior variance)
-            let sigma = ((1.0 - alpha_bar[t - 1]) / (1.0 - alpha_bar[t]) * (1.0 - alpha[t])).sqrt();
-            let z = Tensor::randn(0f32, 1f32, x_t.shape(), &dev)?;
-            (mu + z * sigma as f64)?
-        } else {
-            mu
-        };
-
-        // Blend: keep known_region where mask = 0
-        let one = Tensor::ones_like(mask)?;
-        x_t = (mask * &x_generated + (&one - mask)? * known_region)?;
-    }
-    Ok(x_t)
-}
-
-fn main() -> candle_core::Result<()> {
-    let dev = Device::Cpu;
-
-    // Mask: 1.0 everywhere except center 14×14 patch
-    let mut mask_data = vec![1.0f32; 28 * 28];
-    for row in 7..21 { for col in 7..21 { mask_data[row * 28 + col] = 0.0; } }
-    let mask         = Tensor::from_vec(mask_data, (1, 1, 28, 28), &dev)?;
-    let known_region = test_data.narrow(0, 0, 1)?;
-    let x_t          = Tensor::randn(0f32, 1f32, (1, 1, 28, 28), &dev)?;
-
-    let inpainted = ddpm_inpaint(&model, x_t, &mask, &known_region,
-                                 &beta, &alpha, &alpha_bar, 1000)?;
-    println!("Inpainted shape: {:?}", inpainted.shape());
-    Ok(())
-}
+if __name__ == "__main__":
+    main()
 ```
 
 **Super-resolution (超解像)**:
 
 低解像度画像から高解像度を生成:
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import math
+import torch
+import torch.nn.functional as F
 
-/// SR-DDPM: generate high-res image conditioned on upsampled low-res.
-/// `model` must accept 2-channel input (x_t ∥ x_low_res concatenated on channel dim).
-fn ddpm_super_resolution(
-    model:     &TinyUNet,
-    x_t_init:  Tensor,
-    x_low_res: &Tensor,   // already upsampled to the same (H, W) as x_t
-    beta:      &[f32],
-    alpha:     &[f32],
-    alpha_bar: &[f32],
-    t_steps:   usize,
-) -> candle_core::Result<Tensor> {
-    let mut x_t = x_t_init;
-    let dev = x_t.device().clone();
+@torch.no_grad()
+def ddpm_super_resolution(
+    model:     TinyUNet,
+    x_t_init:  torch.Tensor,
+    x_low_res: torch.Tensor,  # already upsampled to the same (H, W) as x_t
+    beta:      list[float],
+    alpha:     list[float],
+    alpha_bar: list[float],
+    t_steps:   int,
+) -> torch.Tensor:
+    # SR-DDPM: generate high-res image conditioned on upsampled low-res.
+    # model must accept 2-channel input (x_t ∥ x_low_res concatenated on channel dim).
+    x_t = x_t_init.clone()
+    for t in reversed(range(t_steps)):
+        x_input  = torch.cat([x_t, x_low_res], dim=1)  # (B, 2, H, W)
+        eps_pred = model(x_input, t)
+        # μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ
+        coeff = (1.0 - alpha[t]) / math.sqrt(1.0 - alpha_bar[t])
+        mu    = (x_t - coeff * eps_pred) / math.sqrt(alpha[t])
+        if t > 0:
+            sigma = math.sqrt(
+                (1.0 - alpha_bar[t - 1]) / (1.0 - alpha_bar[t]) * (1.0 - alpha[t])
+            )
+            z  = torch.randn_like(x_t)
+            x_t = mu + sigma * z
+        else:
+            x_t = mu
+    return x_t
 
-    for t in (0..t_steps).rev() {
-        // Concat low-res condition along channel dim: (B, 2, H, W)
-        let x_input  = Tensor::cat(&[&x_t, x_low_res], 1)?;
-        let eps_pred = model.forward(&x_input, t)?;
+def main() -> None:
+    dev   = torch.device("cpu")
+    # Nearest-neighbor upsample 14×14 → 28×28 (use F.interpolate for bilinear)
+    x_low  = F.interpolate(test_data[0:1], size=(28, 28), mode="nearest")
+    x_t    = torch.randn(1, 1, 28, 28, device=dev)
+    x_high = ddpm_super_resolution(model, x_t, x_low, beta, alpha, alpha_bar, 1000)
+    print(f"Super-resolved shape: {x_high.shape}")
 
-        // μ_θ = (xₜ − βₜ/√(1-ᾱₜ)·ε_θ) / √αₜ
-        let coeff = (1.0 - alpha[t]) / (1.0 - alpha_bar[t]).sqrt();
-        let mu    = ((&x_t - &eps_pred * coeff as f64)? / alpha[t].sqrt() as f64)?;
-
-        x_t = if t > 0 {
-            let sigma = ((1.0 - alpha_bar[t - 1]) / (1.0 - alpha_bar[t]) * (1.0 - alpha[t])).sqrt();
-            let z = Tensor::randn(0f32, 1f32, x_t.shape(), &dev)?;
-            (mu + z * sigma as f64)?
-        } else {
-            mu
-        };
-    }
-    Ok(x_t)
-}
-
-fn main() -> candle_core::Result<()> {
-    let dev = Device::Cpu;
-    // Nearest-neighbor upsample 14×14 → 28×28 (use image crate for bilinear)
-    let x_low  = test_data.narrow(0, 0, 1)?.upsample_nearest2d(28, 28)?;
-    let x_t    = Tensor::randn(0f32, 1f32, (1, 1, 28, 28), &dev)?;
-    let x_high = ddpm_super_resolution(&model, x_t, &x_low, &beta, &alpha, &alpha_bar, 1000)?;
-    println!("Super-resolved shape: {:?}", x_high.shape());
-    Ok(())
-}
+if __name__ == "__main__":
+    main()
 ```
 
 **Text-to-Image (概念, 完全版は第39回)**:
 
 テキストエンコーダ (CLIP/T5) → 埋め込み → U-Netに注入:
 
-```rust
-use candle_core::Tensor;
-use candle_nn::{Linear, Module};
+```python
+import math
+import torch
+import torch.nn as nn
 
-/// Text-to-Image U-Net: injects text embedding via cross-attention (conceptual).
-struct TextConditionedUNet {
-    text_encoder:  Linear,   // text embedding dim → spatial embedding dim
-    cross_attn_q:  Linear,   // query projection (from spatial features)
-    cross_attn_kv: Linear,   // key/value projection (from text features)
-    base_unet:     TinyUNet,
-}
+class TextConditionedUNet(nn.Module):
+    # Text-to-Image U-Net: injects text embedding via cross-attention (conceptual).
 
-impl TextConditionedUNet {
-    /// x_t: (B, C, H, W),  text_emb: (1, text_dim)
-    fn forward(&self, x_t: &Tensor, t: usize, text_emb: &Tensor) -> candle_core::Result<Tensor> {
-        // Encode text: (1, text_dim) → (1, 1, emb_dim)
-        let text_feat = self.text_encoder.forward(text_emb)?.unsqueeze(1)?;
+    def __init__(self, text_dim: int = 512, emb_dim: int = 64) -> None:
+        super().__init__()
+        self.text_encoder  = nn.Linear(text_dim, emb_dim)
+        self.cross_attn_q  = nn.Linear(emb_dim, emb_dim)  # query (from spatial)
+        self.cross_attn_kv = nn.Linear(emb_dim, emb_dim)  # key/value (from text)
+        self.base_unet     = TinyUNet(d_model=emb_dim)
 
-        // Flatten spatial: (B, C, H, W) → (B, N, C)
-        let (b, c, h, w) = x_t.dims4()?;
-        let x_flat = x_t.reshape((b, c, h * w))?.transpose(1, 2)?; // (B, N, C)
+    def forward(self, x_t: torch.Tensor, t: int, text_emb: torch.Tensor) -> torch.Tensor:
+        # x_t: (B, C, H, W),  text_emb: (1, text_dim)
+        # Encode text: (1, text_dim) → (1, 1, emb_dim)
+        text_feat = self.text_encoder(text_emb).unsqueeze(1)
 
-        // Cross-attention: x_flat queries attend to text_feat keys/values
-        let q  = self.cross_attn_q.forward(&x_flat)?;
-        let kv = self.cross_attn_kv.forward(&text_feat)?;
-        let scale       = (q.dim(candle_core::D::Minus1)? as f64).sqrt();
-        let attn        = candle_nn::ops::softmax(&q.matmul(&kv.transpose(1, 2)?)? / scale,
-                                                  candle_core::D::Minus1)?;
-        let x_attended  = attn.matmul(&kv)?.transpose(1, 2)?.reshape((b, c, h, w))?;
+        # Flatten spatial: (B, C, H, W) → (B, N, C)
+        b, c, h, w = x_t.shape
+        x_flat = x_t.reshape(b, c, h * w).transpose(1, 2)  # (B, N, C)
 
-        // Base U-Net with text-conditioned features
-        self.base_unet.forward(&x_attended, t)
-    }
-}
+        # Cross-attention: x_flat queries attend to text_feat keys/values
+        q     = self.cross_attn_q(x_flat)
+        kv    = self.cross_attn_kv(text_feat)
+        scale = math.sqrt(q.shape[-1])
+        attn  = (q.matmul(kv.transpose(1, 2)) / scale).softmax(dim=-1)
+        x_attended = attn.matmul(kv).transpose(1, 2).reshape(b, c, h, w)
+
+        return self.base_unet(x_attended, t)
 ```
 
 ### 6.6 Production-Ready 実装の設計パターン
 
 **モジュラー設計** — Model / Scheduler / Sampler の分離:
 
-```rust
-use candle_core::Tensor;
+```python
+from abc import ABC, abstractmethod
+import torch
 
-/// Modular design — Scheduler / Sampler separation via traits.
+# ── Scheduler ────────────────────────────────────────────────────────────────
 
-// ── Scheduler trait ─────────────────────────────────────────────────────────
+class NoiseScheduler(ABC):
+    @property
+    @abstractmethod
+    def beta(self) -> list[float]: ...
+    @property
+    @abstractmethod
+    def alpha(self) -> list[float]: ...
+    @property
+    @abstractmethod
+    def alpha_bar(self) -> list[float]: ...
+    def t_steps(self) -> int:
+        return len(self.beta)
 
-trait NoiseScheduler {
-    fn beta(&self)      -> &[f32];
-    fn alpha(&self)     -> &[f32];
-    fn alpha_bar(&self) -> &[f32];
-    fn t_steps(&self)   -> usize { self.beta().len() }
-}
+class CosineScheduler(NoiseScheduler):
+    def __init__(self, t_steps: int) -> None:
+        b, a, ab = cosine_schedule(t_steps, 0.008)
+        self._beta, self._alpha, self._alpha_bar = b, a, ab
+    @property
+    def beta(self)      -> list[float]: return self._beta
+    @property
+    def alpha(self)     -> list[float]: return self._alpha
+    @property
+    def alpha_bar(self) -> list[float]: return self._alpha_bar
 
-struct CosineScheduler       { beta: Vec<f32>, alpha: Vec<f32>, alpha_bar: Vec<f32> }
-struct ZeroTerminalSNRScheduler { beta: Vec<f32>, alpha: Vec<f32>, alpha_bar: Vec<f32> }
+class ZeroTerminalSNRScheduler(NoiseScheduler):
+    def __init__(self, t_steps: int) -> None:
+        b, a, ab = zero_terminal_snr_schedule(t_steps)
+        self._beta, self._alpha, self._alpha_bar = b, a, ab
+    @property
+    def beta(self)      -> list[float]: return self._beta
+    @property
+    def alpha(self)     -> list[float]: return self._alpha
+    @property
+    def alpha_bar(self) -> list[float]: return self._alpha_bar
 
-impl CosineScheduler {
-    fn new(t_steps: usize) -> Self {
-        let (b, a, ab) = cosine_schedule(t_steps, 0.008);
-        Self { beta: b, alpha: a, alpha_bar: ab }
-    }
-}
-impl NoiseScheduler for CosineScheduler {
-    fn beta(&self)      -> &[f32] { &self.beta }
-    fn alpha(&self)     -> &[f32] { &self.alpha }
-    fn alpha_bar(&self) -> &[f32] { &self.alpha_bar }
-}
+# ── Sampler ───────────────────────────────────────────────────────────────────
 
-impl ZeroTerminalSNRScheduler {
-    fn new(t_steps: usize) -> Self {
-        let (b, a, ab) = zero_terminal_snr_schedule(t_steps);
-        Self { beta: b, alpha: a, alpha_bar: ab }
-    }
-}
-impl NoiseScheduler for ZeroTerminalSNRScheduler {
-    fn beta(&self)      -> &[f32] { &self.beta }
-    fn alpha(&self)     -> &[f32] { &self.alpha }
-    fn alpha_bar(&self) -> &[f32] { &self.alpha_bar }
-}
+class Sampler(ABC):
+    @abstractmethod
+    def sample(self, model: TinyUNet, x_t: torch.Tensor, steps: int) -> torch.Tensor: ...
 
-// ── Sampler trait ────────────────────────────────────────────────────────────
+class DdpmSampler(Sampler):
+    def __init__(self, scheduler: NoiseScheduler) -> None:
+        self.scheduler = scheduler
+    def sample(self, model: TinyUNet, x_t: torch.Tensor, _steps: int) -> torch.Tensor:
+        s = self.scheduler
+        return ddpm_sample(model, x_t, s.beta, s.alpha, s.alpha_bar, s.t_steps())
 
-trait Sampler {
-    fn sample(&self, model: &TinyUNet, x_t: Tensor, steps: usize) -> candle_core::Result<Tensor>;
-}
+class DdimSampler(Sampler):
+    def __init__(self, scheduler: NoiseScheduler, eta: float = 0.0) -> None:
+        self.scheduler = scheduler
+        self.eta = eta
+    def sample(self, model: TinyUNet, x_t: torch.Tensor, steps: int) -> torch.Tensor:
+        return ddim_sample(model, x_t, self.scheduler.alpha_bar, steps, self.eta)
 
-struct DdpmSampler<S: NoiseScheduler>       { scheduler: S }
-struct DdimSampler<S: NoiseScheduler>       { scheduler: S, eta: f32 }
-struct DpmSolverPPSampler<S: NoiseScheduler> { scheduler: S, order: usize }
-
-impl<S: NoiseScheduler> Sampler for DdpmSampler<S> {
-    fn sample(&self, model: &TinyUNet, x_t: Tensor, _steps: usize) -> candle_core::Result<Tensor> {
-        let s = &self.scheduler;
-        ddpm_sample(model, x_t, s.beta(), s.alpha(), s.alpha_bar(), s.t_steps())
-    }
-}
-impl<S: NoiseScheduler> Sampler for DdimSampler<S> {
-    fn sample(&self, model: &TinyUNet, x_t: Tensor, steps: usize) -> candle_core::Result<Tensor> {
-        ddim_sample(model, x_t, self.scheduler.alpha_bar(), steps, self.eta)
-    }
-}
-impl<S: NoiseScheduler> Sampler for DpmSolverPPSampler<S> {
-    fn sample(&self, model: &TinyUNet, x_t: Tensor, steps: usize) -> candle_core::Result<Tensor> {
-        dpm_solver_pp_sample(model, x_t, self.scheduler.alpha_bar(), steps, self.order)
-    }
-}
+class DpmSolverPPSampler(Sampler):
+    def __init__(self, scheduler: NoiseScheduler, order: int = 2) -> None:
+        self.scheduler = scheduler
+        self.order = order
+    def sample(self, model: TinyUNet, x_t: torch.Tensor, steps: int) -> torch.Tensor:
+        return dpm_solver_pp_sample(model, x_t, self.scheduler.alpha_bar, steps, self.order)
 ```
 
 **使用例**:
 
-```rust
-use candle_core::{Tensor, Device};
+```python
+import torch
 
-fn main() -> candle_core::Result<()> {
-    let dev = Device::Cpu;
+def main() -> None:
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    // Create samplers (scheduler is cheap to clone)
-    let sampler_ddim = DdimSampler        { scheduler: CosineScheduler::new(1000), eta: 0.0 };
-    let sampler_dpm  = DpmSolverPPSampler { scheduler: CosineScheduler::new(1000), order: 2 };
+    # Create samplers (scheduler is cheap to instantiate)
+    sampler_ddim = DdimSampler(CosineScheduler(1000), eta=0.0)
+    sampler_dpm  = DpmSolverPPSampler(CosineScheduler(1000), order=2)
 
-    // Sample from N(0, I) noise
-    let x_t = Tensor::randn(0f32, 1f32, (16, 1, 28, 28), &dev)?;
+    # Sample from N(0, I) noise
+    x_t = torch.randn(16, 1, 28, 28, device=dev)
 
-    let samples_ddim = sampler_ddim.sample(&model, x_t.clone(), 50)?;
-    let samples_dpm  = sampler_dpm .sample(&model, x_t,         20)?;
+    samples_ddim = sampler_ddim.sample(model, x_t.clone(), 50)
+    samples_dpm  = sampler_dpm .sample(model, x_t,          20)
 
-    println!("DDIM samples shape: {:?}", samples_ddim.shape());
-    println!("DPM++ samples shape: {:?}", samples_dpm.shape());
-    Ok(())
-}
+    print(f"DDIM samples shape: {samples_ddim.shape}")
+    print(f"DPM++ samples shape: {samples_dpm.shape}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 **利点**:
@@ -1616,26 +1497,28 @@ fn main() -> candle_core::Result<()> {
 
 **ONNX Export from Rust**:
 
-```rust
-// Export via tract-onnx or burn's ONNX export.
-// For candle: save weights as safetensors, then convert with an ONNX conversion script.
-//
-//   use candle_core::safetensors;
-//   safetensors::save(&tensor_map, "tiny_ddpm.safetensors")?;
-//   burn::export::to_onnx(&model_record, filepath);
+```python
+# Export trained PyTorch model to ONNX for Rust inference (ort):
+#
+#   from safetensors.torch import save_file
+#   save_file(model.state_dict(), "tiny_ddpm.safetensors")
+#   # Full ONNX export:
+#   torch.onnx.export(model, (x_dummy, torch.tensor(0)), "tiny_ddpm.onnx",
+#                     input_names=["x_t", "t"], output_names=["eps_pred"])
 
-fn export_to_onnx(var_map: &candle_nn::VarMap, filepath: &str) -> candle_core::Result<()> {
-    let path = std::path::Path::new(filepath).with_extension("safetensors");
-    var_map.save(&path)?;
-    println!("Model exported to {}", path.display());
-    Ok(())
-}
+def export_to_onnx(model: TinyUNet, filepath: str) -> None:
+    x_dummy = torch.zeros(1, 1, 28, 28)
+    t_dummy = torch.tensor(0)
+    torch.onnx.export(
+        model, (x_dummy, t_dummy), filepath,
+        input_names=["x_t", "t"], output_names=["eps_pred"],
+    )
+    print(f"Model exported to {filepath}")
 
-fn main() -> candle_core::Result<()> {
-    let var_map = candle_nn::VarMap::new();
-    // ... (train model) ...
-    export_to_onnx(&var_map, "tiny_ddpm.onnx")
-}
+if __name__ == "__main__":
+    model = TinyUNet(d_model=64)
+    # ... (train model) ...
+    export_to_onnx(model, "tiny_ddpm.onnx")
 ```
 
 **Rust Inference with ort (ONNX Runtime)**:
@@ -1717,7 +1600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Implementation | Latency | Throughput (samples/sec) |
 |:---------------|:--------|:-------------------------|
-| Rust Candle (CPU) | 2.3s | 0.43 |
+| Python PyTorch (CPU) | 2.3s | 0.43 |
 | Rust ONNX (CPU) | 0.8s | 1.25 |
 | Rust ONNX (CoreML) | 0.3s | 3.33 |
 
@@ -1725,7 +1608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```mermaid
 graph LR
-    A[Rust Training<br/>Candle] --> B[ONNX Export]
+    A[Python Training<br/>PyTorch] --> B[ONNX Export]
     B --> C[Rust Inference Server]
     C --> D[gRPC API]
     D --> E[Client Apps]
@@ -1778,7 +1661,7 @@ $$
 \end{aligned}
 $$
 
-**実装**: 🦀 Rust訓練 (Candle + Zygote) + 🦀 Rust推論 (ONNX Runtime) で Production-ready。
+**実装**: 🐍 Python訓練 (PyTorch) + 🦀 Rust推論 (ONNX Runtime) で Production-ready。
 
 ### 7.2 FAQ
 

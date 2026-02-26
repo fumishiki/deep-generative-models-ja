@@ -39,28 +39,34 @@ $$
 $$
 
 ```python
-import numpy as np
+import torch
+import torch.distributions as D
 
-np.random.seed(0)
-x = np.concatenate([np.random.normal(-2, 0.7, 200), np.random.normal(2, 0.7, 200)])
-pi, mu, var = np.array([0.5, 0.5]), np.array([-1.0, 1.0]), np.array([1.0, 1.0])
+torch.manual_seed(0)
+x = torch.cat([D.Normal(-2.0, 0.7).sample((200,)), D.Normal(2.0, 0.7).sample((200,))])
+# x: (N,) = (400,)
 
-def gauss(x: np.ndarray, mu: float, var: float) -> np.ndarray:
-    return np.exp(-0.5 * (x - mu)**2 / var) / np.sqrt(2 * np.pi * var)
+pi  = torch.tensor([0.5, 0.5])          # π: mixing weights,  shape: (K,)
+mu  = torch.tensor([-1.0, 1.0])         # μ: means,            shape: (K,)
+var = torch.tensor([1.0, 1.0])          # σ²: variances,       shape: (K,)
 
 for _ in range(8):
-    # E-step: responsibilities gamma[n,k]
-    r = np.stack([pi[k] * gauss(x, mu[k], var[k]) for k in range(2)], axis=1)
-    r /= r.sum(axis=1, keepdims=True)              # shape: (N, 2)
+    # E-step: responsibilities γ[n,k] = π_k N(x_n|μ_k,σ_k²) / Σ_j π_j N(x_n|μ_j,σ_j²)
+    log_r = torch.stack([
+        torch.log(pi[k]) + D.Normal(mu[k], var[k].sqrt()).log_prob(x)
+        for k in range(2)
+    ], dim=1)                                      # shape: (N, K)
+    r = torch.softmax(log_r, dim=1)                # numerically stable; shape: (N, K)
     # M-step: weighted MLE
-    Nk = r.sum(axis=0)                             # shape: (2,)
-    pi = Nk / len(x)
-    mu = (r * x[:, None]).sum(0) / Nk
+    Nk  = r.sum(dim=0)                             # shape: (K,)
+    pi  = Nk / len(x)
+    mu  = (r * x[:, None]).sum(0) / Nk
     var = (r * (x[:, None] - mu)**2).sum(0) / Nk
 
-ll = np.sum(np.log(sum(pi[k] * gauss(x, mu[k], var[k]) for k in range(2))))
-print(f"mu={mu}, loglik={ll:.2f}")
-# => mu=[-2.01  2.01], loglik=-406.32
+ll = torch.stack([torch.log(pi[k]) + D.Normal(mu[k], var[k].sqrt()).log_prob(x)
+                  for k in range(2)], dim=1).logsumexp(dim=1).sum()
+print(f"mu={mu.tolist()}, loglik={ll:.2f}")
+# => mu=[-2.01  2.01], loglik≈-406
 ```
 
 > Progress: 3%
@@ -1546,14 +1552,14 @@ EM は点推定（MAP か MLE）を求める最適化手法だ。しかしベイ
 
 ## 参考文献
 
-[^1]: Dempster, A. P., Laird, N. M., Rubin, D. B. (1977). "Maximum Likelihood from Incomplete Data via the EM Algorithm." *Journal of the Royal Statistical Society, Series B*, 39(1), 1–38. [arXiv survey: 0710.5696](https://arxiv.org/abs/0710.5696)
-[^2]: Wu, C. F. J. (1983). "On the Convergence Properties of the EM Algorithm." *The Annals of Statistics*, 11(1), 95–103. [arXiv:cs/0412015](https://arxiv.org/abs/cs/0412015)
-[^3]: Neal, R. M., Hinton, G. E. (1998). "A View of the EM Algorithm that Justifies Incremental, Sparse, and Other Variants." *Learning in Graphical Models*. [arXiv:1105.1476](https://arxiv.org/abs/1105.1476)
-[^4]: Arthur, D., Vassilvitskii, S. (2007). "k-means++: The Advantages of Careful Seeding." *SODA 2007*. [arXiv:0712.4273](https://arxiv.org/abs/0712.4273)
+[^1]: Dempster, A. P., Laird, N. M., Rubin, D. B. (1977). "Maximum Likelihood from Incomplete Data via the EM Algorithm." *Journal of the Royal Statistical Society, Series B*, 39(1), 1–38.
+[^2]: Wu, C. F. J. (1983). "On the Convergence Properties of the EM Algorithm." *The Annals of Statistics*, 11(1), 95–103.
+[^3]: Neal, R. M., Hinton, G. E. (1998). "A View of the EM Algorithm that Justifies Incremental, Sparse, and Other Variants." *Learning in Graphical Models*.
+[^4]: Arthur, D., Vassilvitskii, S. (2007). "k-means++: The Advantages of Careful Seeding." *SODA 2007*.
 [^5]: Kingma, D. P., Welling, M. (2013). "Auto-Encoding Variational Bayes." *ICLR 2014*. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114)
-[^6]: Tipping, M. E., Bishop, C. M. (1999). "Probabilistic Principal Component Analysis." *Journal of the Royal Statistical Society, Series B*. [arXiv:1601.00670](https://arxiv.org/abs/1601.00670)
+[^6]: Tipping, M. E., Bishop, C. M. (1999). "Probabilistic Principal Component Analysis." *Journal of the Royal Statistical Society, Series B*.
 [^7]: Minka, T. (2001). "Expectation Propagation for Approximate Bayesian Inference." *UAI 2001*. [arXiv:1301.2294](https://arxiv.org/abs/1301.2294)
-[^8]: Amari, S. (1985). "Differential-Geometrical Methods in Statistics." Springer. (第27回で詳述) [arXiv survey: 1301.3810](https://arxiv.org/abs/1301.3810)
+[^8]: Amari, S. (1985). "Differential-Geometrical Methods in Statistics." Springer. (第27回で詳述)
 
 ## 著者リンク
 

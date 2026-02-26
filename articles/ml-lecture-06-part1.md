@@ -57,17 +57,17 @@ graph LR
 **ゴール**: LLM の評価指標 Perplexity が「エントロピーの指数」であることを30秒で体験する。
 
 ```python
-import numpy as np
+import torch
 
 # LLM が各トークンに割り当てた確率（模擬）
 # H(p) = -Σ p(x) log2 p(x)  ... Shannon entropy
-probs = np.array([0.7, 0.15, 0.1, 0.05])  # vocabulary of 4 tokens
-entropy = -np.sum(probs * np.log2(probs))
-perplexity = 2 ** entropy
+probs = torch.tensor([0.7, 0.15, 0.1, 0.05])   # shape: (4,), sum=1
+entropy = -(probs * torch.log2(probs)).sum()
+perplexity = 2.0 ** entropy
 
 print(f"Entropy H     = {entropy:.4f} bits")
 print(f"Perplexity 2^H = {perplexity:.2f}")
-print(f"(Uniform: H={np.log2(4):.2f}, PPL={4})")
+print(f"(Uniform: H={torch.log2(torch.tensor(4.0)):.2f}, PPL={4})")
 ```
 
 出力:

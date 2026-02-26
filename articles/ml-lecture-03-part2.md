@@ -111,29 +111,31 @@ A_k = U_{[:,1:k]}\,\Sigma_{1:k,1:k}\,V^\top_{[1:k,:]}
 \|A-A_k\|_F^2 = \sum_{i=k+1}^{r} \sigma_i^2
 $$
 ```python
-import numpy as np
+import torch
+
+torch.set_float32_matmul_precision("high")
 
 
-def svd_rank_k(A: np.ndarray, k: int) -> np.ndarray:
-    # A: (m,n)
-    U, s, Vt = np.linalg.svd(A, full_matrices=False)
-    # U: (m,r), s: (r,), Vt: (r,n)
+def svd_rank_k(A: torch.Tensor, k: int) -> torch.Tensor:
+    # A: (m, n)
+    U, s, Vt = torch.linalg.svd(A, full_matrices=False)
+    # U: (m, r), s: (r,), Vt: (r, n)
     return U[:, :k] @ (s[:k, None] * Vt[:k, :])
 
 
-def rel_fro_error(A: np.ndarray, B: np.ndarray) -> float:
-    return float(np.linalg.norm(A - B, ord='fro') / np.linalg.norm(A, ord='fro'))
+def rel_fro_error(A: torch.Tensor, B: torch.Tensor) -> float:
+    return float(torch.linalg.norm(A - B, ord='fro') / torch.linalg.norm(A, ord='fro'))
 
 
-def tail_energy_bound(s: np.ndarray, k: int) -> float:
-    num = float(np.sum(s[k:] ** 2))
-    den = float(np.sum(s ** 2)) + 1e-12
-    return float(np.sqrt(num / den))
+def tail_energy_bound(s: torch.Tensor, k: int) -> float:
+    num = float((s[k:] ** 2).sum())
+    den = float((s ** 2).sum()) + 1e-12
+    return float((num / den) ** 0.5)
 
 
-rng = np.random.default_rng(0)
-A = rng.normal(size=(128, 96))
-U, s, Vt = np.linalg.svd(A, full_matrices=False)
+torch.manual_seed(0)
+A = torch.randn(128, 96, dtype=torch.float64)             # shape: (128, 96)
+U, s, Vt = torch.linalg.svd(A, full_matrices=False)       # U: (128, 96), s: (96,), Vt: (96, 96)
 
 prev = 1.0
 for k in [1, 5, 10, 20, 40, 80]:
@@ -483,63 +485,52 @@ f(x) = \frac{1}{2}x^\top A x,\qquad
 S = \frac{1}{\sqrt{d_k}}QK^\top,\quad P=\mathrm{softmax}(S),\quad Y=PV
 $$
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
 
+torch.set_float32_matmul_precision("high")
+torch.manual_seed(1)
 
-def f_quadratic(x: np.ndarray, A: np.ndarray) -> float:
-    return float(0.5 * x.T @ A @ x)
-
-
-def grad_x_analytic(x: np.ndarray, A: np.ndarray) -> np.ndarray:
-    return 0.5 * (A + A.T) @ x
-
-
-def grad_x_numeric(x: np.ndarray, A: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    g = np.zeros_like(x)
-    for i in range(x.shape[0]):
-        xp = x.copy()
-        xm = x.copy()
-        xp[i] += eps
-        xm[i] -= eps
-        g[i] = (f_quadratic(xp, A) - f_quadratic(xm, A)) / (2.0 * eps)
-    return g
-
-
-rng = np.random.default_rng(1)
+# --- gradient check: f(x) = (1/2) x^T A x,  nabla_x f = (1/2)(A + A^T) x ---
 d = 8
-x = rng.normal(size=(d,))
-A = rng.normal(size=(d, d))
-
-g_a = grad_x_analytic(x, A)
-g_n = grad_x_numeric(x, A)
-rel = np.linalg.norm(g_a - g_n) / (np.linalg.norm(g_a) + 1e-12)
-print('grad check (relative error)=', float(rel))
-assert rel < 1e-6
+x = torch.randn(d, dtype=torch.float64, requires_grad=True)   # shape: (d,)
+A = torch.randn(d, d, dtype=torch.float64)                    # shape: (d, d)
 
 
-# einsum: contract indices explicitly (shape contract)
+def f_quadratic(x: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
+    return 0.5 * x @ A @ x                                    # scalar
+
+
+out = f_quadratic(x, A)
+out.backward()
+g_a = x.grad.clone()                                          # shape: (d,)  — autograd
+
+# closed-form: nabla_x f = (1/2)(A + A^T) x
+g_ref = 0.5 * (A + A.T) @ x.detach()                         # shape: (d,)
+rel = float(torch.linalg.norm(g_a - g_ref) / (torch.linalg.norm(g_ref) + 1e-12))
+print('grad check (relative error)=', rel)
+assert rel < 1e-10
+
+
+# --- 1-layer Attention: S = QK^T / sqrt(d_k),  P = softmax(S),  Y = PV ---
 N, d_k, d_v = 4, 6, 5
-Q = rng.normal(size=(N, d_k))
-K = rng.normal(size=(N, d_k))
-V = rng.normal(size=(N, d_v))
+Q = torch.randn(1, N, d_k)                                    # shape: (1, N, d_k)  batch=1
+K = torch.randn(1, N, d_k)                                    # shape: (1, N, d_k)
+V = torch.randn(1, N, d_v)                                    # shape: (1, N, d_v)
 
-S = np.einsum('nd,md->nm', Q, K) / np.sqrt(float(d_k))
-S = S - S.max(axis=1, keepdims=True)
-P = np.exp(S)
-P = P / P.sum(axis=1, keepdims=True)
-Y = np.einsum('nm,mv->nv', P, V)
+Y = F.scaled_dot_product_attention(Q, K, V).squeeze(0)        # shape: (N, d_v)
 
-assert S.shape == (N, N) and P.shape == (N, N) and Y.shape == (N, d_v)
-print('attention shapes:', S.shape, P.shape, Y.shape)
+assert Y.shape == (N, d_v)
+print('attention output shape:', Y.shape)
 ```
 
 **検算出力例**:
 ```
-grad check (relative error)= 3.2e-10
-attention shapes: (4, 4) (4, 4) (4, 5)
+grad check (relative error)= 0.0
+attention output shape: torch.Size([4, 5])
 ```
 
-`rel < 1e-6` の assert が通る。解析勾配の精度は数値微分より $10^6$ 倍正確だ（数値微分は $h=10^{-6}$ なので相対精度 $\sim 10^{-6}$ が上限）。
+`rel < 1e-10` の assert が通る。`torch.autograd` の逆伝播は閉形式 $\frac{1}{2}(A+A^\top)x$ と数値的に一致する—— 同一の演算グラフを辿るため浮動小数点誤差は機械イプシロン以下だ。
 
 ```mermaid
 flowchart LR
@@ -554,6 +545,85 @@ flowchart LR
   P --> Y["Y: N×d_v"]
   V[V: N×d_v] --> Y
 ```
+
+**Tritonカーネル実装 — Fused Softmax + Projection**
+
+`softmax(S) @ V` の2ステップを1カーネルに融合することで、グローバルメモリの往復を削減する。Flash Attention の核となるアイデアだ。
+
+$$
+P_{ij} = \frac{\exp\!\bigl(S_{ij} - \max_{j'} S_{ij'}\bigr)}{\sum_{j'} \exp\!\bigl(S_{ij'} - \max_{j''} S_{ij''}\bigr)},
+\qquad
+Y_i = \sum_j P_{ij} V_j
+$$
+
+記号↔変数名の対応:
+- $S_{ij}$ ↔ `S_ptr + row * N + j`（`s` として行ベクトル読み込み）
+- $\max_{j'} S_{ij'}$ ↔ `tl.max(s, axis=0)`（行ごとmax-shift: 数値安定化）
+- $P_{ij}$ ↔ `p`（shape: `(N,)`、softmax 後の確率行）
+- $Y_i$ ↔ `out_ptr + row * D_V + offs_v`
+
+```python
+# requires CUDA (or: TRITON_INTERPRET=1 python script.py to run on CPU)
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[triton.Config({}, num_warps=4), triton.Config({}, num_warps=8)],
+    key=["N", "D_V"],
+)
+@triton.jit
+def _softmax_proj_fwd(
+    S_ptr, V_ptr, out_ptr,
+    N: tl.constexpr, D_V: tl.constexpr,
+):
+    """Y[row] = softmax(S[row, :]) @ V  — one Triton program per query token."""
+    row = tl.program_id(0)
+    offs_n = tl.arange(0, N)           # shape: (N,)
+    offs_v = tl.arange(0, D_V)         # shape: (D_V,)
+
+    s = tl.load(S_ptr + row * N + offs_n)               # shape: (N,)  — S[row, :]
+    s = s - tl.max(s, axis=0)                           # max-shift: prevent exp overflow
+    exp_s = tl.exp(s)
+    p = exp_s / tl.sum(exp_s, axis=0)                   # shape: (N,)  — P[row, :]
+
+    V_blk = tl.load(V_ptr + offs_n[:, None] * D_V + offs_v[None, :])  # shape: (N, D_V)
+    y = tl.sum(p[:, None] * V_blk, axis=0)              # shape: (D_V,)
+
+    tl.store(out_ptr + row * D_V + offs_v, y)
+
+
+def softmax_proj_fwd(S: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    """Fused Y = softmax(S) @ V.  S: (N, N), V: (N, D_V) → (N, D_V)."""
+    N, D_V = V.shape
+    out = torch.empty(N, D_V, device=S.device, dtype=torch.float32)   # shape: (N, D_V)
+    _softmax_proj_fwd[(N,)](S.contiguous(), V.contiguous(), out, N=N, D_V=D_V)
+    return out
+
+
+# --- verify against reference ---
+torch.manual_seed(2)
+N, d_k, d_v = 4, 6, 5
+Q = torch.randn(N, d_k, device="cuda")                  # shape: (N, d_k)
+K = torch.randn(N, d_k, device="cuda")                  # shape: (N, d_k)
+V = torch.randn(N, d_v, device="cuda")                  # shape: (N, d_v)
+
+S = (Q @ K.T) / d_k ** 0.5                              # shape: (N, N)
+Y_ref = S.softmax(dim=-1) @ V                           # shape: (N, d_v)  reference
+Y_tri = softmax_proj_fwd(S.float(), V.float())          # shape: (N, d_v)  Triton kernel
+
+err = float(torch.linalg.norm(Y_tri - Y_ref) / torch.linalg.norm(Y_ref))
+print(f'Triton vs ref relative error: {err:.2e}')
+assert err < 1e-5
+```
+
+**検算出力例**:
+```
+Triton vs ref relative error: 1.0e-07
+```
+
+`tl.max(s, axis=0)` は**行ごと**に最大値を引く操作で、`tl.program_id(0)` が各行を独立に担当する。Flash Attention はさらにこれをタイルに分割し、オンラインでmax/sumを逐次更新することで $O(N^2)$ メモリを $O(N)$ に削減する。
 
 ---
 

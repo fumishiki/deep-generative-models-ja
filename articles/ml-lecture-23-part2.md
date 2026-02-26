@@ -153,10 +153,10 @@ Shape追跡: logits `∈ ℝ^{B×T×V}` (B=batch, T=seq_len, V=vocab_size), labe
 数値安定化: softmaxの前にlogits から最大値を引く（実装はNNlibが内部で行う）。
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::loss;
+use tch::{Tensor, Kind};
+use tch::nn::loss;
 
-// --- CPT loss: L_CPT = -mean over tokens of log p_θ(xₜ | x<ₜ) ---
+// --- CPT loss
 // logits: [(T-1)*B, V], targets: [(T-1)*B]
 fn loss_cpt(logits: &Tensor, targets: &Tensor, alpha_domain: f64) -> Result<Tensor> {
     // Cross-entropy loss per token: -log p_θ(xₜ | x<ₜ)
@@ -218,8 +218,8 @@ Shape追跡: 入力 `[x; y]` を結合して `[T_total, B]`、`resp_mask ∈ {0,
 落とし穴: instructionにもCEを適用すると「入力を暗記」するだけで応答品質が上がらない。maskが命。
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::loss;
+use tch::{Tensor, Kind};
+use tch::nn::loss;
 
 // --- Chat Template: [system][user][assistant] → token id sequence ---
 // Returns (input_ids, resp_mask) where resp_mask=1 for response tokens
@@ -298,8 +298,8 @@ $$
 Shape: $r_\psi \in \mathbb{R}^B$, $\text{logprob} \in \mathbb{R}^{T \times B}$, KL $\in \mathbb{R}^B$.
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::{ops, Linear, Module, VarBuilder, linear};
+use tch::{Tensor, Kind};
+use tch::nn::{linear, Module, Linear};
 
 // --- Reward Model: LLM base + scalar head ---
 struct RewardModel {
@@ -380,21 +380,21 @@ assert!(loss_test < 2.0f32.ln()); // Below random (log2) means model already ali
 
 **ゴール**: Rust でLoRA訓練を実装し、Rust で推論時のLoRAマージ・切り替えを実装する。
 
-### 4.1 🦀 Rust LoRA訓練 — Candle完全実装
+### 4.1 🦀 Rust LoRA推論 — tch-rs実装
 
-Candle [^9] は、Candleの後継として設計された明示的状態管理のNN library。LoRA実装に最適。
+tch-rs は PyTorch の Rust バインディング。LoRA の推論パスを型安全に実装できる。
 
 #### 4.1.1 LoRA層の実装
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::{linear, Module, VarBuilder};
+use tch::{Tensor, Kind};
+use tch::nn::{linear, Module};
 
 // LoRA layer wrapper
 struct LoRALayer {
-    base_layer: candle_nn::Linear, // frozen base layer (e.g., Dense)
-    lora_a: candle_nn::Linear,     // trainable A ∈ ℝ^(r×k)
-    lora_b: candle_nn::Linear,     // trainable B ∈ ℝ^(d×r)
+    base_layer: nn::Linear, // frozen base layer (e.g., Dense)
+    lora_a: nn::Linear,     // trainable A ∈ ℝ^(r×k)
+    lora_b: nn::Linear,     // trainable B ∈ ℝ^(d×r)
     alpha: f64,
     r: usize,
     // frozen: bool - base_layer params are excluded from the optimizer in practice
@@ -427,75 +427,70 @@ impl Module for LoRALayer {
 // Freeze base layer parameters during training:
 // only pass lora_a and lora_b vars to the optimizer, not base_layer vars.
 
-println!("LoRA layer implemented in Rust/candle-nn");
+println!("LoRA layer implemented in Rust/tch-rs");
 ```
 
 #### 4.1.2 LoRA訓練ループ
 
 ```rust
-use candle_core::{Device, DType, Result, Tensor};
-use candle_nn::{AdamW, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap};
+use tch::{Device, Kind, Tensor};
+use tch::nn::{self as nn, Module};
 
 // Simple model: Input -> LoRA Dense -> Output
 // (LoRALayer defined in the LoRA layer block above)
 struct LoRAModel {
     lora_layer: LoRALayer,
-    output: candle_nn::Linear,
+    output: nn::Linear,
 }
 
 impl LoRAModel {
     fn new(
-        vb: VarBuilder,
-        input_dim: usize,
-        hidden_dim: usize,
-        output_dim: usize,
+        vs: &nn::Path,
+        input_dim: i64,
+        hidden_dim: i64,
+        output_dim: i64,
         r: usize,
-    ) -> Result<Self> {
+    ) -> Self {
         // Base model (pretrained, frozen in practice)
-        let lora_layer = LoRALayer::new(vb.pp("lora"), input_dim, hidden_dim, r, 16.0)?;
-        let output = candle_nn::linear(hidden_dim, output_dim, vb.pp("output"))?;
-        Ok(Self { lora_layer, output })
+        let lora_layer = LoRALayer::new(&vs.sub("lora"), input_dim, hidden_dim, r, 16.0);
+        let output = nn::linear(vs / "output", hidden_dim, output_dim, Default::default());
+        Self { lora_layer, output }
     }
 }
 
 impl Module for LoRAModel {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let h = self.lora_layer.forward(x)?.relu()?;
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let h = self.lora_layer.forward(x).relu();
         self.output.forward(&h)
     }
 }
 
 // Loss function: MSE
-fn loss_fn(model: &LoRAModel, x: &Tensor, y: &Tensor) -> Result<Tensor> {
-    let y_pred = model.forward(x)?;
-    y_pred.sub(y)?.sqr()?.mean_all()
+fn loss_fn(model: &LoRAModel, x: &Tensor, y: &Tensor) -> Tensor {
+    model.forward(x).mse_loss(y, tch::Reduction::Mean)
 }
 
 fn train_lora_model(
-    input_dim: usize,
-    hidden_dim: usize,
-    output_dim: usize,
+    input_dim: i64,
+    hidden_dim: i64,
+    output_dim: i64,
     r: usize,
     n_epochs: usize,
     lr: f64,
-) -> Result<()> {
-    let device = Device::Cpu;
-    let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+) -> anyhow::Result<()> {
+    let vs = nn::VarStore::new(tch::Device::Cpu);
+    let model = LoRAModel::new(&vs.root(), input_dim, hidden_dim, output_dim, r);
 
-    let model = LoRAModel::new(vb, input_dim, hidden_dim, output_dim, r)?;
-
-    // Optimizer (AdamW; bind only LoRA vars in practice via a filtered varmap)
-    let mut opt =
-        AdamW::new(varmap.all_vars(), ParamsAdamW { lr, ..Default::default() })?;
+    // Optimizer (Adam; bind only LoRA vars in practice via a filtered varmap)
+    let mut opt = nn::Adam::default().build(&vs, lr)?;
 
     // Dummy data
-    let x_train = Tensor::randn(0.0f32, 1.0, (100, input_dim), &device)?;
-    let y_train = Tensor::randn(0.0f32, 1.0, (100, output_dim), &device)?;
+    let x_train = Tensor::randn([100, input_dim], (Kind::Float, tch::Device::Cpu));
+    let y_train = Tensor::randn([100, output_dim], (Kind::Float, tch::Device::Cpu));
 
     for epoch in 0..n_epochs {
-        let loss = loss_fn(&model, &x_train, &y_train)?;
-        opt.backward_step(&loss)?;
+        let loss = loss_fn(&model, &x_train, &y_train);
+        opt.backward_step(&loss);
 
         if (epoch + 1) % 10 == 0 {
             println!("Epoch {}: Loss = {:.4}", epoch + 1, loss.to_scalar::<f32>()?);
@@ -517,7 +512,7 @@ println!("✅ LoRA training completed in Rust");
 | $A \sim \mathcal{N}(0, 1/\sqrt{k})$ | `randn(rng, Float32, r, k) ./ sqrt(k)` | A初期化 |
 | $B = \mathbf{0}$ | `zeros(Float32, d, r)` | B初期化 |
 | $\nabla_B = \frac{\alpha}{r} \sum_i \frac{\partial \mathcal{L}}{\partial h_i} (Ax_i)^\top$ | `grads.lora_B` (Zygote自動計算) | 勾配 |
-| $B \leftarrow B - \eta \nabla_B$ | `burn::optim.update!(opt_state, ps, grads)` | パラメータ更新 |
+| $B \leftarrow B - \eta \nabla_B$ | `opt.backward_step(&loss)` | パラメータ更新 |
 
 ### 4.2 🦀 Rust LoRA推論 — ウェイト合成と動的切り替え
 
@@ -842,8 +837,8 @@ println!("Loaded {} diagram QA pairs", dataset.len());
 ### 5.3 LoRA Fine-tuning実装
 
 ```rust
-use candle_core::{Device, DType, Result};
-use candle_nn::{AdamW, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap};
+use tch::{Device, Kind};
+use tch::nn::{self as nn, Module};
 
 // Add LoRA to all Attention layers
 // (LoRALayer defined in the LoRA layer block; DiagramQA defined in the dataset block)
@@ -866,12 +861,10 @@ fn add_lora_to_attention(
 }
 
 // Training loop (simplified)
-fn train_lora(dataset: &[DiagramQA], epochs: usize, batch_size: usize, lr: f64) -> Result<()> {
-    let device = Device::Cpu;
-    let varmap = VarMap::new();
-    // model would be loaded from HuggingFace / candle model hub here
-    let mut opt =
-        AdamW::new(varmap.all_vars(), ParamsAdamW { lr, ..Default::default() })?;
+fn train_lora(dataset: &[DiagramQA], epochs: usize, batch_size: usize, lr: f64) -> anyhow::Result<()> {
+    let vs = nn::VarStore::new(tch::Device::Cpu);
+    // model would be loaded from HuggingFace / ort model hub here
+    let mut opt = nn::Adam::default().build(&vs, lr)?;
 
     for epoch in 0..epochs {
         let mut total_loss = 0.0f32;
@@ -1327,7 +1320,7 @@ println!(
 **解答**:
 
 ```rust
-use candle_core::{Result, Tensor};
+use tch::Tensor;
 
 // DreamBooth Prior Preservation Loss
 // 数式: ℒ_prior = 𝔼_{z,c,ε,t}[‖ε - ε_θ(z_t, t, c)‖²]
@@ -2065,7 +2058,7 @@ const PEFT_CONFIG: PeftConfig = PeftConfig {
 
 [^8]: Lester, B., Al-Rfou, R., & Constant, N. (2021). **The Power of Scale for Parameter-Efficient Prompt Tuning**. *EMNLP 2021*. <https://arxiv.org/abs/2104.08691>
 
-[^9]: Candle: Explicit Parameterization for Neural Networks in Rust. <https://github.com/LuxDL/Candle>
+[^9]: tch-rs: PyTorch Rust bindings. <https://github.com/LaurentMazare/tch-rs>
 
 [^10]: Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., ... & Lowe, R. (2022). **Training language models to follow instructions with human feedback**. *NeurIPS 2022*. <https://arxiv.org/abs/2203.02155>
 

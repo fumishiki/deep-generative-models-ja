@@ -779,9 +779,9 @@ $$
 ### オンラインリソース
 
 - [StatQuest (YouTube)](https://www.youtube.com/@statquest): 統計学の直感的解説動画。
-- [ndarray-stats Documentation](https://juliastats.org/ndarray-stats/stable/)
-- [statrs Documentation](https://juliastats.org/statrs/stable/)
-- [linfa Documentation](https://juliastats.org/linfa/stable/)
+- [ndarray-stats Documentation](https://docs.rs/ndarray-stats/stable/)
+- [statrs Documentation](https://docs.rs/statrs/stable/)
+- [linfa Documentation](https://docs.rs/linfa/stable/)
 - [probabilistic-rs Documentation](https://turinglang.org/stable/)
 
 ---

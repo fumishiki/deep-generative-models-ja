@@ -102,19 +102,24 @@ $$
 $$
 
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
+
+torch.set_float32_matmul_precision("high")
 
 
-def logsumexp(a: np.ndarray, axis: int = -1) -> np.ndarray:
-    m = np.max(a, axis=axis, keepdims=True)
-    s = np.sum(np.exp(a - m), axis=axis, keepdims=True)
-    return (m + np.log(s)).squeeze(axis)
+def logsumexp(a: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    # a: (..., K) → output: (...) overflow-safe log-sum-exp
+    m = a.max(dim=dim, keepdim=True).values
+    s = (a - m).exp().sum(dim=dim, keepdim=True)
+    return (m + s.log()).squeeze(dim)
 
 
 # sanity: overflow-safe
-z = np.array([1000.0, 999.0, 998.0])
-print("naive exp finite? ->", np.isfinite(np.sum(np.exp(z))))
-print("logsumexp        ->", float(logsumexp(z)))
+torch.manual_seed(0)
+z = torch.tensor([1000.0, 999.0, 998.0])
+print("naive exp finite? ->", z.exp().sum().isfinite().item())
+print("logsumexp        ->", logsumexp(z).item())
 ```
 
 ### 5.2 M-step: Q 関数の微分から閉形式を導く
@@ -189,113 +194,170 @@ N_k = \sum_{i=1}^N \gamma_{ik},\quad
 $$
 
 ```python
-import numpy as np
+import torch
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+torch.set_float32_matmul_precision("high")
 
 
-def logsumexp(a: np.ndarray, axis: int = -1) -> np.ndarray:
-    m = np.max(a, axis=axis, keepdims=True)
-    s = np.sum(np.exp(a - m), axis=axis, keepdims=True)
-    return (m + np.log(s)).squeeze(axis)
+# ── Triton kernel: E-step — fused log-softmax over K, one thread block per point ──
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_K": 32}, num_warps=2),
+        triton.Config({"BLOCK_K": 64}, num_warps=4),
+    ],
+    key=["K"],
+)
+@triton.jit
+def _e_step_logsoftmax_kernel(
+    log_r_ptr,    # (N, K) float32, modified in-place → log-gamma
+    log_norm_ptr, # (N,)   float32 output
+    N: int, K: int,
+    BLOCK_K: tl.constexpr,
+):
+    """Each thread block handles one data point.
+    Fused: load log_r[pid, :K] → max-subtraction → log-sum-exp → log-softmax."""
+    pid  = tl.program_id(0)           # one program per data point
+    if pid >= N:
+        return
+    offs = tl.arange(0, BLOCK_K)      # (BLOCK_K,) lane indices; pad beyond K with -1e9
+    mask = offs < K
+
+    row = tl.load(log_r_ptr + pid * K + offs, mask=mask, other=-1e9)  # (BLOCK_K,)
+
+    # numerically stable log-softmax (fused max + log-sum-exp + subtract)
+    m   = tl.max(row, axis=0)                               # scalar max
+    lse = m + tl.log(tl.sum(tl.exp(row - m), axis=0))      # scalar log-normalizer
+
+    tl.store(log_r_ptr + pid * K + offs, row - lse, mask=mask)  # log-gamma in-place
+    tl.store(log_norm_ptr + pid, lse)                            # (N,) log-norm
 
 
-def log_mvnormal(X: np.ndarray, mu_k: np.ndarray, Sigma_k: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    # X: (N,d), mu_k: (d,), Sigma_k: (d,d)
-    N, d = X.shape
-    Sigma_k = Sigma_k + eps * np.eye(d)
-    L = np.linalg.cholesky(Sigma_k)
-    Y = np.linalg.solve(L, (X - mu_k).T)  # (d,N)
-    quad = np.sum(Y * Y, axis=0)          # (N,)
-    logdet = 2.0 * np.sum(np.log(np.diag(L)))
-    return -0.5 * (d * np.log(2.0 * np.pi) + logdet + quad)
+def log_mvnormal(
+    X: torch.Tensor,       # (N, d)
+    mu_k: torch.Tensor,    # (d,)
+    Sigma_k: torch.Tensor, # (d, d)
+    eps: float = 1e-6,
+) -> torch.Tensor:         # (N,)  log-density of MultivariateNormal at each row of X
+    # x: (N, d), mu: (K, d), Sigma: (K, d, d) → per-component output: (N,)
+    d = X.shape[1]
+    Sigma_k = Sigma_k + eps * torch.eye(d, dtype=X.dtype, device=X.device)
+    dist = torch.distributions.MultivariateNormal(
+        loc=mu_k, covariance_matrix=Sigma_k
+    )
+    return dist.log_prob(X)   # (N,)
 
 
-def e_step(X: np.ndarray, pi: np.ndarray, mu: np.ndarray, Sigma: np.ndarray) -> np.ndarray:
-    N = X.shape[0]
+def e_step(
+    X: torch.Tensor,      # (N, d)
+    pi: torch.Tensor,     # (K,)  mixing weights π
+    mu: torch.Tensor,     # (K, d) means μ
+    Sigma: torch.Tensor,  # (K, d, d) covariances Σ
+) -> torch.Tensor:        # (N, K) responsibilities γ
+    # x: (N, d), mu: (K, d), Sigma: (K, d, d) → r: (N, K)
+    # GPU parallelism: Triton kernel assigns one thread block per data point
     K = pi.shape[0]
-    log_r = np.zeros((N, K))
-    for k in range(K):
-        log_r[:, k] = np.log(pi[k] + 1e-12) + log_mvnormal(X, mu[k], Sigma[k])
+    log_r = torch.stack(
+        [(pi[k] + 1e-12).log() + log_mvnormal(X, mu[k], Sigma[k]) for k in range(K)],
+        dim=1,
+    ).contiguous()  # (N, K) unnormalized log-responsibilities
 
-    log_norm = logsumexp(log_r, axis=1)      # (N,)
-    gamma = np.exp(log_r - log_norm[:, None])
+    # fused log-softmax: Triton normalizes each row in parallel over N
+    N, K2 = log_r.shape
+    log_norm = torch.empty(N, dtype=log_r.dtype, device=log_r.device)
+    _e_step_logsoftmax_kernel[(N,)](log_r, log_norm, N, K2)
 
-    row_sum = gamma.sum(axis=1)
-    print("gamma row-sum min/max:", float(row_sum.min()), float(row_sum.max()))
+    gamma = log_r.exp()                  # (N, K) normalized responsibilities γ
+    row_sum = gamma.sum(dim=1)
+    print("gamma row-sum min/max:", row_sum.min().item(), row_sum.max().item())
     return gamma
 
 
-def m_step(X: np.ndarray, gamma: np.ndarray, eps: float = 1e-6) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # X: (N,d), gamma: (N,K)
+def m_step(
+    X: torch.Tensor,      # (N, d)
+    gamma: torch.Tensor,  # (N, K) responsibilities γ
+    eps: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # X: (N,d), gamma: (N,K) → pi: (K,), mu: (K,d), Sigma: (K,d,d)
     N, d = X.shape
-    K = gamma.shape[1]
+    K    = gamma.shape[1]
 
-    Nk = gamma.sum(axis=0) + 1e-12          # (K,)
-    pi = Nk / float(N)                      # (K,)
-    mu = (gamma.T @ X) / Nk[:, None]        # (K,d)
+    Nk   = gamma.sum(dim=0) + 1e-12           # (K,) effective cluster counts N_k
+    pi   = Nk / N                              # (K,) mixing weights π_k = N_k / N
+    mu   = (gamma.T @ X) / Nk[:, None]        # (K, d) weighted means μ_k
 
-    Sigma = np.zeros((K, d, d))
+    Sigma = torch.zeros(K, d, d, dtype=X.dtype, device=X.device)
     for k in range(K):
-        Xc = X - mu[k][None, :]             # (N,d)
-        Sigma[k] = (gamma[:, k][:, None] * Xc).T @ Xc / Nk[k]
-        Sigma[k] = 0.5 * (Sigma[k] + Sigma[k].T)
-        Sigma[k] = Sigma[k] + eps * np.eye(d)
+        Xc       = X - mu[k]                                               # (N, d)
+        Sigma[k] = (gamma[:, k, None] * Xc).T @ Xc / Nk[k]               # (d, d) Σ_k
+        Sigma[k] = 0.5 * (Sigma[k] + Sigma[k].T)                          # symmetrize
+        Sigma[k] = Sigma[k] + eps * torch.eye(d, dtype=X.dtype, device=X.device)  # SPD
 
     # sanity: SPD-ish
     for k in range(K):
-        lam_min = float(np.linalg.eigvalsh(Sigma[k]).min())
+        lam_min = torch.linalg.eigvalsh(Sigma[k]).min().item()
         print(f"Sigma[{k}] min-eig: {lam_min:.3e}")
 
     return pi, mu, Sigma
 
 
-def loglik_gmm(X: np.ndarray, pi: np.ndarray, mu: np.ndarray, Sigma: np.ndarray) -> float:
-    N = X.shape[0]
+def loglik_gmm(
+    X: torch.Tensor,      # (N, d)
+    pi: torch.Tensor,     # (K,)
+    mu: torch.Tensor,     # (K, d)
+    Sigma: torch.Tensor,  # (K, d, d)
+) -> float:
     K = pi.shape[0]
-    log_r = np.zeros((N, K))
-    for k in range(K):
-        log_r[:, k] = np.log(pi[k] + 1e-12) + log_mvnormal(X, mu[k], Sigma[k])
-    return float(np.sum(logsumexp(log_r, axis=1)))
+    log_r = torch.stack(
+        [(pi[k] + 1e-12).log() + log_mvnormal(X, mu[k], Sigma[k]) for k in range(K)],
+        dim=1,
+    )  # (N, K)
+    return torch.logsumexp(log_r, dim=1).sum().item()
 
 
-def run_em(X: np.ndarray, K: int, steps: int = 30, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    rng = np.random.default_rng(seed)
+def run_em(
+    X: torch.Tensor, K: int, steps: int = 30, seed: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    torch.manual_seed(seed)
     N, d = X.shape
 
     # simple init: random subset for means, shared covariance
-    idx = rng.choice(N, size=K, replace=False)
-    mu = X[idx].copy()                      # (K,d)
-    pi = np.ones(K) / K                     # (K,)
-    Sigma0 = np.cov(X.T) + 1e-3 * np.eye(d)  # (d,d)
-    Sigma = np.stack([Sigma0.copy() for _ in range(K)], axis=0)
+    idx    = torch.randperm(N)[:K]
+    mu     = X[idx].clone()                               # (K, d)
+    pi     = torch.ones(K, dtype=X.dtype) / K             # (K,)
+    Sigma0 = torch.cov(X.T) + 1e-3 * torch.eye(d, dtype=X.dtype)
+    Sigma  = torch.stack([Sigma0.clone() for _ in range(K)])  # (K, d, d)
 
-    ll_hist = []
+    ll_hist: list[float] = []
     for t in range(steps):
-        gamma = e_step(X, pi, mu, Sigma)
+        gamma         = e_step(X, pi, mu, Sigma)
         pi, mu, Sigma = m_step(X, gamma)
-        ll = loglik_gmm(X, pi, mu, Sigma)
+        ll            = loglik_gmm(X, pi, mu, Sigma)
         ll_hist.append(ll)
         if t >= 1:
             assert ll_hist[-1] >= ll_hist[-2] - 1e-6  # monotonicity (numerical slack)
 
-    return pi, mu, Sigma, np.array(ll_hist)
+    return pi, mu, Sigma, torch.tensor(ll_hist)
 
 
 def aic_bic(loglik: float, N: int, k_params: int) -> tuple[float, float]:
     aic = 2.0 * k_params - 2.0 * loglik
-    bic = np.log(float(N)) * k_params - 2.0 * loglik
+    bic = torch.log(torch.tensor(float(N))).item() * k_params - 2.0 * loglik
     return aic, bic
 
 
 # demo: synthetic 2D mixture
-rng = np.random.default_rng(0)
-X = np.vstack([
-    rng.normal(loc=(-2.0, 0.0), scale=0.6, size=(200, 2)),
-    rng.normal(loc=(+2.0, 0.0), scale=0.6, size=(200, 2)),
-])
+torch.manual_seed(0)
+X = torch.cat([
+    torch.randn(200, 2) * 0.6 + torch.tensor([-2.0, 0.0]),
+    torch.randn(200, 2) * 0.6 + torch.tensor([+2.0, 0.0]),
+])  # (400, 2)
 
 for K in [1, 2, 3, 4]:
     pi, mu, Sigma, ll_hist = run_em(X, K, steps=20, seed=K)
-    ll = float(ll_hist[-1])
+    ll = ll_hist[-1].item()
 
     # parameter count (full covariance): (K-1) + K*d + K*d*(d+1)/2
     N, d = X.shape
@@ -1554,17 +1616,17 @@ BIC ペナルティ $\log(N) \cdot k$ は $N=1000$ で $\approx 6.9 \times k$。
 
 ## 参考文献
 
-[^1]: Dempster, A.P., Laird, N.M., and Rubin, D.B. (1977). "Maximum likelihood from incomplete data via the EM algorithm." *J. Royal Statistical Society B*, 39(1), 1–38. [arXiv:0710.5696](https://arxiv.org/abs/0710.5696)
+[^1]: Dempster, A.P., Laird, N.M., and Rubin, D.B. (1977). "Maximum likelihood from incomplete data via the EM algorithm." *J. Royal Statistical Society B*, 39(1), 1–38.
 
 [^2]: Wu, C.F.J. (1983). "On the convergence properties of the EM algorithm." *Annals of Statistics*, 11(1), 95–103. [arXiv:cs/0412015](https://arxiv.org/abs/cs/0412015)
 
-[^3]: Neal, R.M. and Hinton, G.E. (1998). "A view of the EM algorithm that justifies incremental, sparse, and other variants." *Learning in Graphical Models*, 355–368. [arXiv:1105.1476](https://arxiv.org/abs/1105.1476)
+[^3]: Neal, R.M. and Hinton, G.E. (1998). "A view of the EM algorithm that justifies incremental, sparse, and other variants." *Learning in Graphical Models*, 355–368.
 
-[^4]: Arthur, D. and Vassilvitskii, S. (2007). "k-means++: The advantages of careful seeding." *SODA 2007*, 1027–1035. [arXiv:0712.4273](https://arxiv.org/abs/0712.4273)
+[^4]: Arthur, D. and Vassilvitskii, S. (2007). "k-means++: The advantages of careful seeding." *SODA 2007*, 1027–1035.
 
 [^5]: Kingma, D.P. and Welling, M. (2013). "Auto-encoding variational bayes." *ICLR 2014*. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114)
 
-[^6]: Tipping, M.E. and Bishop, C.M. (1999). "Probabilistic principal component analysis." *J. Royal Statistical Society B*, 61(3), 611–622. [arXiv:1601.00670](https://arxiv.org/abs/1601.00670)
+[^6]: Tipping, M.E. and Bishop, C.M. (1999). "Probabilistic principal component analysis." *J. Royal Statistical Society B*, 61(3), 611–622.
 
 [^7]: Shazeer, N., et al. (2017). "Outrageously large neural networks: The sparsely-gated mixture-of-experts layer." *ICLR 2017*. [arXiv:1701.06538](https://arxiv.org/abs/1701.06538)
 

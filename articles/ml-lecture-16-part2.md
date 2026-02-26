@@ -21,10 +21,10 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 
 ```bash
 # Rust (cargo 1.75+, ndarray 0.16)
-curl -fsSL https://install.julialang.org | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Packages
-julia -e 'using Pkg; Pkg.add(["LinearAlgebra", "FFTW", "Plots", "DifferentialEquations", "ProgressMeter"])'
+# Add dependencies to Cargo.toml: see [dependencies] section below
 ```
 
 #### Rust環境

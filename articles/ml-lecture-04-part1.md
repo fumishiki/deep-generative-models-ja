@@ -1564,7 +1564,7 @@ $$
 
 [^1]: Papamakarios, G., Nalisnick, E., Rezende, D. J., Mohamed, S., & Lakshminarayanan, B. (2021). Normalizing flows for probabilistic modeling and inference. *Journal of Machine Learning Research*, 22(57), 1-64. [arXiv:1912.02762](https://arxiv.org/abs/1912.02762)
 
-[^2]: Wilson, A. G., & Izmailov, P. (2020). Bayesian Deep Learning and a Probabilistic Perspective of Generalization. *NeurIPS 2020*. [arXiv:2001.10995](https://arxiv.org/abs/2001.10995)
+[^2]: Wilson, A. G., & Izmailov, P. (2020). Bayesian Deep Learning and a Probabilistic Perspective of Generalization. *NeurIPS 2020*. [arXiv:2002.08791](https://arxiv.org/abs/2002.08791)
 
 [^3]: Krause, A., & Hübotter, J. (2025). Probabilistic Artificial Intelligence. ETH Zürich. [arXiv:2502.05244](https://arxiv.org/abs/2502.05244)
 

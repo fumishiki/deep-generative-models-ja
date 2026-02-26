@@ -21,8 +21,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 ## 🚀 0. クイックスタート（30秒）— 1ステップ生成の衝撃
 
 ```rust
-use candle_core::{Result, Tensor};
-use candle_nn::Module;
+use anyhow::Result;
+use tch::{nn, Tensor};
 
 // Consistency Function (Self-consistency条件を満たすNN)
 fn consistency_function(
@@ -44,7 +44,7 @@ fn consistency_function(
 }
 
 fn main() -> Result<()> {
-    let device = candle_core::Device::Cpu;
+    let device = tch::Device::Cpu;
     // 1-step generation (t=T → t=0 in ONE step!)
     let x_t = Tensor::randn(0f32, 1.0f32, (4, 1, 28, 28), &device)?;  // ノイズ
     let t = 80.0f32;  // T=最大時刻
@@ -1475,7 +1475,7 @@ $$
 
 ### 3.19 Production Implementation — Rust訓練 + Rust推論
 
-#### 3.19.1 Rust訓練パイプライン (Candle)
+#### 3.19.1 Rust推論パイプライン (tch-rs)
 
 **完全な Improved CT実装**:
 

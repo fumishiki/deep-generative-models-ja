@@ -452,13 +452,13 @@ end
 
 ```rust
 // speculative_decoding.rs
-// mistral.rs / candle クレートとの統合を想定
+// mistral.rs / tch-rs クレートとの統合を想定
 // Cargo.toml: anyhow = "1", rand = "0.8"
 
 use anyhow::Result;
 use rand::Rng;
 
-// --- 型エイリアス（candle / mistral.rs と統合する際に差し替える） ---
+// --- 型エイリアス（tch-rs / mistral.rs と統合する際に差し替える） ---
 pub struct DraftModel;
 pub struct TargetModel;
 
@@ -747,7 +747,7 @@ INT2 Results:
 
 ```rust
 // Knowledge Distillation: Teacher → Student training.
-// For production: use candle or burn for neural network layers with autodiff.
+// For production: use tch-rs or ort for neural network layers with autodiff.
 // Here we define the loss functions using pure Rust numerics.
 
 fn softmax(logits: &[f32]) -> Vec<f32> {
@@ -802,7 +802,7 @@ fn distillation_temperature_study() {
     println!("{}", "=".repeat(60));
 
     for &t in &temperatures {
-        // Placeholder: in production, run full training loop with candle/burn
+        // Placeholder: in production, run full training loop with tch-rs
         let logits_s = vec![1.0_f32, 2.0, 0.5, -0.3, 0.8, 1.2, -0.5, 0.1, 0.3, 0.0];
         let logits_t = vec![1.2_f32, 1.8, 0.6, -0.2, 0.9, 1.1, -0.4, 0.2, 0.4, 0.1];
         let loss = distillation_loss(&logits_s, &logits_t, 1, t, 0.7);

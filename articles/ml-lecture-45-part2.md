@@ -494,7 +494,7 @@ end
                    │
                    ↓ rustler NIF (Rust↔Elixir)
 ┌─────────────────────────────────────────────────────────────┐
-│                     Rust訓練パイプライン (Candle/Burn)      │
+│                     Python訓練パイプライン (PyTorch/Triton)      │
 │  Lux.jl  →  Video Diffusion訓練                             │
 │  Reactant  →  GPU AOTコンパイル                             │
 │  DataLoader  →  高速動画バッチ処理                          │
@@ -505,7 +505,8 @@ end
 
 | 言語 | 役割 | 使用ライブラリ | 強み |
 |:-----|:-----|:---------------|:-----|
-| 🦀 Rust | 訓練・実験 | Candle, Burn, VideoIO | 数式↔コード1:1、GPU最適化 |
+| 🐍 Python | 訓練・実験 | PyTorch, Triton | 数式↔コード1:1、GPU最適化 |
+| 🦀 Rust | 推論・配布 | tch-rs, ort | ゼロコピー推論、FFI統合 |
 | 🦀 Rust | 推論最適化 | ort, ndarray, rayon | ゼロコピー、並列処理 |
 | 🔮 Elixir | サービング・分散 | Phoenix, Rustler, GenServer | 耐障害性、並行性 |
 

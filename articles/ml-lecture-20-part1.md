@@ -22,9 +22,8 @@ keywords: ["機械学習", "深層学習", "生成モデル"]
 理論と実装の対応を体感しよう。VAEのELBOを1行で：
 
 ```rust
-// VAE ELBO = 再構成項 - KL正則化項 (candle-core)
-use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module};
+// VAE ELBO = 再構成項 - KL正則化項 (tch-rs)
+use tch::{Tensor, nn};
 
 struct Vae {
     enc:   Linear, // x → hidden
@@ -397,9 +396,9 @@ VAEとTransformerは同じ発散を最適化しているが、密度の計算可
 
 ```mermaid
 graph LR
-    A[Rust<br>Candle] -->|訓練| B[モデル<br>VAE/GAN/Trans]
+    A[Python<br>PyTorch] -->|訓練| B[モデル<br>VAE/GAN/Trans]
     B -->|エクスポート| C[safetensors/<br>ONNX]
-    C -->|ロード| D[Rust<br>Candle]
+    C -->|ロード| D[Rust<br>tch-rs/ort]
     D -->|推論| E[バッチ処理<br>ゼロコピー]
     E -->|FFI| F[Elixir<br>Broadway]
     F -->|配信| G[分散システム<br>耐障害性]
@@ -413,8 +412,8 @@ graph LR
 
 | 段階 | 言語 | 理由 | ツール |
 |:-----|:-----|:-----|:-------|
-| 訓練 | 🦀 Rust | 数式↔コード1:1、AOT高速化、REPLループ | Candle, Burn |
-| 推論 | 🦀 Rust | ゼロコピー、型安全、並列処理、C-ABI FFI | Candle, ndarray |
+| 訓練 | 🐍 Python | 豊富なエコシステム、研究ツール、高速プロトタイピング | PyTorch + Triton |
+| 推論 | 🦀 Rust | ゼロコピー、型安全、並列処理、C-ABI FFI | ndarray, tch-rs, ort |
 | 配信 | 🔮 Elixir | 耐障害性、バックプレッシャー、監視ツリー | GenStage, Broadway |
 
 **なぜ3言語か**：
@@ -424,7 +423,7 @@ graph LR
 
 **今回の実装範囲**：
 - Zone 3（数式修行）：VAE/GAN/TransformerのRust訓練実装、数式↔コード完全対応
-- Zone 4（実装）：Rust推論エンジン、Candleでのモデルロード・バッチ処理
+- Zone 4（実装）：Rust推論エンジン、ort（ONNX Runtime）でのモデルロード・バッチ処理
 - Zone 5（実験）：Elixir分散サービング、Broadway需要駆動パイプライン、耐障害性デモ
 
 ---
@@ -1351,7 +1350,7 @@ graph TD
 
 **ヒント**：
 - すべてのモデルで`loss, state = model_loss(params, state, data)`のインターフェースを統一
-- Candleの`Lux.Training.TrainState`を活用
+- tch-rs の VarStore を活用
 - JLD2.jlでパラメータ保存
 
 **解答例は Zone 4 で提供**。まずは自分で設計してみよう。
@@ -1499,7 +1498,7 @@ Transformerはメモリ・計算・データ効率でGANより要求が高い。
 
 #### 3.5.5 Rust Burn — JAX-level Performance
 
-2025年、Rustは **Burn** により、JAX/XLA並みの性能を達成 [^reactant_julia].
+2025年、Rustは **Burn** により、JAX/XLA並みの性能を達成 [^burn_mlir].
 
 **Before Burn** (純Rust):
 
@@ -1516,27 +1515,27 @@ $$
 **Multi-device自動対応**:
 
 
-#### 3.5.5 Rust Candle vs Burn — Production Framework比較
+#### 3.5.5 Rust推論スタック比較 — tch-rs vs ort
 
-2024-2025のRust ML frameworkは2強時代 [^rust_ml_frameworks]:
+Rust推論スタックの選択肢 [^rust_ml_frameworks]:
 
 | Framework | Developer | Training | Inference | Target | License |
 |:----------|:----------|:---------|:----------|:-------|:--------|
-| **Candle** | HuggingFace | 限定的 | ⭐⭐⭐ | サーバー推論 | Apache 2.0 |
-| **Burn** | Community | ⭐⭐⭐ | ⭐⭐ | エッジ・WASM | MIT/Apache 2.0 |
-| **dfdx** | coreylowman | ⭐⭐ | ⭐ | 研究 | MIT/Apache 2.0 |
+| **tch-rs** | LaurentMazare | ⭐⭐⭐ | ⭐⭐⭐ | LibTorchバインディング | MIT |
+| **ort** | pykeio | ❌ | ⭐⭐⭐ | 推論特化・複数バックエンド | MIT/Apache 2.0 |
+| **ndarray** | rust-ndarray | N/A | ⭐⭐ | テンソル演算・前処理 | MIT/Apache 2.0 |
 
-**Candle**: PyTorch風API、safetensors直接ロード、推論最適化に特化
+**tch-rs**: LibTorch Rustバインディング、PyTorchモデルをそのままロード、訓練も可能
 
 
-**Burn**: WGPU対応（Vulkan/Metal/DX12）、WASMターゲット、訓練フル対応
+**ort（ONNX Runtime）**: 推論特化、CUDA/TensorRT/CoreML等の複数バックエンド対応、超軽量デプロイ
 
 
 **Production Recommendation**:
 
-- サーバー推論（GPU）: **Candle** — safetensors統合、HuggingFace Hubと親和性
-- エッジデバイス（Raspberry Pi, WASM）: **Burn** — WGPU対応、軽量
-- 研究プロトタイプ: **Rust + Burn** — 数式↔コード1:1、JAX級速度
+- サーバー推論（GPU）: **ort** — ONNX形式でバックエンド非依存、超軽量デプロイ
+- PyTorch互換が必要な場合: **tch-rs** — LibTorchバインディング、PyTorchとの完全互換
+- 結論: 訓練はPython（PyTorch）→ONNXエクスポート→**ort**でRust推論が最適解
 
 #### 3.5.6 3モデルの計算複雑度比較
 
@@ -1594,9 +1593,9 @@ $$
 
 [^gan_vs_transformer]: [GAN vs Transformer Models](https://www.techtarget.com/searchenterpriseai/tip/GAN-vs-transformer-models-Comparing-architectures-and-uses), [Comparing Generative AI Models](https://hyqoo.com/artificial-intelligence/comparing-generative-ai-models-gans-vaes-and-transformers)
 
-[^reactant_julia]: Burn enables Rust code to compile to MLIR→XLA, achieving JAX-level performance on GPU/TPU.
+[^burn_mlir]: Burn enables Rust code to compile to MLIR→XLA, achieving JAX-level performance on GPU/TPU.
 
-[^rust_ml_frameworks]: Candle (HuggingFace) focuses on lightweight inference; Burn supports training with WGPU/WASM for edge deployment.
+[^rust_ml_frameworks]: tch-rs provides LibTorch Rust bindings enabling PyTorch-compatible training and inference; ort (ONNX Runtime) is specialized for inference with multiple backend support (CUDA, TensorRT, CoreML).
 
 ---
 
